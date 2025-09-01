@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./target",
+    "skipLibCheck": true,
+    "strict": false,
+    "noImplicitAny": false
+  },
+  "include": [
+    "index.ts",
+    "public/**/*",
+    "server/**/*",
+    "common/**/*"
+  ],
+  "exclude": [
+    "target/**/*"
+  ]
+}

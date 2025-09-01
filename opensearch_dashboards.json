@@ -1,0 +1,11 @@
+{
+  "id": "wazuhAlertManager",
+  "version": "1.0.0",
+  "opensearchDashboardsVersion": "opensearchDashboards",
+  "ui": true,
+  "server": true,
+  "requiredPlugins": [
+    "data"
+  ],
+  "optionalPlugins": []
+}

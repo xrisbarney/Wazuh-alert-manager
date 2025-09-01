@@ -1,0 +1,7 @@
+{
+  "prefix": "wazuhAlertManager",
+  "paths": {
+    "wazuhAlertManager": "."
+  },
+  "translations": ["translations/ja-JP.json"]
+}
