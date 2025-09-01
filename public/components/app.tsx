@@ -36,6 +36,7 @@ import {
   EuiPopover,
   EuiStat,
   EuiHorizontalRule,
+  EuiSwitch,
 } from '@elastic/eui';
 import { CoreStart } from '../../../../src/core/public';
 import { DataPublicPluginStart } from '../../../../src/plugins/data/public';
@@ -94,6 +95,7 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart 
     start: null,
     end: null
   });
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
 
   const addToast = (toast: Omit<EuiGlobalToastListToast, 'id'>) => {
     const newToast: EuiGlobalToastListToast = {
@@ -275,6 +277,36 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart 
     fetchAlerts();
   };
 
+  const toggleAutoRefresh = () => {
+    setAutoRefreshEnabled(!autoRefreshEnabled);
+  };
+
+  // Auto-refresh effect
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout | null = null;
+
+    if (autoRefreshEnabled) {
+      intervalId = setInterval(() => {
+        fetchData();
+        addToast({
+          title: 'Data refreshed',
+          color: 'primary',
+          text: 'Alerts automatically refreshed based on current filters',
+        });
+      }, 5 * 60 * 1000); // 5 minutes
+    }
+
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, [autoRefreshEnabled]);
+
+  useEffect(() => {
+    fetchData();
+  }, [pageIndex, pageSize]);
+
   const quickTimeRanges = [
     { start: 'now-15m', end: 'now', label: 'Last 15 minutes' },
     { start: 'now-30m', end: 'now', label: 'Last 30 minutes' },
@@ -292,10 +324,6 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart 
     const range = quickTimeRanges.find(r => r.start === timeRange.from && r.end === timeRange.to);
     return range ? range.label : `${timeRange.from} to ${timeRange.to}`;
   };
-
-  useEffect(() => {
-    fetchData();
-  }, [pageIndex, pageSize]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -410,7 +438,7 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart 
       actions: [
         {
           render: (alert: Alert) => (
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }} onClick={(e) => e.stopPropagation()}>
               <EuiSelect
                 options={statusOptions}
                 value={alert._source.status}
@@ -703,6 +731,14 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart 
                     Refresh
                   </EuiButton>
                 </EuiFlexItem>
+                <EuiFlexItem grow={false}>
+                  <EuiSwitch
+                    label="Auto Refresh (5 min)"
+                    checked={autoRefreshEnabled}
+                    onChange={toggleAutoRefresh}
+                    compressed
+                  />
+                </EuiFlexItem>
               </EuiFlexGroup>
 
               <EuiSpacer />
@@ -721,6 +757,7 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart 
                 <>
                   <EuiText size="s" color="subdued">
                     Showing {pageIndex * pageSize + 1}-{Math.min((pageIndex + 1) * pageSize, totalAlerts)} of {totalAlerts} alerts {query && `matching "${query}"`}
+                    {autoRefreshEnabled && ' • Auto refresh enabled'}
                   </EuiText>
                   <EuiSpacer size="s" />
                   <EuiBasicTable<Alert>
