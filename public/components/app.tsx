@@ -34,6 +34,8 @@ import {
   EuiDatePickerRange,
   EuiDatePicker,
   EuiPopover,
+  EuiStat,
+  EuiHorizontalRule,
 } from '@elastic/eui';
 import { CoreStart } from '../../../../src/core/public';
 import { DataPublicPluginStart } from '../../../../src/plugins/data/public';
@@ -52,10 +54,24 @@ interface TimeRange {
   mode?: 'absolute' | 'relative';
 }
 
+interface AlertCounts {
+  open: number;
+  inProgress: number;
+  closed: number;
+  total: number;
+}
+
 export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart }) => {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [totalAlerts, setTotalAlerts] = useState(0);
+  const [alertCounts, setAlertCounts] = useState<AlertCounts>({
+    open: 0,
+    inProgress: 0,
+    closed: 0,
+    total: 0
+  });
   const [loading, setLoading] = useState(true);
+  const [loadingCounts, setLoadingCounts] = useState(true);
   const [updating, setUpdating] = useState<string | null>(null);
   const [toasts, setToasts] = useState<EuiGlobalToastListToast[]>([]);
   const [sortField, setSortField] = useState<keyof Alert>('_id');
@@ -112,6 +128,32 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart 
     return luceneQuery || undefined;
   };
 
+  const fetchAlertCounts = async () => {
+    try {
+      setLoadingCounts(true);
+      const luceneQuery = buildQuery();
+
+      const response = await apiService.fetchAlertCounts(luceneQuery);
+      if (response?.aggregations) {
+        const counts = response.aggregations.status_counts.buckets.reduce((acc: any, bucket: any) => {
+          acc[bucket.key] = bucket.doc_count;
+          return acc;
+        }, { open: 0, 'in progress': 0, closed: 0 });
+
+        setAlertCounts({
+          open: counts.open || 0,
+          inProgress: counts['in progress'] || 0,
+          closed: counts.closed || 0,
+          total: response.hits.total?.value || 0
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching alert counts:', error);
+    } finally {
+      setLoadingCounts(false);
+    }
+  };
+
   const fetchAlerts = async () => {
     try {
       setLoading(true);
@@ -157,6 +199,9 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart 
           }
         });
       }
+
+      // Refresh counts after status update
+      fetchAlertCounts();
 
       addToast({
         title: 'Status updated successfully',
@@ -205,14 +250,14 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart 
 
   const handleQuerySearch = () => {
     setPageIndex(0); // Reset to first page when search changes
-    fetchAlerts();
+    fetchData();
   };
 
   const handleTimeRangeChange = (newTimeRange: TimeRange) => {
     setTimeRange(newTimeRange);
     setIsTimeRangePopoverOpen(false);
     setPageIndex(0); // Reset to first page when time range changes
-    fetchAlerts();
+    fetchData();
   };
 
   const handleCustomTimeRangeApply = () => {
@@ -223,6 +268,11 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart 
         mode: 'absolute'
       });
     }
+  };
+
+  const fetchData = () => {
+    fetchAlertCounts();
+    fetchAlerts();
   };
 
   const quickTimeRanges = [
@@ -244,7 +294,7 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart 
   };
 
   useEffect(() => {
-    fetchAlerts();
+    fetchData();
   }, [pageIndex, pageSize]);
 
   const getStatusColor = (status: string) => {
@@ -261,6 +311,51 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart 
     { value: 'in progress', text: 'In Progress' },
     { value: 'closed', text: 'Closed' },
   ];
+
+  // Add the alert summary boxes component
+  const AlertSummaryBoxes = () => (
+    <EuiFlexGroup gutterSize="m">
+      <EuiFlexItem>
+        <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+          <EuiStat
+            title={loadingCounts ? <EuiLoadingSpinner size="m" /> : alertCounts.open}
+            description="Open Alerts"
+            titleColor="danger"
+            isLoading={loadingCounts}
+          />
+        </EuiPanel>
+      </EuiFlexItem>
+      <EuiFlexItem>
+        <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+          <EuiStat
+            title={loadingCounts ? <EuiLoadingSpinner size="m" /> : alertCounts.inProgress}
+            description="In Progress"
+            titleColor="warning"
+            isLoading={loadingCounts}
+          />
+        </EuiPanel>
+      </EuiFlexItem>
+      <EuiFlexItem>
+        <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+          <EuiStat
+            title={loadingCounts ? <EuiLoadingSpinner size="m" /> : alertCounts.closed}
+            description="Closed"
+            titleColor="success"
+            isLoading={loadingCounts}
+          />
+        </EuiPanel>
+      </EuiFlexItem>
+      <EuiFlexItem>
+        <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+          <EuiStat
+            title={loadingCounts ? <EuiLoadingSpinner size="m" /> : alertCounts.total}
+            description="Total Alerts"
+            isLoading={loadingCounts}
+          />
+        </EuiPanel>
+      </EuiFlexItem>
+    </EuiFlexGroup>
+  );
 
   const columns = [
     {
@@ -500,6 +595,12 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart 
 
           <EuiPageContent>
             <EuiPageContentBody>
+              {/* Alert Summary Boxes */}
+              <AlertSummaryBoxes />
+              <EuiSpacer size="l" />
+              <EuiHorizontalRule />
+              <EuiSpacer size="l" />
+
               {/* Filter Bar */}
               <EuiFlexGroup gutterSize="s" alignItems="center">
                 <EuiFlexItem>
@@ -595,9 +696,9 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, dataStart 
                 </EuiFlexItem>
                 <EuiFlexItem grow={false}>
                   <EuiButton
-                    onClick={fetchAlerts}
+                    onClick={fetchData}
                     iconType="refresh"
-                    isLoading={loading}
+                    isLoading={loading || loadingCounts}
                   >
                     Refresh
                   </EuiButton>
