@@ -1,12 +1,8 @@
-Perfect 👍 — let’s make your **wazuhAlertManager plugin installation guide** clean, complete, and properly ordered.
-
-Here’s the improved version with the missing steps filled in:
-
----
-
 # 🚨 wazuhAlertManager
 
 An OpenSearch Dashboards plugin for managing Wazuh alert workflows.
+<img width="1918" height="910" alt="image" src="https://github.com/user-attachments/assets/1c5dd49e-73c5-4050-8e27-f9cbe04c3845" />
+
 
 ---
 
