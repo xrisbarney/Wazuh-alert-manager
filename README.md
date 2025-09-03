@@ -112,6 +112,44 @@ echo "Finished Wazuh alerts copy"
 echo "=============================="
 ```
 
+You can also narrow down the alerting level by specifying rule.level as a parameter:
+
+```json
+{
+  \"source\": {
+    \"index\": \"$SOURCE_INDEX\",
+    \"size\": 10000,
+    \"query\": {
+      \"bool\": {
+        \"must\": [
+          {
+            \"range\": {
+              \"@timestamp\": {
+                \"gte\": \"$LAST_RUN\",
+                \"lte\": \"$NOW\"
+              }
+            }
+          },
+          {
+            \"range\": {
+              \"rule.level\": {
+                \"gte\": 9,
+                \"lt\": 16
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  \"dest\": {
+    \"index\": \"$DEST_INDEX\",
+    \"pipeline\": \"wazuh_workflow_pipeline\"
+  }
+}
+")
+```
+
 Make it executable:
 
 ```bash
