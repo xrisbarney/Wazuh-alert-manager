@@ -88,6 +88,7 @@ RESPONSE=$(curl -s -k -w "\n%{http_code}\n" \
 {
   \"source\": {
     \"index\": \"$SOURCE_INDEX\",
+    \"size\": 10000,
     \"query\": {
       \"range\": {
         \"@timestamp\": {
