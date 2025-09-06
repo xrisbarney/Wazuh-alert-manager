@@ -35,6 +35,7 @@ curl -v -k -X POST "$ES_HOST/_reindex?pretty" \
 {
   \"source\": {
     \"index\": \"$SOURCE_INDEX\",
+     \"size\": 10000,
     \"query\": {
       \"range\": {
         \"@timestamp\": {
