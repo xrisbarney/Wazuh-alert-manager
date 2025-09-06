@@ -58,7 +58,7 @@ On the Wazuh indexer, create:
 #!/bin/bash
 
 # Connection Info
-ES_HOST="https://127.0.0.1:9200" # change the host of the script is not located on the indexer
+ES_HOST="https://127.0.0.1:9200" # change the host if the script is not located on the indexer
 ES_USER="YOUR_USERNAME_HERE"
 ES_PASS="YOUR_PASSWORD_HERE"
 
@@ -150,6 +150,8 @@ You can also narrow down the alerting level by specifying rule.level as a parame
 ")
 ```
 
+Ensure you change the ES_USER and ES_PASS to an opensearch user credentials that can read and write to indexes.
+
 Make it executable:
 
 ```bash
@@ -223,3 +225,10 @@ sudo systemctl start wazuh-dashboard
 
 ## TODO
 1. Add support for comments.
+2. Modify the wazuh-alert-status index so that it supports index rollover and index lifecycle management by making the pattern wazuh-alert-status-index-dd-mm-yyy.
+3. Add support to see the last time an alert was updated and the user that performed the update.
+4. Add drop downs to filter by rule levels, alert status and rule ids without using Lucene.
+5. Improve the Lucene filter.
+
+## Disclaimer
+1. This plugin is not officially supported by Wazuh and has only been tested with Wazuh v4.12.
