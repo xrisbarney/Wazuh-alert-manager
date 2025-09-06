@@ -184,3 +184,8 @@ sudo systemctl start wazuh-dashboard
 
 ## TODO
 1. Add support for comments.
+2. Modify the wazuh-alert-status index so that it supports index rollover and index lifecycle management by making the pattern wazuh-alert-status-index-dd-mm-yyy.
+3. Add support to see the last time an alert was updated and the user that performed the update.
+
+## Disclaimer
+1. This plugin is not officially supported by Wazuh and has only been tested with Wazuh v4.12.
