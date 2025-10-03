@@ -238,4 +238,4 @@ sudo systemctl start wazuh-dashboard
 5. Improve the Lucene filter.
 
 ## Disclaimer
-1. This plugin is not officially supported by Wazuh and has only been tested with Wazuh v4.12.
+1. This plugin is not officially supported by Wazuh and has only been tested with Wazuh v4.12 and v4.13.
