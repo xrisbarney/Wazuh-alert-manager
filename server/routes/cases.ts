@@ -37,17 +37,25 @@ export function defineCaseRoutes(router: IRouter) {
           status: schema.maybe(schema.string()),
           assignedTo: schema.maybe(schema.string()),
           q: schema.maybe(schema.string()),
+          from: schema.maybe(schema.string()),
+          to: schema.maybe(schema.string()),
           from_offset: schema.maybe(schema.number({ min: 0 })),
           size: schema.maybe(schema.number({ min: 1, max: 200 })),
         }),
       },
     },
     async (context, request, response) => {
-      const { status, assignedTo, q, from_offset, size } = request.query as any;
+      const { status, assignedTo, q, from, to, from_offset, size } = request.query as any;
       const filter: any[] = [];
       const must: any[] = [];
       if (status) filter.push({ terms: { status: String(status).split(',').filter(Boolean) } });
       if (assignedTo) filter.push({ terms: { assigned_to: String(assignedTo).split(',').filter(Boolean) } });
+      if (from || to) {
+        const range: any = {};
+        if (from) range.gte = from;
+        if (to) range.lte = to;
+        filter.push({ range: { created_at: range } });
+      }
       if (q) must.push({ query_string: { query: q, default_operator: 'AND', lenient: true } });
 
       try {

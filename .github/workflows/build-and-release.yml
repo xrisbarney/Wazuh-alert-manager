@@ -1,0 +1,180 @@
+name: Build and release plugin
+
+# Builds the wazuhAlertManager plugin against the real wazuh-dashboard
+# source tree for each supported Wazuh release (see SUPPORTED_VERSIONS.md).
+# Building this way - not just relabeling a manifest version - is the
+# whole point: it catches real API incompatibilities between OSD releases,
+# not just version-string mismatches.
+#
+# Trigger with a `v*` tag to build all versions and attach the zips to a
+# GitHub Release. Use the manual "Run workflow" button for a one-off
+# build (e.g. to sanity-check a branch) without cutting a release.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+# Least-privilege by default; the release job elevates only what it needs.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (Wazuh ${{ matrix.wazuhVersion }} / OSD ${{ matrix.osdVersion }})
+    runs-on: ubuntu-latest
+    # This is a full monorepo bootstrap + tsc project-reference build -
+    # the same workload took hours on a resource-constrained local VM.
+    # GitHub's runners are usually faster (better network, no VM overhead
+    # on top of a VM), but that's unproven here, so the timeout is
+    # generous rather than tight. Tighten it once a real run has been timed.
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - wazuhVersion: "4.12"
+            osdVersion: "2.19.1"
+            dashboardRef: "v4.12.0"
+          - wazuhVersion: "4.13"
+            osdVersion: "2.19.2"
+            dashboardRef: "v4.13.1"
+          - wazuhVersion: "4.14"
+            osdVersion: "2.19.5"
+            dashboardRef: "v4.14.7"
+
+    steps:
+      - name: Checkout plugin source
+        uses: actions/checkout@v4
+        with:
+          path: plugin-src
+
+      - name: Checkout wazuh-dashboard ${{ matrix.dashboardRef }}
+        uses: actions/checkout@v4
+        with:
+          repository: wazuh/wazuh-dashboard
+          ref: ${{ matrix.dashboardRef }}
+          path: wazuh-dashboard
+          # Full history isn't needed to build; keep the checkout fast and small.
+          fetch-depth: 1
+
+      - name: Read plugin version
+        # Runs on the runner's ambient Node (before "Set up Node" below)
+        # intentionally - it only parses a JSON string, so the pinned
+        # 18.19.0 toolchain isn't needed yet.
+        id: plugin_version
+        working-directory: plugin-src
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: wazuh-dashboard/.nvmrc
+
+      - name: Install yarn
+        # Just enable corepack rather than pinning a yarn version here:
+        # wazuh-dashboard's own package.json declares its own
+        # "packageManager" (yarn@1.22.19 as of 4.14.7), and corepack
+        # honors the nearest package.json's pin for any yarn invocation
+        # inside that tree - an explicit pin here could silently disagree
+        # with it and make troubleshooting misleading.
+        run: corepack enable
+
+      - name: Free disk space
+        # The full OpenSearch Dashboards monorepo (core + every bundled
+        # plugin) that "yarn osd bootstrap" installs is several GB before
+        # adding this checkout, the yarn cache, and build output on top -
+        # standard ubuntu-latest runners start with ~14GB free. Remove
+        # large preinstalled toolchains this build never uses to make room.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Cache yarn packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/yarn
+          key: yarn-${{ matrix.osdVersion }}-${{ hashFiles('wazuh-dashboard/yarn.lock') }}
+          restore-keys: |
+            yarn-${{ matrix.osdVersion }}-
+
+      - name: Copy plugin into wazuh-dashboard/plugins
+        run: |
+          mkdir -p wazuh-dashboard/plugins/wazuhAlertManager
+          rsync -a --exclude='.git' --exclude='.github' plugin-src/ wazuh-dashboard/plugins/wazuhAlertManager/
+
+      - name: Target this build's OpenSearch Dashboards version
+        working-directory: wazuh-dashboard/plugins/wazuhAlertManager
+        run: node scripts/set-target-version.js --osd-version ${{ matrix.osdVersion }} --plugin-version ${{ steps.plugin_version.outputs.version }}
+
+      - name: yarn osd bootstrap
+        working-directory: wazuh-dashboard
+        env:
+          # Cypress/chromedriver/puppeteer postinstall scripts try to
+          # download large test-only binaries that this build never uses
+          # and that have been observed to hang rather than fail cleanly
+          # on a slow or restricted network - skip them outright.
+          CYPRESS_INSTALL_BINARY: "0"
+          CHROMEDRIVER_SKIP_DOWNLOAD: "true"
+          PUPPETEER_SKIP_DOWNLOAD: "true"
+          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
+          # Standard hosted runners are 2 vCPU / 7GB RAM with no elevated
+          # V8 heap by default - the tsc project-reference build this
+          # step runs is memory-hungry enough to risk an OOM kill rather
+          # than just running slowly. Leave headroom under the 7GB ceiling.
+          NODE_OPTIONS: "--max-old-space-size=6144"
+        run: yarn osd bootstrap
+
+      - name: yarn build
+        working-directory: wazuh-dashboard/plugins/wazuhAlertManager
+        env:
+          NODE_OPTIONS: "--max-old-space-size=6144"
+        run: yarn build
+
+      - name: Locate build output
+        id: find_zip
+        working-directory: wazuh-dashboard/plugins/wazuhAlertManager/build
+        run: |
+          zip_path=$(ls *.zip | head -n1)
+          if [ -z "$zip_path" ]; then
+            echo "No zip produced by yarn build" >&2
+            exit 1
+          fi
+          echo "zip_name=$zip_path" >> "$GITHUB_OUTPUT"
+
+      - name: Rename artifact with wazuh version
+        working-directory: wazuh-dashboard/plugins/wazuhAlertManager/build
+        run: |
+          cp "${{ steps.find_zip.outputs.zip_name }}" \
+             "wazuhAlertManager-${{ steps.plugin_version.outputs.version }}-wazuh${{ matrix.wazuhVersion }}.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wazuhAlertManager-wazuh${{ matrix.wazuhVersion }}
+          path: wazuh-dashboard/plugins/wazuhAlertManager/build/wazuhAlertManager-*-wazuh${{ matrix.wazuhVersion }}.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release with all version zips attached
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true

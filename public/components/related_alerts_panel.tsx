@@ -1,31 +1,20 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import {
-  EuiBasicTable,
-  EuiSpacer,
-  EuiText,
-  EuiFieldSearch,
-  EuiButtonIcon,
-  EuiButton,
-  EuiCheckbox,
-  EuiLoadingSpinner,
-} from '@elastic/eui';
+import { EuiBasicTable, EuiSpacer, EuiText, EuiButtonIcon, EuiLoadingSpinner } from '@elastic/eui';
 import { Alert } from '../../common';
 import { AlertsApiService } from '../services/api';
+import { AlertMultiPicker } from './alert_multi_picker';
 
 interface Props {
   alertId: string;
   apiService: AlertsApiService;
   onError: (message: string) => void;
+  onToast?: (title: string, color: 'success' | 'danger' | 'primary', text?: string) => void;
   onOpenAlert: (alert: Alert) => void;
 }
 
-export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onError, onOpenAlert }) => {
+export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onError, onToast, onOpenAlert }) => {
   const [related, setRelated] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [searchResults, setSearchResults] = useState<Alert[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [linking, setLinking] = useState(false);
 
   const load = useCallback(async () => {
@@ -44,32 +33,12 @@ export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onErr
     load();
   }, [load]);
 
-  const runSearch = async () => {
-    if (!searchTerm.trim()) {
-      setSearchResults([]);
-      return;
-    }
-    try {
-      setSearching(true);
-      const hits = await apiService.searchAlertsQuick(searchTerm.trim(), alertId);
-      setSearchResults(hits);
-    } catch (e) {
-      onError('Search failed');
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const linkChecked = async () => {
-    const ids = Object.entries(checked).filter(([, v]) => v).map(([id]) => id);
-    if (ids.length === 0) return;
+  const linkSelected = async (ids: string[]) => {
     try {
       setLinking(true);
       await apiService.updateRelatedAlerts(alertId, ids, 'add');
-      setChecked({});
-      setSearchTerm('');
-      setSearchResults([]);
       await load();
+      onToast?.(`Linked ${ids.length} alert(s)`, 'success');
     } catch (e) {
       onError('Failed to link alerts');
     } finally {
@@ -81,6 +50,7 @@ export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onErr
     try {
       await apiService.updateRelatedAlerts(alertId, [id], 'remove');
       await load();
+      onToast?.('Alert unlinked', 'success');
     } catch (e) {
       onError('Failed to unlink alert');
     }
@@ -117,46 +87,14 @@ export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onErr
       )}
 
       <EuiSpacer size="l" />
-      <EuiText size="s">
-        <h4>Link another alert</h4>
-      </EuiText>
-      <EuiSpacer size="s" />
-      <EuiFieldSearch
-        placeholder="Search by rule description, agent, etc."
-        value={searchTerm}
-        onChange={(e) => setSearchTerm(e.target.value)}
-        onSearch={runSearch}
-        isLoading={searching}
-        compressed
+      <AlertMultiPicker
+        apiService={apiService}
+        excludeIds={[alertId]}
+        onLinkSelected={linkSelected}
+        linking={linking}
+        buttonLabel="Link selected"
+        title="Link another alert"
       />
-      <EuiSpacer size="s" />
-      {searchResults.length > 0 && (
-        <>
-          <EuiBasicTable
-            items={searchResults}
-            itemId="_id"
-            columns={[
-              {
-                name: '',
-                render: (a: Alert) => (
-                  <EuiCheckbox
-                    id={`link-${a._id}`}
-                    checked={!!checked[a._id]}
-                    onChange={(e) => setChecked({ ...checked, [a._id]: e.target.checked })}
-                  />
-                ),
-              },
-              { field: '_source', name: 'Timestamp', render: (v: Alert['_source']) => new Date(v['@timestamp']).toLocaleString() },
-              { field: '_source', name: 'Rule', render: (v: Alert['_source']) => v.rule?.description || 'N/A' },
-              { field: '_source', name: 'Agent', render: (v: Alert['_source']) => v.agent?.name || 'N/A' },
-            ]}
-          />
-          <EuiSpacer size="s" />
-          <EuiButton size="s" onClick={linkChecked} isLoading={linking} isDisabled={!Object.values(checked).some(Boolean)}>
-            Link selected
-          </EuiButton>
-        </>
-      )}
     </div>
   );
 };

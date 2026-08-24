@@ -21,12 +21,20 @@ const DEFAULT_BASE_URLS: Record<AiProvider, string> = {
   anthropic: 'https://api.anthropic.com/v1',
 };
 
-const SYSTEM_PROMPT =
+const ALERT_SYSTEM_PROMPT =
   'You are a SOC analyst assistant. Given a single Wazuh security alert as JSON, respond with: ' +
   '1) a one-paragraph plain-English summary of what happened, ' +
   '2) an assessment of likely severity and false-positive risk, ' +
   '3) 2-4 concrete next investigative or remediation steps. ' +
   "Be concise and base your answer only on the alert's own field values - do not invent facts that are not present in the data.";
+
+const CASE_SYSTEM_PROMPT =
+  'You are a SOC analyst assistant. Given an incident case as JSON - its title/description/severity, every ' +
+  'alert linked to it, and the analyst comments left on it - respond with: ' +
+  '1) a short narrative of how the incident likely unfolded across the linked alerts, in chronological order, ' +
+  '2) an overall severity/impact assessment for the case as a whole, ' +
+  '3) 2-4 concrete next investigative or remediation steps for closing this case out. ' +
+  'Be concise and base your answer only on the data provided - do not invent facts that are not present in it.';
 
 /**
  * Calls the configured AI provider's text-generation API and returns the
@@ -34,14 +42,19 @@ const SYSTEM_PROMPT =
  * adding a new provider only means adding one case to this switch plus one
  * entry to the AI_PROVIDERS constant / UI dropdown.
  */
-export async function generateAiAnalysis(settings: AiCallSettings, alertSource: Record<string, any>): Promise<string> {
+export async function generateAiAnalysis(
+  settings: AiCallSettings,
+  payload: Record<string, any>,
+  mode: 'alert' | 'case' = 'alert'
+): Promise<string> {
   if (typeof fetch !== 'function') {
     throw new Error('The dashboard Node.js runtime does not have a global fetch available.');
   }
 
   const model = settings.model || DEFAULT_MODELS[settings.provider];
   const baseUrl = settings.baseUrl || DEFAULT_BASE_URLS[settings.provider];
-  const userContent = `Alert JSON:\n${JSON.stringify(alertSource, null, 2)}`;
+  const SYSTEM_PROMPT = mode === 'case' ? CASE_SYSTEM_PROMPT : ALERT_SYSTEM_PROMPT;
+  const userContent = `${mode === 'case' ? 'Case' : 'Alert'} JSON:\n${JSON.stringify(payload, null, 2)}`;
 
   switch (settings.provider) {
     case 'openai':

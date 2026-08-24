@@ -102,5 +102,7 @@ export const metaMapping = {
   properties: {
     value: { type: 'keyword' },
     updated_at: { type: 'date' },
+    holder_id: { type: 'keyword' },
+    expires_at: { type: 'date' },
   },
 };

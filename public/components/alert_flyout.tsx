@@ -21,7 +21,7 @@ import {
   EuiButtonIcon,
   EuiToolTip,
 } from '@elastic/eui';
-import { Alert } from '../../common';
+import { Alert, AiAnalysis } from '../../common';
 import { AlertsApiService } from '../services/api';
 import { StatusBadge, STATUS_OPTIONS } from './status_badge';
 import { CommentsThread } from './comments_thread';
@@ -29,6 +29,7 @@ import { HistoryList } from './history_list';
 import { RelatedAlertsPanel } from './related_alerts_panel';
 import { AiAnalysisTab } from './ai_analysis_tab';
 import { AssigneePicker } from './assignee_picker';
+import { CasePicker } from './case_picker';
 
 interface Props {
   alert: Alert;
@@ -37,10 +38,12 @@ interface Props {
   onClose: () => void;
   onStatusChange: (status: string) => void;
   onAssigneeChange: (assignee: string | null) => void;
+  onCaseChange: (caseId: string | null) => void;
   onError: (message: string) => void;
+  onToast?: (title: string, color: 'success' | 'danger' | 'primary', text?: string) => void;
   onOpenCase?: (caseId: string) => void;
   onOpenAlert?: (alert: Alert) => void;
-  onAnalysisGenerated?: (alertId: string, analysis: NonNullable<Alert['_source']['ai_analysis']>) => void;
+  onAnalysisGenerated?: (alertId: string, analysis: AiAnalysis) => void;
 }
 
 const renderNestedObject = (obj: any, depth = 0): React.ReactNode => {
@@ -69,7 +72,9 @@ export const AlertFlyout: React.FC<Props> = ({
   onClose,
   onStatusChange,
   onAssigneeChange,
+  onCaseChange,
   onError,
+  onToast,
   onOpenCase,
   onOpenAlert,
   onAnalysisGenerated,
@@ -131,15 +136,6 @@ export const AlertFlyout: React.FC<Props> = ({
                     <EuiDescriptionListTitle>Manager</EuiDescriptionListTitle>
                     <EuiDescriptionListDescription>{alert._source.manager?.name}</EuiDescriptionListDescription>
 
-                    {alert._source.case_id && (
-                      <>
-                        <EuiDescriptionListTitle>Case</EuiDescriptionListTitle>
-                        <EuiDescriptionListDescription>
-                          <EuiLink onClick={() => onOpenCase?.(alert._source.case_id!)}>{alert._source.case_id}</EuiLink>
-                        </EuiDescriptionListDescription>
-                      </>
-                    )}
-
                     {alert._source.updated_by && (
                       <>
                         <EuiDescriptionListTitle>Last updated</EuiDescriptionListTitle>
@@ -179,6 +175,27 @@ export const AlertFlyout: React.FC<Props> = ({
                     </EuiFlexItem>
                   </EuiFlexGroup>
                   {updating && <EuiLoadingSpinner size="s" />}
+
+                  <EuiSpacer size="m" />
+                  <EuiFlexGroup gutterSize="s" alignItems="flexEnd" style={isExpanded ? { maxWidth: 600 } : undefined}>
+                    <EuiFlexItem>
+                      <EuiText size="xs" color="subdued">
+                        Case
+                      </EuiText>
+                      <CasePicker
+                        apiService={apiService}
+                        value={alert._source.case_id}
+                        onChange={(caseId) => onCaseChange(caseId)}
+                        fullWidth
+                        compressed={false}
+                      />
+                    </EuiFlexItem>
+                    {alert._source.case_id && (
+                      <EuiFlexItem grow={false}>
+                        <EuiLink onClick={() => onOpenCase?.(alert._source.case_id!)}>Open case</EuiLink>
+                      </EuiFlexItem>
+                    )}
+                  </EuiFlexGroup>
                 </div>
               ),
             },
@@ -188,7 +205,12 @@ export const AlertFlyout: React.FC<Props> = ({
               content: (
                 <div>
                   <EuiSpacer size="m" />
-                  <CommentsThread apiService={apiService} target={{ alertId: alert._id }} onError={onError} />
+                  <CommentsThread
+                    apiService={apiService}
+                    target={{ alertId: alert._id }}
+                    onError={onError}
+                    onToast={onToast}
+                  />
                 </div>
               ),
             },
@@ -202,6 +224,7 @@ export const AlertFlyout: React.FC<Props> = ({
                     alertId={alert._id}
                     apiService={apiService}
                     onError={onError}
+                    onToast={onToast}
                     onOpenAlert={(a) => onOpenAlert?.(a)}
                   />
                 </div>
@@ -214,10 +237,13 @@ export const AlertFlyout: React.FC<Props> = ({
                 <div>
                   <EuiSpacer size="m" />
                   <AiAnalysisTab
-                    alert={alert}
+                    analysis={alert._source.ai_analysis}
                     apiService={apiService}
+                    onGenerate={() => apiService.analyzeAlert(alert._id) as Promise<AiAnalysis>}
+                    onGenerated={(analysis) => onAnalysisGenerated?.(alert._id, analysis)}
                     onError={onError}
-                    onAnalysisGenerated={(id, analysis) => onAnalysisGenerated?.(id, analysis)}
+                    onToast={onToast}
+                    emptyMessage="No AI analysis generated yet for this alert."
                   />
                 </div>
               ),

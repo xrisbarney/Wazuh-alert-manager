@@ -1,6 +1,6 @@
 import { CoreStart } from '../../../../src/core/public';
 import { API_ROOT } from '../../common';
-import { AlertStatus, CaseSeverity, CaseStatus, AiProvider, ReportMetrics } from '../../common';
+import { AlertStatus, CaseSeverity, CaseStatus, AiProvider, ReportMetrics, AttackGraph } from '../../common';
 
 export interface AlertFilterParams {
   statuses?: AlertStatus[];
@@ -76,12 +76,14 @@ export class AlertsApiService {
     return this.http.delete(`${API_ROOT}/comments/${id}`);
   }
 
-  async fetchCases(params: { status?: CaseStatus[]; assignedTo?: string[]; q?: string } = {}) {
+  async fetchCases(params: { status?: CaseStatus[]; assignedTo?: string[]; q?: string; from?: string; to?: string } = {}) {
     return this.http.get(`${API_ROOT}/cases`, {
       query: {
         status: params.status?.length ? params.status.join(',') : undefined,
         assignedTo: params.assignedTo?.length ? params.assignedTo.join(',') : undefined,
         q: params.q,
+        from: params.from,
+        to: params.to,
       },
     });
   }
@@ -124,13 +126,26 @@ export class AlertsApiService {
     return this.http.get(`${API_ROOT}/reports/metrics`, { query: { from, to } });
   }
 
+  async fetchAttackPath(caseId: string): Promise<AttackGraph> {
+    return this.http.get(`${API_ROOT}/cases/${caseId}/attack-path`);
+  }
+
   async fetchAlert(id: string) {
     return this.http.get(`${API_ROOT}/alerts/${id}`);
   }
 
   async searchAlertsQuick(q: string, excludeId?: string) {
     const res: any = await this.fetchAlerts({ q }, { size: 10 });
-    const hits = res?.hits?.hits || [];
+    let hits = res?.hits?.hits || [];
+    if (hits.length === 0) {
+      // Might be a pasted alert ID rather than a search term.
+      try {
+        const exact: any = await this.fetchAlert(q.trim());
+        if (exact?._id) hits = [exact];
+      } catch (e) {
+        // not a valid id either - leave hits empty
+      }
+    }
     return excludeId ? hits.filter((h: any) => h._id !== excludeId) : hits;
   }
 
@@ -152,5 +167,15 @@ export class AlertsApiService {
 
   async analyzeAlert(alertId: string) {
     return this.http.post(`${API_ROOT}/ai/analyze`, { body: JSON.stringify({ alertId }) });
+  }
+
+  async analyzeCase(caseId: string) {
+    return this.http.post(`${API_ROOT}/ai/analyze`, { body: JSON.stringify({ caseId }) });
+  }
+
+  async searchCasesQuick(q: string, excludeId?: string) {
+    const res: any = await this.fetchCases({ q });
+    const cases = res?.cases || [];
+    return excludeId ? cases.filter((c: any) => c.id !== excludeId) : cases;
   }
 }

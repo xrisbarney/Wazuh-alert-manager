@@ -1,6 +1,7 @@
 import { Logger } from '../../../../src/core/server';
 import { ALERT_STATUS_INDEX, META_INDEX } from '../../common';
 import { AlertManagerConfigType } from '../config';
+import { acquireOrRenewLock, releaseLock, generateHolderId } from './sync_lock';
 
 const SYNC_STATE_DOC_ID = 'sync_state';
 
@@ -31,7 +32,13 @@ async function setLastRun(client: any, value: string) {
  * status/case/comment-history the plugin has already recorded on a
  * document is preserved even if that alert falls into a later sync window.
  */
-export async function runSyncOnce(client: any, config: AlertManagerConfigType, logger: Logger) {
+export async function runSyncOnce(
+  client: any,
+  config: AlertManagerConfigType,
+  logger: Logger,
+  holderId: string,
+  ttlSeconds: number
+) {
   const lastRun = await getLastRun(client, config);
   const now = new Date().toISOString();
 
@@ -63,6 +70,13 @@ export async function runSyncOnce(client: any, config: AlertManagerConfigType, l
       `wazuh-alert-manager sync: hit the batch size limit (${config.sync.batchSize}) for window ${lastRun} - ${now}. ` +
         'Some alerts may be delayed to the next sync cycle. Consider lowering sync.intervalSeconds.'
     );
+  }
+
+  // Re-validate we still hold the lock before writing - the search above can
+  // take long enough that another replica has already taken over the lease.
+  if (!(await acquireOrRenewLock(client, holderId, ttlSeconds, logger))) {
+    logger.warn('wazuh-alert-manager sync: lost the sync lock before bulk upsert, aborting this tick');
+    return;
   }
 
   const body: any[] = [];
@@ -101,6 +115,13 @@ export async function runSyncOnce(client: any, config: AlertManagerConfigType, l
     return; // don't advance the watermark if the write failed entirely
   }
 
+  // Re-validate again before committing the watermark - the bulk upsert
+  // itself can be what pushes this tick past the lease.
+  if (!(await acquireOrRenewLock(client, holderId, ttlSeconds, logger))) {
+    logger.warn('wazuh-alert-manager sync: lost the sync lock before committing the watermark, aborting this tick');
+    return;
+  }
+
   await setLastRun(client, now);
   logger.debug(`wazuh-alert-manager sync: copied ${hits.length} alerts (${lastRun} - ${now})`);
 }
@@ -112,11 +133,44 @@ export function startSyncJob(client: any, config: AlertManagerConfigType, logger
   }
 
   let stopped = false;
+  const holderId = generateHolderId();
+  // TTL scales with the sync interval (and never drops below 2 minutes) so a
+  // slower-configured interval doesn't make the lock look stale between ticks.
+  const ttlSeconds = Math.max(config.sync.intervalSeconds * 3, 120);
+  let holdingLock = false;
+  // Guards against a tick still being in flight (e.g. a slow search/bulk)
+  // when the next setInterval fire comes around, which would otherwise let
+  // this same process run two overlapping runSyncOnce calls.
+  let running = false;
+
   const tick = () => {
-    if (stopped) return;
-    runSyncOnce(client, config, logger).catch((e) =>
-      logger.error(`wazuh-alert-manager sync: unexpected error: ${e.message}`)
-    );
+    if (stopped || running) return;
+    running = true;
+    acquireOrRenewLock(client, holderId, ttlSeconds, logger)
+      .then((acquired) => {
+        if (stopped) {
+          // Shutdown raced this acquisition - don't leave the lock held by
+          // a process that's already on its way out.
+          if (acquired) {
+            releaseLock(client, holderId, logger).catch(() => {});
+          }
+          return;
+        }
+        if (!acquired) {
+          if (holdingLock) {
+            logger.info('wazuh-alert-manager sync: lost the sync lock to another replica, pausing sync here');
+          }
+          holdingLock = false;
+          logger.debug('wazuh-alert-manager sync: another replica holds the sync lock, skipping this tick');
+          return;
+        }
+        holdingLock = true;
+        return runSyncOnce(client, config, logger, holderId, ttlSeconds);
+      })
+      .catch((e) => logger.error(`wazuh-alert-manager sync: unexpected error: ${e.message}`))
+      .finally(() => {
+        running = false;
+      });
   };
 
   tick();
@@ -125,5 +179,8 @@ export function startSyncJob(client: any, config: AlertManagerConfigType, logger
   return () => {
     stopped = true;
     clearInterval(timer);
+    if (holdingLock) {
+      releaseLock(client, holderId, logger).catch(() => {});
+    }
   };
 }
