@@ -81,6 +81,7 @@ export interface Case {
   updated_at?: string;
   closed_at?: string | null;
   history?: AuditEntry[];
+  ai_analysis?: AiAnalysis;
 }
 
 export interface AlertCounts {
@@ -90,10 +91,62 @@ export interface AlertCounts {
   total: number;
 }
 
+export type AttackGraphNodeType = 'host' | 'user' | 'technique';
+
+export interface AttackGraphNode {
+  id: string;
+  type: AttackGraphNodeType;
+  label: string;
+  alertCount: number;
+}
+
+export interface AttackGraphEdge {
+  source: string;
+  target: string;
+  alertId: string;
+  timestamp: string;
+  level: number;
+}
+
+export interface KillChainPhase {
+  tactic: string;
+  order: number;
+  alertCount: number;
+  techniques: string[];
+  firstSeen: string;
+  lastSeen: string;
+}
+
+export interface AttackGraphHop {
+  timestamp: string;
+  alertId: string;
+  host: string | null;
+  users: string[];
+  techniques: string[];
+  tactics: string[];
+  ruleDescription: string;
+  level: number;
+}
+
+export interface AttackGraph {
+  nodes: AttackGraphNode[];
+  edges: AttackGraphEdge[];
+  killChain: KillChainPhase[];
+  hops: AttackGraphHop[];
+}
+
 export interface SlaBreakdownEntry {
   label: string;
   met: number;
   breached: number;
+}
+
+export interface CaseMetrics {
+  totalCases: number;
+  statusBreakdown: { open: number; closed: number };
+  severityBreakdown: Record<CaseSeverity, number>;
+  meanTimeToCloseMinutes: number | null;
+  closedCount: number;
 }
 
 export interface ReportMetrics {
@@ -110,6 +163,7 @@ export interface ReportMetrics {
   slaCompliancePct: number | null;
   slaBreakdown: SlaBreakdownEntry[];
   slaPolicy: Array<{ minLevel: number; label: string; targetMinutes: number }>;
+  cases: CaseMetrics;
 }
 
 export interface FilterOptions {

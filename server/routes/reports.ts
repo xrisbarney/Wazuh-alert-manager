@@ -1,6 +1,6 @@
 import { schema } from '@osd/config-schema';
 import { IRouter } from '../../../../src/core/server';
-import { API_ROOT, ALERT_STATUS_INDEX } from '../../common';
+import { API_ROOT, ALERT_STATUS_INDEX, CASES_INDEX, CASE_SEVERITIES } from '../../common';
 
 // Simple level-based SLA policy: how quickly a closed alert should have
 // been resolved, by its rule severity level. Not configurable yet - if
@@ -92,6 +92,40 @@ export function defineReportRoutes(router: IRouter) {
         const slaTracked = slaBreakdown.reduce((sum, b) => sum + b.met + b.breached, 0);
         const slaMet = slaBreakdown.reduce((sum, b) => sum + b.met, 0);
 
+        // Cases opened in the same period, for the Reports tab's case
+        // section. Cases are typically far fewer than alerts, so no
+        // sampling cap here - a straight aggregation query is enough.
+        const caseSeverityBreakdown = Object.fromEntries(CASE_SEVERITIES.map((s) => [s, 0])) as Record<string, number>;
+        let totalCases = 0;
+        let openCases = 0;
+        let closedCases = 0;
+        const caseCloseMinutesList: number[] = [];
+
+        try {
+          const caseResult: any = await client.search({
+            index: CASES_INDEX,
+            body: {
+              size: 2000,
+              query: { range: { created_at: { gte: from, lte: to } } },
+              _source: ['status', 'severity', 'created_at', 'closed_at'],
+            },
+          });
+          const caseHits = caseResult.body.hits.hits;
+          totalCases = caseResult.body.hits.total?.value ?? caseHits.length;
+          for (const hit of caseHits) {
+            const src = hit._source;
+            if (src.status === 'open') openCases += 1;
+            else if (src.status === 'closed') closedCases += 1;
+            if (src.severity in caseSeverityBreakdown) caseSeverityBreakdown[src.severity] += 1;
+            if (src.status === 'closed' && src.closed_at) {
+              const minutes = (new Date(src.closed_at).getTime() - new Date(src.created_at).getTime()) / 60000;
+              if (minutes >= 0) caseCloseMinutesList.push(minutes);
+            }
+          }
+        } catch (e) {
+          // non-fatal - the alert metrics above are still useful on their own
+        }
+
         return response.ok({
           body: {
             from,
@@ -107,6 +141,13 @@ export function defineReportRoutes(router: IRouter) {
             slaCompliancePct: slaTracked ? (slaMet / slaTracked) * 100 : null,
             slaBreakdown,
             slaPolicy: SLA_POLICY,
+            cases: {
+              totalCases,
+              statusBreakdown: { open: openCases, closed: closedCases },
+              severityBreakdown: caseSeverityBreakdown,
+              meanTimeToCloseMinutes: average(caseCloseMinutesList),
+              closedCount: caseCloseMinutesList.length,
+            },
           },
         });
       } catch (e: any) {

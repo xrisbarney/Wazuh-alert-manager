@@ -1,8 +1,60 @@
 import { schema } from '@osd/config-schema';
 import { IRouter } from '../../../../src/core/server';
-import { API_ROOT, ALERT_STATUS_INDEX, ALERT_STATUSES } from '../../common';
+import { API_ROOT, ALERT_STATUS_INDEX, CASES_INDEX, ALERT_STATUSES } from '../../common';
 import { getCurrentUsername } from '../lib/opensearch';
 import { APPEND_HISTORY_SCRIPT_SOURCE, buildHistoryEntry } from '../lib/history';
+
+/**
+ * Keeps a case's own `alert_ids` array in sync when alerts are linked to
+ * (or unlinked from) a case from the *alert* side (bulk-update caseId) -
+ * the case side (cases.ts addAlertIds/removeAlertIds) already updates the
+ * case doc directly, but linking from an alert only ever touched the
+ * alert's own case_id field until this, which meant the case's linked-
+ * alerts list silently didn't include alerts linked that way.
+ */
+async function syncCaseAlertIds(client: any, alertIds: string[], newCaseId: string | null) {
+  const mgetRes: any = await client.mget({ index: ALERT_STATUS_INDEX, body: { ids: alertIds } });
+  const oldCaseIdByAlert = new Map<string, string | null>();
+  for (const doc of mgetRes.body.docs) {
+    if (doc.found) oldCaseIdByAlert.set(doc._id, doc._source.case_id ?? null);
+  }
+
+  const idsByOldCase = new Map<string, string[]>();
+  for (const [alertId, oldCaseId] of oldCaseIdByAlert) {
+    if (oldCaseId && oldCaseId !== newCaseId) {
+      const list = idsByOldCase.get(oldCaseId) || [];
+      list.push(alertId);
+      idsByOldCase.set(oldCaseId, list);
+    }
+  }
+
+  const body: any[] = [];
+  for (const [oldCaseId, idsToRemove] of idsByOldCase) {
+    body.push({ update: { _index: CASES_INDEX, _id: oldCaseId } });
+    body.push({
+      script: {
+        lang: 'painless',
+        source: 'if (ctx._source.alert_ids != null) { ctx._source.alert_ids.removeIf(v -> params.ids.contains(v)); }',
+        params: { ids: idsToRemove },
+      },
+    });
+  }
+
+  if (newCaseId) {
+    body.push({ update: { _index: CASES_INDEX, _id: newCaseId } });
+    body.push({
+      script: {
+        lang: 'painless',
+        source:
+          'if (ctx._source.alert_ids == null) { ctx._source.alert_ids = []; } ' +
+          'for (id in params.ids) { if (!ctx._source.alert_ids.contains(id)) { ctx._source.alert_ids.add(id); } }',
+        params: { ids: alertIds },
+      },
+    });
+  }
+
+  if (body.length) await client.bulk({ body });
+}
 
 const filterQuerySchema = schema.object({
   statuses: schema.maybe(schema.string()), // csv
@@ -188,6 +240,10 @@ export function defineAlertRoutes(router: IRouter) {
       }
 
       try {
+        if (caseId !== undefined) {
+          await syncCaseAlertIds(client, ids, caseId);
+        }
+
         const result: any = await client.bulk({ body });
         const failed = (result.body.items || []).filter((i: any) => i.update?.error);
         if (failed.length) {

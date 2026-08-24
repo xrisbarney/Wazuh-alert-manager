@@ -7,6 +7,7 @@ import { defineFilterRoutes } from './filters';
 import { defineAiRoutes } from './ai';
 import { defineUserRoutes } from './users';
 import { defineReportRoutes } from './reports';
+import { defineAttackPathRoutes } from './attack_path';
 
 export function defineRoutes(router: IRouter) {
   router.get(
@@ -26,4 +27,5 @@ export function defineRoutes(router: IRouter) {
   defineAiRoutes(router);
   defineUserRoutes(router);
   defineReportRoutes(router);
+  defineAttackPathRoutes(router);
 }

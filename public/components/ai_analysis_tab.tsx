@@ -1,16 +1,33 @@
 import React, { useState, useEffect } from 'react';
 import { EuiButton, EuiText, EuiSpacer, EuiPanel, EuiLoadingSpinner, EuiCallOut } from '@elastic/eui';
-import { Alert } from '../../common';
+import { AiAnalysis } from '../../common';
 import { AlertsApiService } from '../services/api';
 
 interface Props {
-  alert: Alert;
+  analysis?: AiAnalysis;
   apiService: AlertsApiService;
-  onAnalysisGenerated: (alertId: string, analysis: NonNullable<Alert['_source']['ai_analysis']>) => void;
+  onGenerate: () => Promise<AiAnalysis>;
+  onGenerated: (analysis: AiAnalysis) => void;
   onError: (message: string) => void;
+  onToast?: (title: string, color: 'success' | 'danger' | 'primary', text?: string) => void;
+  emptyMessage?: string;
 }
 
-export const AiAnalysisTab: React.FC<Props> = ({ alert, apiService, onAnalysisGenerated, onError }) => {
+/**
+ * Generic AI-analysis panel: fetch/generate/display, with no knowledge of
+ * whether it's summarizing an alert or a case - that's decided by the
+ * caller's onGenerate function. See AlertFlyout / CaseFlyout for the two
+ * concrete wirings.
+ */
+export const AiAnalysisTab: React.FC<Props> = ({
+  analysis,
+  apiService,
+  onGenerate,
+  onGenerated,
+  onError,
+  onToast,
+  emptyMessage = 'No AI analysis generated yet.',
+}) => {
   const [aiEnabled, setAiEnabled] = useState<boolean | null>(null);
   const [generating, setGenerating] = useState(false);
 
@@ -24,16 +41,15 @@ export const AiAnalysisTab: React.FC<Props> = ({ alert, apiService, onAnalysisGe
   const generate = async () => {
     try {
       setGenerating(true);
-      const analysis: any = await apiService.analyzeAlert(alert._id);
-      onAnalysisGenerated(alert._id, analysis);
+      const result = await onGenerate();
+      onGenerated(result);
+      onToast?.('AI analysis generated', 'success');
     } catch (e: any) {
       onError(e?.body?.message || 'Failed to generate AI analysis');
     } finally {
       setGenerating(false);
     }
   };
-
-  const analysis = alert._source.ai_analysis;
 
   if (aiEnabled === null) {
     return <EuiLoadingSpinner size="m" />;
@@ -62,7 +78,7 @@ export const AiAnalysisTab: React.FC<Props> = ({ alert, apiService, onAnalysisGe
         </EuiPanel>
       ) : (
         <EuiText size="s" color="subdued">
-          No AI analysis generated yet for this alert.
+          {emptyMessage}
         </EuiText>
       )}
 

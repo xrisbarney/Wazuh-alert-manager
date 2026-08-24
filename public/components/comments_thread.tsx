@@ -7,9 +7,10 @@ interface Props {
   apiService: AlertsApiService;
   target: { alertId?: string; caseId?: string };
   onError: (message: string) => void;
+  onToast?: (title: string, color: 'success' | 'danger' | 'primary', text?: string) => void;
 }
 
-export const CommentsThread: React.FC<Props> = ({ apiService, target, onError }) => {
+export const CommentsThread: React.FC<Props> = ({ apiService, target, onError, onToast }) => {
   const [comments, setComments] = useState<Comment[]>([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState('');
@@ -38,6 +39,7 @@ export const CommentsThread: React.FC<Props> = ({ apiService, target, onError })
       await apiService.addComment(target, draft.trim());
       setDraft('');
       await load();
+      onToast?.('Comment added', 'success');
     } catch (e) {
       onError('Failed to add comment');
     } finally {

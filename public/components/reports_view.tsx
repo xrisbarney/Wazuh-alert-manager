@@ -213,6 +213,59 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
               ]}
             />
           )}
+
+          <EuiSpacer size="l" />
+          <EuiHorizontalRule margin="none" />
+          <EuiSpacer size="m" />
+
+          <EuiTitle size="xs">
+            <h3>Cases</h3>
+          </EuiTitle>
+          <EuiText size="xs" color="subdued">
+            Cases created in this period
+          </EuiText>
+          <EuiSpacer size="s" />
+
+          <EuiFlexGroup gutterSize="m" wrap>
+            <EuiFlexItem style={{ minWidth: 160 }}>
+              <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+                <EuiStat title={metrics.cases.totalCases.toLocaleString()} description="Cases created" />
+              </EuiPanel>
+            </EuiFlexItem>
+            <EuiFlexItem style={{ minWidth: 160 }}>
+              <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+                <EuiStat title={metrics.cases.statusBreakdown.open} description="Open" titleColor="danger" />
+              </EuiPanel>
+            </EuiFlexItem>
+            <EuiFlexItem style={{ minWidth: 160 }}>
+              <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+                <EuiStat title={metrics.cases.statusBreakdown.closed} description="Closed" titleColor="success" />
+              </EuiPanel>
+            </EuiFlexItem>
+            <EuiFlexItem style={{ minWidth: 200 }}>
+              <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+                <EuiStat title={formatMinutes(metrics.cases.meanTimeToCloseMinutes)} description="Mean time to close" titleSize="m" />
+                <EuiText size="xs" color="subdued">
+                  Based on {metrics.cases.closedCount.toLocaleString()} closed case{metrics.cases.closedCount === 1 ? '' : 's'}
+                </EuiText>
+              </EuiPanel>
+            </EuiFlexItem>
+          </EuiFlexGroup>
+
+          <EuiSpacer size="m" />
+          {metrics.cases.totalCases === 0 ? (
+            <EuiText size="s" color="subdued">
+              No cases created in this period.
+            </EuiText>
+          ) : (
+            <EuiBasicTable
+              items={Object.entries(metrics.cases.severityBreakdown).map(([severity, count]) => ({ severity, count }))}
+              columns={[
+                { field: 'severity', name: 'Severity' },
+                { field: 'count', name: 'Cases' },
+              ]}
+            />
+          )}
         </>
       )}
     </div>

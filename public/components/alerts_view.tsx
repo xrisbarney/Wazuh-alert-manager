@@ -241,6 +241,39 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     }
   };
 
+  const updateAlertCase = async (alertId: string, caseId: string | null) => {
+    try {
+      setUpdating(alertId);
+      await apiService.bulkUpdateAlerts([alertId], { caseId });
+      setAlerts((prev) => prev.map((a) => (a._id === alertId ? { ...a, _source: { ...a._source, case_id: caseId } } : a)));
+      if (selectedAlert?._id === alertId) {
+        setSelectedAlert({ ...selectedAlert, _source: { ...selectedAlert._source, case_id: caseId } });
+      }
+      onToast(caseId ? 'Linked to case' : 'Removed from case', 'success');
+    } catch (e: any) {
+      onToast('Failed to update case link', 'danger', e?.body?.message || e.message);
+    } finally {
+      setUpdating(null);
+    }
+  };
+
+  const bulkAddToCase = async (caseId: string | null) => {
+    if (!caseId) return;
+    try {
+      setBulkBusy(true);
+      await apiService.bulkUpdateAlerts(selectedIds.map((a) => a._id), { caseId });
+      onToast(`Added ${selectedIds.length} alert(s) to case`, 'success');
+      setSelectedIds([]);
+      tableRef.current?.setSelection([]);
+      fetchAlerts();
+      onOpenCase(caseId);
+    } catch (e: any) {
+      onToast('Failed to add to case', 'danger', e?.body?.message || e.message);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const createCaseFromSelection = async (payload: { title: string; description: string; severity: any; assignedTo?: string | null }) => {
     try {
       setBulkBusy(true);
@@ -354,6 +387,7 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
         selectedCount={selectedIds.length}
         onSetStatus={bulkSetStatus}
         onAssign={bulkAssign}
+        onAddToCase={bulkAddToCase}
         onCreateCase={() => setShowCreateCase(true)}
         onClear={() => {
           setSelectedIds([]);
@@ -393,7 +427,9 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
           onClose={() => setSelectedAlert(null)}
           onStatusChange={(status) => updateAlertStatus(selectedAlert._id, status as AlertStatus)}
           onAssigneeChange={(assignee) => updateAlertAssignee(selectedAlert._id, assignee)}
+          onCaseChange={(caseId) => updateAlertCase(selectedAlert._id, caseId)}
           onError={(msg) => onToast('Error', 'danger', msg)}
+          onToast={onToast}
           onOpenCase={onOpenCase}
           onOpenAlert={(a) => openAlertById(a._id)}
           onAnalysisGenerated={(alertId, analysis) => {

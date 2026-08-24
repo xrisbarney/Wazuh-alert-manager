@@ -3,6 +3,7 @@ import { EuiFlexGroup, EuiFlexItem, EuiText, EuiButton, EuiPopover, EuiContextMe
 import { AlertStatus } from '../../common';
 import { STATUS_OPTIONS } from './status_badge';
 import { AssigneePicker } from './assignee_picker';
+import { CasePicker } from './case_picker';
 import { AlertsApiService } from '../services/api';
 
 interface Props {
@@ -10,15 +11,27 @@ interface Props {
   selectedCount: number;
   onSetStatus: (status: AlertStatus) => void;
   onAssign: (assignee: string | null) => void;
+  onAddToCase: (caseId: string | null) => void;
   onCreateCase: () => void;
   onClear: () => void;
   busy: boolean;
 }
 
-export const BulkActionsBar: React.FC<Props> = ({ apiService, selectedCount, onSetStatus, onAssign, onCreateCase, onClear, busy }) => {
+export const BulkActionsBar: React.FC<Props> = ({
+  apiService,
+  selectedCount,
+  onSetStatus,
+  onAssign,
+  onAddToCase,
+  onCreateCase,
+  onClear,
+  busy,
+}) => {
   const [isStatusMenuOpen, setIsStatusMenuOpen] = useState(false);
   const [isAssignPopoverOpen, setIsAssignPopoverOpen] = useState(false);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
+  const [isCasePopoverOpen, setIsCasePopoverOpen] = useState(false);
+  const [pendingCaseId, setPendingCaseId] = useState<string | null>(null);
 
   if (selectedCount === 0) return null;
 
@@ -100,6 +113,35 @@ export const BulkActionsBar: React.FC<Props> = ({ apiService, selectedCount, onS
                 </EuiButton>
               </EuiFlexItem>
             </EuiFlexGroup>
+          </div>
+        </EuiPopover>
+      </EuiFlexItem>
+      <EuiFlexItem grow={false}>
+        <EuiPopover
+          button={
+            <EuiButton size="s" iconType="link" iconSide="right" onClick={() => setIsCasePopoverOpen((v) => !v)} isLoading={busy}>
+              Add to case
+            </EuiButton>
+          }
+          isOpen={isCasePopoverOpen}
+          closePopover={() => setIsCasePopoverOpen(false)}
+          panelPaddingSize="m"
+        >
+          <div style={{ width: 300 }}>
+            <CasePicker apiService={apiService} value={pendingCaseId} onChange={setPendingCaseId} fullWidth />
+            <EuiSpacer size="s" />
+            <EuiButton
+              size="s"
+              fullWidth
+              isDisabled={!pendingCaseId}
+              onClick={() => {
+                onAddToCase(pendingCaseId);
+                setPendingCaseId(null);
+                setIsCasePopoverOpen(false);
+              }}
+            >
+              Add selected alerts to this case
+            </EuiButton>
           </div>
         </EuiPopover>
       </EuiFlexItem>
