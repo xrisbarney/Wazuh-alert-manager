@@ -446,7 +446,7 @@ Roughly in priority order:
   metrics on a schedule, rather than only viewing them live.
 
 None of these are started - this section exists so the project's
-direction is visible in the repo itself, not just in conversation history.
+direction is visible in the repo itself.
 
 ---
 
