@@ -1,16 +1,10 @@
 {
-  "name": "wazuh-alert-manager",
-  "version": "1.0.0",
-  "description": "Wazuh Alert Status Management Plugin",
-  "main": "index.js",
-  "opensearchDashboards": {
-    "version": "dashboards-compatibility",
-    "templateVersion": "1.0.0"
-  },
-  "license": "Apache-2.0",
-  "dependencies": {
-    "@elastic/eui": "^54.1.0",
-    "react": "^17.0.2",
-    "react-dom": "^17.0.2"
+  "name": "wazuhAlertManager",
+  "version": "1.2.0",
+  "private": true,
+  "scripts": {
+    "build": "yarn plugin-helpers build",
+    "plugin-helpers": "../../scripts/use_node ../../scripts/plugin_helpers",
+    "osd": "../../scripts/use_node ../../scripts/osd"
   }
 }

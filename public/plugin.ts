@@ -1,7 +1,7 @@
 import { CoreSetup, CoreStart, Plugin, AppMountParameters } from '../../../src/core/public';
 import { DataPublicPluginSetup, DataPublicPluginStart } from '../../../src/plugins/data/public';
 import { WazuhAlertManagerPluginSetup, WazuhAlertManagerPluginStart } from './types';
-import { PLUGIN_NAME } from '../common';
+import { PLUGIN_NAME, PLUGIN_ID } from '../common';
 
 interface WazuhAlertManagerPluginSetupDeps {
   data: DataPublicPluginSetup;
@@ -26,6 +26,8 @@ export class WazuhAlertManagerPlugin
     core.application.register({
       id: PLUGIN_NAME,
       title: 'Wazuh Alert Manager',
+      icon: core.http.basePath.prepend(`/plugins/${PLUGIN_ID}/assets/logo.svg`),
+      order: 9010,
       async mount(params: AppMountParameters) {
         // Load application bundle
         const { renderApp } = await import('./application');
