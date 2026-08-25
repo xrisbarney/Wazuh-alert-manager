@@ -11,10 +11,12 @@ import {
   EuiPopover,
   EuiText,
   EuiSpacer,
-  EuiFieldSearch,
+  EuiTextArea,
   EuiSwitch,
   EuiDatePickerRange,
   EuiDatePicker,
+  EuiFilterGroup,
+  EuiFilterButton,
 } from '@elastic/eui';
 import moment from 'moment';
 import { FilterOptions, AlertStatus } from '../../common';
@@ -92,22 +94,34 @@ export const FilterBar: React.FC<Props> = ({
 
   return (
     <>
-      <EuiFlexGroup gutterSize="s" wrap alignItems="flexStart">
-        <EuiFlexItem style={{ minWidth: 220 }}>
+      <EuiFlexGroup gutterSize="s" wrap alignItems="flexEnd">
+        <EuiFlexItem grow={false}>
           <EuiFormRow label="Status" display="rowCompressed">
-            <EuiComboBox
-              placeholder="All statuses"
-              options={statusOptions}
-              selectedOptions={filters.statuses.map((s) => statusOptions.find((o) => o.value === s)!).filter(Boolean)}
-              onChange={(selected) =>
-                onChange({ ...filters, statuses: selected.map((s) => s.value as AlertStatus) })
-              }
-              compressed
-            />
+            <EuiFilterGroup compressed>
+              {statusOptions.map((o) => {
+                const active = filters.statuses.includes(o.value as AlertStatus);
+                return (
+                  <EuiFilterButton
+                    key={o.value}
+                    hasActiveFilters={active}
+                    onClick={() =>
+                      onChange({
+                        ...filters,
+                        statuses: active
+                          ? filters.statuses.filter((s) => s !== o.value)
+                          : [...filters.statuses, o.value as AlertStatus],
+                      })
+                    }
+                  >
+                    {o.label}
+                  </EuiFilterButton>
+                );
+              })}
+            </EuiFilterGroup>
           </EuiFormRow>
         </EuiFlexItem>
 
-        <EuiFlexItem style={{ minWidth: 150 }}>
+        <EuiFlexItem style={{ minWidth: 90 }}>
           <EuiFormRow label="Level min" display="rowCompressed">
             <EuiFieldNumber
               compressed
@@ -118,7 +132,7 @@ export const FilterBar: React.FC<Props> = ({
             />
           </EuiFormRow>
         </EuiFlexItem>
-        <EuiFlexItem style={{ minWidth: 150 }}>
+        <EuiFlexItem style={{ minWidth: 90 }}>
           <EuiFormRow label="Level max" display="rowCompressed">
             <EuiFieldNumber
               compressed
@@ -130,7 +144,7 @@ export const FilterBar: React.FC<Props> = ({
           </EuiFormRow>
         </EuiFlexItem>
 
-        <EuiFlexItem style={{ minWidth: 220 }}>
+        <EuiFlexItem style={{ minWidth: 150 }}>
           <EuiFormRow label="Rule ID" display="rowCompressed">
             <EuiComboBox
               placeholder="Any rule"
@@ -143,7 +157,7 @@ export const FilterBar: React.FC<Props> = ({
           </EuiFormRow>
         </EuiFlexItem>
 
-        <EuiFlexItem style={{ minWidth: 220 }}>
+        <EuiFlexItem style={{ minWidth: 150 }}>
           <EuiFormRow label="Agent" display="rowCompressed">
             <EuiComboBox
               placeholder="Any agent"
@@ -156,7 +170,7 @@ export const FilterBar: React.FC<Props> = ({
           </EuiFormRow>
         </EuiFlexItem>
 
-        <EuiFlexItem style={{ minWidth: 220 }}>
+        <EuiFlexItem style={{ minWidth: 150 }}>
           <EuiFormRow label="Alert Type" display="rowCompressed">
             <EuiComboBox
               placeholder="Any type"
@@ -168,7 +182,7 @@ export const FilterBar: React.FC<Props> = ({
           </EuiFormRow>
         </EuiFlexItem>
 
-        <EuiFlexItem style={{ minWidth: 220 }}>
+        <EuiFlexItem style={{ minWidth: 150 }}>
           <EuiFormRow label="Assigned to" display="rowCompressed">
             <EuiComboBox
               placeholder="Anyone"
@@ -180,9 +194,12 @@ export const FilterBar: React.FC<Props> = ({
             />
           </EuiFormRow>
         </EuiFlexItem>
+      </EuiFlexGroup>
 
+      <EuiSpacer size="s" />
+
+      <EuiFlexGroup gutterSize="s" alignItems="center" justifyContent="flexEnd" responsive={false} wrap>
         <EuiFlexItem grow={false}>
-          <EuiFormRow label="&nbsp;" display="rowCompressed">
             <EuiPopover
               button={
                 <EuiButton size="s" iconType="arrowDown" iconSide="right" onClick={() => setIsTimePopoverOpen((v) => !v)}>
@@ -239,21 +256,16 @@ export const FilterBar: React.FC<Props> = ({
                 </EuiButton>
               </div>
             </EuiPopover>
-          </EuiFormRow>
         </EuiFlexItem>
 
         <EuiFlexItem grow={false}>
-          <EuiFormRow label="&nbsp;" display="rowCompressed">
-            <EuiButton onClick={onApply} isLoading={loading} iconType="search">
+            <EuiButton size="s" fill onClick={onApply} isLoading={loading} iconType="search">
               Apply
             </EuiButton>
-          </EuiFormRow>
         </EuiFlexItem>
 
         <EuiFlexItem grow={false}>
-          <EuiFormRow label="&nbsp;" display="rowCompressed">
             <EuiSwitch label="Auto refresh (5 min)" checked={autoRefreshEnabled} onChange={onToggleAutoRefresh} compressed />
-          </EuiFormRow>
         </EuiFlexItem>
       </EuiFlexGroup>
 
@@ -262,14 +274,18 @@ export const FilterBar: React.FC<Props> = ({
         Advanced query (Lucene)
       </EuiButtonEmpty>
       {advancedOpen && (
-        <EuiFormRow display="rowCompressed" helpText="Optional. Combined with the filters above using AND.">
-          <EuiFieldSearch
+        <EuiFormRow
+          fullWidth
+          display="rowCompressed"
+          helpText="Optional Lucene query, combined with the filters above using AND. Press Apply to run it."
+        >
+          <EuiTextArea
+            fullWidth
+            rows={3}
             placeholder="e.g. rule.description:*ssh* AND NOT agent.name:server1"
             value={filters.q}
             onChange={(e) => onChange({ ...filters, q: e.target.value })}
-            onSearch={onApply}
-            isClearable
-            compressed
+            resize="vertical"
           />
         </EuiFormRow>
       )}

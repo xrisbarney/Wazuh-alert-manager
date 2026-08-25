@@ -72,6 +72,15 @@ export interface AttackGraph {
  * in what order," which is most of the analytical work of tracing an
  * incident by hand.
  */
+// Wazuh fields that are logically multi-valued (MITRE ids, techniques, tactics)
+// are emitted as an array by most decoders but as a bare scalar by some. Calling
+// .map/.forEach on the scalar form throws and 500s the whole graph route, so
+// every opportunistic multi-valued field is coerced through this first.
+function asArray<T>(v: T | T[] | null | undefined): T[] {
+  if (v == null) return [];
+  return Array.isArray(v) ? v.filter((x) => x != null) : [v];
+}
+
 export function buildAttackGraph(alerts: Array<{ _id: string; _source: any }>): AttackGraph {
   const nodes = new Map<string, AttackGraphNode>();
   const edges: AttackGraphEdge[] = [];
@@ -92,12 +101,15 @@ export function buildAttackGraph(alerts: Array<{ _id: string; _source: any }>): 
     const timestamp = src['@timestamp'];
     const level = src.rule?.level || 0;
 
+    // src.data can be an object OR (for some decoders) a plain string; reading
+    // .srcuser off a string is safely undefined, and asArray tolerates scalars.
+    const data = src.data && typeof src.data === 'object' ? src.data : {};
     const hostId = src.agent?.name ? `host:${src.agent.name}` : null;
-    const userNames: string[] = [src.data?.srcuser, src.data?.dstuser].filter(Boolean);
+    const userNames: string[] = [...asArray<string>(data.srcuser), ...asArray<string>(data.dstuser)].filter(Boolean);
     const userIds = userNames.map((u) => `user:${u}`);
-    const techniqueIds: string[] = src.rule?.mitre?.id || [];
-    const techniqueLabels: string[] = src.rule?.mitre?.technique || [];
-    const tactics: string[] = src.rule?.mitre?.tactic || [];
+    const techniqueIds: string[] = asArray<string>(src.rule?.mitre?.id);
+    const techniqueLabels: string[] = asArray<string>(src.rule?.mitre?.technique);
+    const tactics: string[] = asArray<string>(src.rule?.mitre?.tactic);
 
     if (hostId) touch(hostId, 'host', src.agent.name);
     userIds.forEach((id, i) => touch(id, 'user', userNames[i]));

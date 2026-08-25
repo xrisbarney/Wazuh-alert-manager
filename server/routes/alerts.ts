@@ -282,6 +282,59 @@ export function defineAlertRoutes(router: IRouter) {
     }
   );
 
+  // Precedent: how this same rule has been handled on this host before, so an
+  // analyst can see "we've seen this 47 times and closed 44" before spending
+  // time. Deterministic, no LLM. Aggregation over already-mapped keyword fields.
+  router.get(
+    {
+      path: `${API_ROOT}/alerts/{id}/precedent`,
+      validate: { params: schema.object({ id: schema.string() }) },
+    },
+    async (context, request, response) => {
+      const { id } = request.params as any;
+      try {
+        const client = context.core.opensearch.client.asCurrentUser;
+        const alertRes: any = await client.get({ index: ALERT_STATUS_INDEX, id });
+        const src = alertRes.body._source;
+        const ruleId = src.rule?.id != null ? String(src.rule.id) : null;
+        const agentName = src.agent?.name || null;
+        if (!ruleId) {
+          return response.ok({ body: { ruleId: null, agentName, total: 0, byStatus: {}, escalatedToCase: 0 } });
+        }
+        const must: any[] = [{ term: { 'rule.id': ruleId } }];
+        if (agentName) must.push({ term: { 'agent.name': agentName } });
+        const aggRes: any = await client.search({
+          index: ALERT_STATUS_INDEX,
+          body: {
+            size: 0,
+            track_total_hits: true,
+            query: { bool: { must } },
+            aggs: {
+              by_status: { terms: { field: 'status', size: 5 } },
+              escalated: { filter: { exists: { field: 'case_id' } } },
+            },
+          },
+        });
+        const byStatus: Record<string, number> = { open: 0, in_progress: 0, closed: 0 };
+        for (const b of aggRes.body.aggregations?.by_status?.buckets || []) {
+          if (b.key in byStatus) byStatus[b.key] = b.doc_count;
+        }
+        return response.ok({
+          body: {
+            ruleId,
+            agentName,
+            ruleDescription: src.rule?.description || null,
+            total: aggRes.body.hits.total?.value ?? 0,
+            byStatus,
+            escalatedToCase: aggRes.body.aggregations?.escalated?.doc_count ?? 0,
+          },
+        });
+      } catch (e: any) {
+        return response.customError({ statusCode: e?.meta?.statusCode || 500, body: { message: e.message } });
+      }
+    }
+  );
+
   router.get(
     {
       path: `${API_ROOT}/alerts/{id}/related`,
@@ -299,6 +352,87 @@ export function defineAlertRoutes(router: IRouter) {
         const mgetRes: any = await client.mget({ index: ALERT_STATUS_INDEX, body: { ids: relatedIds } });
         const alerts = mgetRes.body.docs.filter((d: any) => d.found).map((d: any) => ({ _id: d._id, _source: d._source }));
         return response.ok({ body: { alerts } });
+      } catch (e: any) {
+        return response.customError({ statusCode: e?.meta?.statusCode || 500, body: { message: e.message } });
+      }
+    }
+  );
+
+  // Suggested related alerts: other alerts that share an entity (host, source
+  // IP, source user, or rule) with this one, within a time window, ranked by how
+  // many entities they share and recency. Deterministic triage help — surfaces
+  // the alerts an analyst would otherwise search for by hand. Never mutates.
+  router.get(
+    {
+      path: `${API_ROOT}/alerts/{id}/suggested`,
+      validate: { params: schema.object({ id: schema.string() }) },
+    },
+    async (context, request, response) => {
+      const { id } = request.params as any;
+      try {
+        const client = context.core.opensearch.client.asCurrentUser;
+        const alertRes: any = await client.get({ index: ALERT_STATUS_INDEX, id });
+        const src = alertRes.body._source || {};
+        const already: string[] = src.related_alert_ids || [];
+
+        const isPlaceholder = (v: any) => {
+          const s = v == null ? '' : String(v);
+          return !s || s === '0.0.0.0' || s === '127.0.0.1' || s === '-' || s.toLowerCase() === 'localhost';
+        };
+        // Each shared entity contributes a should-clause and, if a candidate
+        // matches it, a weighted reason. Hosts/IPs/users are stronger signals
+        // than a shared rule id.
+        const facets: Array<{ field: string; value: any; weight: number; label: (v: string) => string }> = [
+          { field: 'agent.name', value: src.agent?.name, weight: 3, label: (v) => `same host ${v}` },
+          { field: 'data.srcip', value: src.data?.srcip, weight: 3, label: (v) => `same source IP ${v}` },
+          { field: 'data.srcuser', value: src.data?.srcuser, weight: 3, label: (v) => `same user ${v}` },
+          { field: 'rule.id', value: src.rule?.id, weight: 1, label: (v) => `same rule ${v}` },
+        ].filter((f) => !isPlaceholder(f.value));
+
+        if (facets.length === 0) {
+          return response.ok({ body: { alerts: [] } });
+        }
+
+        const ts = src['@timestamp'];
+        const tMs = ts ? Date.parse(ts) : Date.now();
+        const DAY = 86400000;
+        const shoulds = facets.map((f) => ({ term: { [f.field]: f.value } }));
+
+        const res: any = await client.search({
+          index: ALERT_STATUS_INDEX,
+          body: {
+            size: 60,
+            _source: ['@timestamp', 'agent', 'data.srcip', 'data.srcuser', 'rule', 'status', 'case_id', 'assigned_to'],
+            query: {
+              bool: {
+                must: [{ range: { '@timestamp': { gte: new Date(tMs - DAY).toISOString(), lte: new Date(tMs + DAY).toISOString() } } }],
+                should: shoulds,
+                minimum_should_match: 1,
+                must_not: [{ ids: { values: [id, ...already] } }],
+              },
+            },
+            sort: [{ '@timestamp': { order: 'desc' } }],
+          },
+        });
+
+        const scored = (res.body.hits.hits || []).map((h: any) => {
+          const hs = h._source || {};
+          const reasons: string[] = [];
+          let score = 0;
+          for (const f of facets) {
+            const hv = f.field === 'agent.name' ? hs.agent?.name : f.field === 'rule.id' ? hs.rule?.id : hs.data?.[f.field.split('.')[1]];
+            if (hv != null && String(hv) === String(f.value)) {
+              reasons.push(f.label(String(f.value)));
+              score += f.weight;
+            }
+          }
+          // Recency tiebreaker: closer in time ranks higher.
+          const proximity = 1 - Math.min(1, Math.abs(Date.parse(hs['@timestamp'] || '') - tMs) / DAY);
+          return { _id: h._id, _source: hs, reasons, score: score + proximity };
+        });
+        scored.sort((a: any, b: any) => b.score - a.score);
+
+        return response.ok({ body: { alerts: scored.slice(0, 8) } });
       } catch (e: any) {
         return response.customError({ statusCode: e?.meta?.statusCode || 500, body: { message: e.message } });
       }

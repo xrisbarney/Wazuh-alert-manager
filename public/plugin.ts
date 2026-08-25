@@ -3,14 +3,12 @@ import { DataPublicPluginSetup, DataPublicPluginStart } from '../../../src/plugi
 import { WazuhAlertManagerPluginSetup, WazuhAlertManagerPluginStart } from './types';
 import { PLUGIN_NAME } from '../common';
 
-// Inlined as a data URI (matching public/assets/logo.svg) rather than an
-// http.basePath.prepend()'d asset URL - Wazuh's custom side nav renders app
-// icons as a plain <img src>, and that failed to load the asset route in
-// practice (broken-image placeholder in the nav) even though the route
-// itself served the file correctly. A data URI needs no network round trip,
-// so it can't be affected by whatever that nav does with the src.
-const NAV_ICON =
-  'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIiIGhlaWdodD0iMzIiIHZpZXdCb3g9IjAgMCAzMiAzMiIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KICA8cGF0aCBkPSJNMTYgMiBMMjggNi41IFYxNSBDMjggMjIuNSAyMi44IDI3LjggMTYgMzAgQzkuMiAyNy44IDQgMjIuNSA0IDE1IFY2LjUgWiIKICAgICAgICBmaWxsPSIjMEI2NEREIi8+CiAgPHBhdGggZD0iTTE2IDIgTDI4IDYuNSBWMTUgQzI4IDIyLjUgMjIuOCAyNy44IDE2IDMwIFoiCiAgICAgICAgZmlsbD0iIzA3NEZCMyIvPgogIDxwYXRoIGQ9Ik0xNiA4LjUgTDE2IDE4IiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iMi42IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KICA8Y2lyY2xlIGN4PSIxNiIgY3k9IjIyLjUiIHI9IjEuOCIgZmlsbD0iI0ZGRkZGRiIvPgogIDxjaXJjbGUgY3g9IjI0IiBjeT0iOS41IiByPSIzLjIiIGZpbGw9IiNGNUE2MjMiLz4KPC9zdmc+Cg==';
+// The side nav renders `icon` (a URL) as a plain <img> but `euiIconType` as a
+// first-class EUI glyph. Both an asset URL and an inlined data URI showed a
+// broken-image placeholder there, so the nav entry uses euiIconType below -
+// a named glyph can't fail to load. Verified present in the EUI fork that
+// OSD 2.19.x ships (securityApp/watchesApp/reportingApp are NOT in it).
+const NAV_EUI_ICON = 'securitySignal';
 
 interface WazuhAlertManagerPluginSetupDeps {
   data: DataPublicPluginSetup;
@@ -31,19 +29,40 @@ export class WazuhAlertManagerPlugin
     core: CoreSetup<WazuhAlertManagerPluginStartDeps>,
     { data }: WazuhAlertManagerPluginSetupDeps
   ): WazuhAlertManagerPluginSetup {
-    // Register an application into the side navigation menu
-    core.application.register({
-      id: PLUGIN_NAME,
-      title: 'Wazuh Alert Manager',
-      icon: NAV_ICON,
+    // Register two apps under one collapsible category so the side nav shows
+    // "Wazuh Alert Manager" as a group with "Workbench" and "Reporting" children.
+    const category = {
+      // Sentence case to match the other dashboard plugins' nav entries.
+      id: 'wazuhAlertManager',
+      label: 'Wazuh alert manager',
       order: 9010,
+      euiIconType: NAV_EUI_ICON,
+    };
+
+    core.application.register({
+      // Keep the original id for the workbench so existing links still resolve.
+      id: PLUGIN_NAME,
+      title: 'Workbench',
+      category,
+      euiIconType: NAV_EUI_ICON,
+      order: 10,
       async mount(params: AppMountParameters) {
-        // Load application bundle
         const { renderApp } = await import('./application');
-        // Get start services as specified in opensearch_dashboards.json
         const [coreStart, pluginsStart] = await core.getStartServices();
-        // Render the application
-        return renderApp(coreStart, (pluginsStart as WazuhAlertManagerPluginStartDeps).data, params);
+        return renderApp(coreStart, (pluginsStart as WazuhAlertManagerPluginStartDeps).data, params, 'workbench');
+      },
+    });
+
+    core.application.register({
+      id: 'wazuhAlertManagerReporting',
+      title: 'Reporting',
+      category,
+      euiIconType: 'visBarVerticalStacked',
+      order: 20,
+      async mount(params: AppMountParameters) {
+        const { renderApp } = await import('./application');
+        const [coreStart, pluginsStart] = await core.getStartServices();
+        return renderApp(coreStart, (pluginsStart as WazuhAlertManagerPluginStartDeps).data, params, 'reporting');
       },
     });
 

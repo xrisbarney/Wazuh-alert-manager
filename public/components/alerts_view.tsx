@@ -6,20 +6,21 @@ import {
   EuiStat,
   EuiLoadingSpinner,
   EuiSpacer,
-  EuiHorizontalRule,
   EuiBasicTable,
   CriteriaWithPagination,
   EuiEmptyPrompt,
   EuiText,
-  EuiHealth,
+  EuiBadge,
+  EuiToolTip,
 } from '@elastic/eui';
 import { Alert, AlertStatus, AlertCounts, FilterOptions } from '../../common';
+import { formatAbsolute, formatRelative } from '../design';
 import { AlertsApiService, AlertFilterParams } from '../services/api';
 import { FilterBar, AlertFilterState } from './filter_bar';
 import { BulkActionsBar } from './bulk_actions_bar';
 import { CreateCaseModal } from './create_case_modal';
 import { AlertFlyout } from './alert_flyout';
-import { StatusBadge } from './status_badge';
+import { StatusBadge, SeverityBadge } from './status_badge';
 
 interface TimeRange {
   from: string;
@@ -52,9 +53,17 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
   const [showCreateCase, setShowCreateCase] = useState(false);
   const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
+  // Bumped whenever a committed query input changes that the table-driven
+  // effect does not otherwise watch (filters applied, time range changed).
+  // `filters` is live draft state synced on every keystroke, so the fetch
+  // effect must NOT depend on it directly - it keys on this counter instead,
+  // which only advances on an explicit commit. This is the single query trigger.
+  const [queryVersion, setQueryVersion] = useState(0);
 
   const [filters, setFilters] = useState<AlertFilterState>({
-    statuses: [],
+    // Default to the active work queue - open + in progress - so the analyst
+    // lands on what needs attention, not a wall of closed noise.
+    statuses: ['open', 'in_progress'],
     ruleIds: [],
     agentNames: [],
     alertTypes: [],
@@ -124,10 +133,16 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     fetchFilterOptions();
   }, [fetchFilterOptions]);
 
+  // Single fetch trigger: paging/sort (watched directly) or a committed
+  // query change (via queryVersion). React batches the state updates in a
+  // commit handler into one render, so this runs exactly once per commit -
+  // no double-fetch when Apply also resets the page, and a time-range change
+  // always refetches even when the page was already 0.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     fetchAlerts();
     fetchCounts();
-  }, [pageIndex, pageSize, sortField, sortDirection]);
+  }, [pageIndex, pageSize, sortField, sortDirection, queryVersion]);
 
   useEffect(() => {
     if (!autoRefreshEnabled) return;
@@ -158,8 +173,7 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
 
   const applyFilters = () => {
     setPageIndex(0);
-    fetchAlerts();
-    fetchCounts();
+    setQueryVersion((v) => v + 1);
   };
 
   const onTableChange = (criteria: CriteriaWithPagination<Alert>) => {
@@ -294,43 +308,64 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
   const columns = [
     {
       field: '_source.@timestamp',
-      name: 'Timestamp',
+      name: 'When',
+      width: '110px',
       sortable: true,
-      render: (value: string) => new Date(value).toLocaleString(),
+      render: (value: string) => (
+        <EuiToolTip content={formatAbsolute(value)}>
+          <span>{formatRelative(value)}</span>
+        </EuiToolTip>
+      ),
     },
-    { field: '_source', name: 'Agent', render: (v: Alert['_source']) => v.agent?.name || 'N/A' },
-    { field: '_source', name: 'Agent IP', render: (v: Alert['_source']) => v.agent?.ip || 'N/A' },
-    { field: '_source', name: 'Rule Description', render: (v: Alert['_source']) => v.rule?.description || 'N/A' },
+    { field: '_source', name: 'Agent', width: '150px', truncateText: true, render: (v: Alert['_source']) => v.agent?.name || '—' },
+    { field: '_source', name: 'Agent IP', width: '120px', truncateText: true, render: (v: Alert['_source']) => v.agent?.ip || '—' },
+    { field: '_source', name: 'Rule', truncateText: true, render: (v: Alert['_source']) => v.rule?.description || '—' },
     {
       field: '_source.rule.level',
-      name: 'Level',
+      name: 'Severity',
+      width: '120px',
       sortable: true,
-      render: (level: number) => {
-        const lvl = level || 0;
-        return <EuiHealth color={lvl >= 7 ? 'danger' : lvl >= 5 ? 'warning' : 'success'}>{lvl}</EuiHealth>;
-      },
+      render: (level: number) => <SeverityBadge level={level} />,
     },
-    { field: '_source', name: 'Status', render: (v: Alert['_source']) => <StatusBadge status={v.status} /> },
-    { field: '_source', name: 'Assigned to', render: (v: Alert['_source']) => v.assigned_to || <EuiText size="s" color="subdued">Unassigned</EuiText> },
-    { field: '_source', name: 'Case', render: (v: Alert['_source']) => (v.case_id ? v.case_id.slice(0, 8) : '-') },
+    {
+      field: '_source',
+      name: 'Status',
+      width: '130px',
+      render: (v: Alert['_source']) => <StatusBadge status={v.status} />,
+    },
+    {
+      field: '_source',
+      name: 'Assigned to',
+      render: (v: Alert['_source']) =>
+        v.assigned_to || (
+          <EuiText size="s" color="subdued">
+            Unassigned
+          </EuiText>
+        ),
+    },
+    {
+      field: '_source',
+      name: 'Case',
+      render: (v: Alert['_source']) =>
+        v.case_id ? (
+          <EuiBadge color="hollow">{v.case_id.slice(0, 8)}</EuiBadge>
+        ) : (
+          <EuiText size="s" color="subdued">
+            —
+          </EuiText>
+        ),
+    },
     {
       name: 'Actions',
+      width: '70px',
+      align: 'right',
       actions: [
         {
-          render: (alert: Alert) => (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }} onClick={(e) => e.stopPropagation()}>
-              <select
-                value={alert._source.status}
-                disabled={updating === alert._id}
-                onChange={(e) => updateAlertStatus(alert._id, e.target.value as AlertStatus)}
-              >
-                <option value="open">Open</option>
-                <option value="in_progress">In Progress</option>
-                <option value="closed">Closed</option>
-              </select>
-              {updating === alert._id && <EuiLoadingSpinner size="s" />}
-            </div>
-          ),
+          name: 'View',
+          description: 'View alert details',
+          type: 'icon',
+          icon: 'expand',
+          onClick: (alert: Alert) => setSelectedAlert(alert),
         },
       ],
     },
@@ -341,29 +376,27 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
       <EuiFlexGroup gutterSize="m">
         <EuiFlexItem>
           <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-            <EuiStat title={loadingCounts ? <EuiLoadingSpinner size="m" /> : counts.open} description="Open" titleColor="danger" />
+            <EuiStat titleSize="m" title={loadingCounts ? <EuiLoadingSpinner size="m" /> : counts.open} description="Open" titleColor="primary" />
           </EuiPanel>
         </EuiFlexItem>
         <EuiFlexItem>
           <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-            <EuiStat title={loadingCounts ? <EuiLoadingSpinner size="m" /> : counts.in_progress} description="In Progress" titleColor="warning" />
+            <EuiStat titleSize="m" title={loadingCounts ? <EuiLoadingSpinner size="m" /> : counts.in_progress} description="In progress" titleColor="accent" />
           </EuiPanel>
         </EuiFlexItem>
         <EuiFlexItem>
           <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-            <EuiStat title={loadingCounts ? <EuiLoadingSpinner size="m" /> : counts.closed} description="Closed" titleColor="success" />
+            <EuiStat titleSize="m" title={loadingCounts ? <EuiLoadingSpinner size="m" /> : counts.closed} description="Closed" titleColor="subdued" />
           </EuiPanel>
         </EuiFlexItem>
         <EuiFlexItem>
           <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-            <EuiStat title={loadingCounts ? <EuiLoadingSpinner size="m" /> : counts.total} description="Total" />
+            <EuiStat titleSize="m" title={loadingCounts ? <EuiLoadingSpinner size="m" /> : counts.total} description="Total" titleColor="default" />
           </EuiPanel>
         </EuiFlexItem>
       </EuiFlexGroup>
 
-      <EuiSpacer size="l" />
-      <EuiHorizontalRule />
-      <EuiSpacer size="l" />
+      <EuiSpacer size="m" />
 
       <FilterBar
         filters={filters}
@@ -372,6 +405,7 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
         onTimeRangeChange={(tr) => {
           setTimeRange(tr);
           setPageIndex(0);
+          setQueryVersion((v) => v + 1);
         }}
         filterOptions={filterOptions}
         onApply={applyFilters}
@@ -414,7 +448,19 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
             pagination={{ pageIndex, pageSize, totalItemCount: totalAlerts, pageSizeOptions: [10, 20, 50, 100] }}
             onChange={onTableChange}
             selection={{ selectable: () => true, onSelectionChange: setSelectedIds }}
-            rowProps={(alert) => ({ onClick: () => setSelectedAlert(alert), style: { cursor: 'pointer' } })}
+            rowProps={(alert) => ({
+              onClick: (e: React.MouseEvent) => {
+                // A row click opens the detail flyout, but the selection
+                // checkbox and the actions column live inside the row - clicking
+                // those must NOT open the flyout, or multi-select is unusable.
+                const el = e.target as HTMLElement;
+                if (el.closest('.euiTableRowCellCheckbox, .euiCheckbox, input, button, a, label')) {
+                  return;
+                }
+                setSelectedAlert(alert);
+              },
+              style: { cursor: 'pointer' },
+            })}
           />
         </>
       )}

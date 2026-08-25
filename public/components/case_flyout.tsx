@@ -9,7 +9,7 @@ import {
   EuiDescriptionListTitle,
   EuiDescriptionListDescription,
   EuiSpacer,
-  EuiSelect,
+  EuiButtonGroup,
   EuiLoadingSpinner,
   EuiBasicTable,
   EuiButtonIcon,
@@ -33,6 +33,7 @@ import {
 import { Alert, Case, AiAnalysis } from '../../common';
 import { AlertsApiService } from '../services/api';
 import { StatusBadge, CASE_SEVERITY_OPTIONS } from './status_badge';
+import { statusLabel, formatAbsolute } from '../design';
 import { CommentsThread } from './comments_thread';
 import { HistoryList } from './history_list';
 import { AssigneePicker } from './assignee_picker';
@@ -51,7 +52,11 @@ interface Props {
 }
 
 function describeCaseUpdate(payload: Record<string, any>): string {
-  if (payload.status != null) return payload.status === 'closed' ? 'Case closed' : 'Case reopened';
+  if (payload.status != null) {
+    if (payload.status === 'closed') return 'Case closed';
+    if (payload.status === 'open') return 'Case reopened';
+    return `Case set to ${statusLabel(payload.status)}`;
+  }
   if (payload.assignedTo !== undefined) return payload.assignedTo ? `Assigned to ${payload.assignedTo}` : 'Unassigned';
   if (payload.addAlertIds?.length) return 'Alert added to case';
   if (payload.removeAlertIds?.length) return 'Alert removed from case';
@@ -92,14 +97,25 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
     try {
       setBusy(true);
       const updated: any = await apiService.updateCase(caseId, payload);
-      setCaseDoc(updated);
+      // The PUT response is the authoritative new case doc - apply it directly
+      // rather than reloading over it. Only a change to the linked-alert SET
+      // needs a reload, because updateCase does not return the expanded alerts
+      // array that the Linked Alerts tab renders. A plain field edit does not,
+      // so we skip the refetch and avoid the flyout-wide flicker.
+      const alertsChanged = Boolean(payload.addAlertIds?.length || payload.removeAlertIds?.length);
+      if (!alertsChanged) {
+        setCaseDoc(updated);
+      }
       onChanged();
       onToast?.(describeCaseUpdate(payload), 'success');
+      if (alertsChanged) {
+        await load();
+      }
     } catch (e) {
       onError('Failed to update case');
+      await load();
     } finally {
       setBusy(false);
-      load();
     }
   };
 
@@ -189,13 +205,13 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
                     </EuiDescriptionListDescription>
                     <EuiDescriptionListTitle>Created</EuiDescriptionListTitle>
                     <EuiDescriptionListDescription>
-                      {caseDoc.created_by} at {new Date(caseDoc.created_at).toLocaleString()}
+                      {caseDoc.created_by} at {formatAbsolute(caseDoc.created_at)}
                     </EuiDescriptionListDescription>
                     {caseDoc.updated_by && (
                       <>
                         <EuiDescriptionListTitle>Last updated</EuiDescriptionListTitle>
                         <EuiDescriptionListDescription>
-                          {caseDoc.updated_by} at {new Date(caseDoc.updated_at!).toLocaleString()}
+                          {caseDoc.updated_by} at {formatAbsolute(caseDoc.updated_at)}
                         </EuiDescriptionListDescription>
                       </>
                     )}
@@ -213,26 +229,34 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
                   </EuiButton>
 
                   <EuiSpacer size="m" />
-                  <EuiFormRow label="Severity">
-                    <EuiSelect
-                      options={CASE_SEVERITY_OPTIONS}
-                      value={caseDoc.severity}
-                      onChange={(e) => update({ severity: e.target.value as Case['severity'] })}
-                      disabled={busy}
+                  <EuiFormRow label="Severity" display="rowCompressed">
+                    <EuiButtonGroup
+                      legend="Severity"
+                      buttonSize="compressed"
+                      options={CASE_SEVERITY_OPTIONS.map((o) => ({ id: o.value, label: o.text }))}
+                      idSelected={caseDoc.severity}
+                      onChange={(id) => update({ severity: id as Case['severity'] })}
+                      isDisabled={busy}
                     />
                   </EuiFormRow>
-                  <EuiFormRow label="Status">
-                    <EuiSelect
+                  <EuiSpacer size="s" />
+                  <EuiFormRow label="Status" display="rowCompressed">
+                    <EuiButtonGroup
+                      legend="Status"
+                      buttonSize="compressed"
+                      color="primary"
                       options={[
-                        { value: 'open', text: 'Open' },
-                        { value: 'closed', text: 'Closed' },
+                        { id: 'open', label: 'Open' },
+                        { id: 'in_progress', label: 'In progress' },
+                        { id: 'closed', label: 'Closed' },
                       ]}
-                      value={caseDoc.status}
-                      onChange={(e) => requestStatusChange(e.target.value as Case['status'])}
-                      disabled={busy}
+                      idSelected={caseDoc.status}
+                      onChange={(id) => requestStatusChange(id as Case['status'])}
+                      isDisabled={busy}
                     />
                   </EuiFormRow>
-                  <EuiFormRow label="Assigned to">
+                  <EuiSpacer size="s" />
+                  <EuiFormRow label="Assigned to" display="rowCompressed" fullWidth>
                     <AssigneePicker
                       apiService={apiService}
                       value={caseDoc.assigned_to}
@@ -255,10 +279,10 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
                       {
                         field: '_source',
                         name: 'Timestamp',
-                        render: (v: Alert['_source']) => new Date(v['@timestamp']).toLocaleString(),
+                        render: (v: Alert['_source']) => formatAbsolute(v['@timestamp']),
                       },
-                      { field: '_source', name: 'Rule', render: (v: Alert['_source']) => v.rule?.description || 'N/A' },
-                      { field: '_source', name: 'Agent', render: (v: Alert['_source']) => v.agent?.name || 'N/A' },
+                      { field: '_source', name: 'Rule', render: (v: Alert['_source']) => v.rule?.description || '—' },
+                      { field: '_source', name: 'Agent', render: (v: Alert['_source']) => v.agent?.name || '—' },
                       {
                         field: '_source',
                         name: 'Status',
@@ -301,7 +325,15 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
               content: (
                 <div>
                   <EuiSpacer size="m" />
-                  <AttackPathView caseId={caseId} apiService={apiService} onError={onError} />
+                  <AttackPathView
+                    caseId={caseId}
+                    apiService={apiService}
+                    onError={onError}
+                    onOpenAlert={(alertId) => {
+                      const a = alerts.find((x) => x._id === alertId);
+                      if (a) onOpenAlert?.(a);
+                    }}
+                  />
                 </div>
               ),
             },
