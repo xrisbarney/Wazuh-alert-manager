@@ -164,8 +164,18 @@ export async function runSyncOnce(
 
   // Escalate correlated bursts into cases. Wrapped so a rule-engine failure can
   // never break alert ingestion. Runs under the same lease held above (single
-  // writer). Note: alerts from THIS tick may not be search-refreshed yet, so a
-  // burst completing within one tick can fire on the next - an acceptable delay.
+  // writer). We must refresh the status index first: the burst evaluator counts
+  // this tick's alerts via search, and a burst that arrives entirely within one
+  // tick is only a candidate in THIS tick's evaluation (its alerts leave the
+  // next tick's window). Without a refresh those just-written docs are not yet
+  // searchable, so the count races the ~1s refresh interval and a burst can be
+  // silently missed. An explicit refresh makes single-tick burst detection
+  // deterministic.
+  try {
+    await client.indices.refresh({ index: ALERT_STATUS_INDEX });
+  } catch (e: any) {
+    logger.warn(`wazuh-alert-manager sync: status-index refresh before correlation failed: ${e.message}`);
+  }
   try {
     await evaluateCorrelationRules(client, hits, logger);
   } catch (e: any) {
