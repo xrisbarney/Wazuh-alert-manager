@@ -9,13 +9,12 @@ import {
   EuiDescriptionListTitle,
   EuiDescriptionListDescription,
   EuiSpacer,
-  EuiSelect,
-  EuiLoadingSpinner,
+  EuiFormRow,
   EuiCodeBlock,
   EuiAccordion,
   EuiPanel,
   EuiText,
-  EuiLink,
+  EuiButton,
   EuiFlexGroup,
   EuiFlexItem,
   EuiButtonIcon,
@@ -23,7 +22,10 @@ import {
 } from '@elastic/eui';
 import { Alert, AiAnalysis } from '../../common';
 import { AlertsApiService } from '../services/api';
-import { StatusBadge, STATUS_OPTIONS } from './status_badge';
+import { StatusBadge } from './status_badge';
+import { StatusButtonGroup } from './status_button_group';
+import { formatAbsolute } from '../design';
+import { PrecedentCallout } from './precedent_callout';
 import { CommentsThread } from './comments_thread';
 import { HistoryList } from './history_list';
 import { RelatedAlertsPanel } from './related_alerts_panel';
@@ -82,7 +84,7 @@ export const AlertFlyout: React.FC<Props> = ({
   const [isExpanded, setIsExpanded] = useState(false);
 
   return (
-    <EuiFlyout onClose={onClose} size={isExpanded ? '95vw' : 'm'} aria-labelledby="alert-details-flyout">
+    <EuiFlyout onClose={onClose} size={isExpanded ? '95vw' : '50vw'} aria-labelledby="alert-details-flyout">
       <EuiFlyoutHeader hasBorder>
         <EuiFlexGroup alignItems="center" gutterSize="s" responsive={false}>
           <EuiFlexItem>
@@ -111,12 +113,14 @@ export const AlertFlyout: React.FC<Props> = ({
               content: (
                 <div>
                   <EuiSpacer size="m" />
+                  <PrecedentCallout alertId={alert._id} apiService={apiService} />
+                  <EuiSpacer size="s" />
                   <EuiDescriptionList type="column" compressed>
                     <EuiDescriptionListTitle>Alert ID</EuiDescriptionListTitle>
                     <EuiDescriptionListDescription>{alert._id}</EuiDescriptionListDescription>
 
                     <EuiDescriptionListTitle>Timestamp</EuiDescriptionListTitle>
-                    <EuiDescriptionListDescription>{new Date(alert._source['@timestamp']).toLocaleString()}</EuiDescriptionListDescription>
+                    <EuiDescriptionListDescription>{formatAbsolute(alert._source['@timestamp'])}</EuiDescriptionListDescription>
 
                     <EuiDescriptionListTitle>Status</EuiDescriptionListTitle>
                     <EuiDescriptionListDescription>
@@ -140,7 +144,7 @@ export const AlertFlyout: React.FC<Props> = ({
                       <>
                         <EuiDescriptionListTitle>Last updated</EuiDescriptionListTitle>
                         <EuiDescriptionListDescription>
-                          {alert._source.updated_by} at {new Date(alert._source.updated_at!).toLocaleString()}
+                          {alert._source.updated_by} at {formatAbsolute(alert._source.updated_at)}
                         </EuiDescriptionListDescription>
                       </>
                     )}
@@ -148,33 +152,29 @@ export const AlertFlyout: React.FC<Props> = ({
 
                   <EuiSpacer size="l" />
 
-                  <EuiFlexGroup gutterSize="m" style={isExpanded ? { maxWidth: 600 } : undefined}>
-                    <EuiFlexItem>
-                      <EuiText size="xs" color="subdued">
-                        Status
-                      </EuiText>
-                      <EuiSelect
-                        options={STATUS_OPTIONS}
-                        value={alert._source.status}
-                        onChange={(e) => onStatusChange(e.target.value)}
-                        disabled={updating}
-                        fullWidth
-                      />
+                  <EuiFlexGroup gutterSize="m" alignItems="flexStart" style={isExpanded ? { maxWidth: 600 } : undefined}>
+                    <EuiFlexItem grow={false}>
+                      <EuiFormRow label="Status" display="rowCompressed">
+                        <StatusButtonGroup
+                          status={alert._source.status}
+                          disabled={updating}
+                          idPrefix={`fly-${alert._id}`}
+                          onChange={(s) => onStatusChange(s)}
+                        />
+                      </EuiFormRow>
                     </EuiFlexItem>
                     <EuiFlexItem>
-                      <EuiText size="xs" color="subdued">
-                        Assigned to
-                      </EuiText>
-                      <AssigneePicker
-                        apiService={apiService}
-                        value={alert._source.assigned_to}
-                        onChange={onAssigneeChange}
-                        fullWidth
-                        compressed={false}
-                      />
+                      <EuiFormRow label="Assigned to" display="rowCompressed" fullWidth>
+                        <AssigneePicker
+                          apiService={apiService}
+                          value={alert._source.assigned_to}
+                          onChange={onAssigneeChange}
+                          fullWidth
+                          compressed={false}
+                        />
+                      </EuiFormRow>
                     </EuiFlexItem>
                   </EuiFlexGroup>
-                  {updating && <EuiLoadingSpinner size="s" />}
 
                   <EuiSpacer size="m" />
                   <EuiFlexGroup gutterSize="s" alignItems="flexEnd" style={isExpanded ? { maxWidth: 600 } : undefined}>
@@ -192,7 +192,13 @@ export const AlertFlyout: React.FC<Props> = ({
                     </EuiFlexItem>
                     {alert._source.case_id && (
                       <EuiFlexItem grow={false}>
-                        <EuiLink onClick={() => onOpenCase?.(alert._source.case_id!)}>Open case</EuiLink>
+                        <EuiButton
+                          size="s"
+                          iconType="folderOpen"
+                          onClick={() => onOpenCase?.(alert._source.case_id!)}
+                        >
+                          Open case
+                        </EuiButton>
                       </EuiFlexItem>
                     )}
                   </EuiFlexGroup>

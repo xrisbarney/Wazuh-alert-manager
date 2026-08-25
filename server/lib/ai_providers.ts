@@ -1,4 +1,5 @@
 import { AiProvider } from '../../common';
+import { ProjectedAlert, ProjectedCase } from './egress/projection';
 
 export interface AiCallSettings {
   provider: AiProvider;
@@ -29,8 +30,8 @@ const ALERT_SYSTEM_PROMPT =
   "Be concise and base your answer only on the alert's own field values - do not invent facts that are not present in the data.";
 
 const CASE_SYSTEM_PROMPT =
-  'You are a SOC analyst assistant. Given an incident case as JSON - its title/description/severity, every ' +
-  'alert linked to it, and the analyst comments left on it - respond with: ' +
+  'You are a SOC analyst assistant. Given an incident case as JSON - its title/description/severity and the ' +
+  'alerts linked to it (comment bodies are withheld for privacy; only a count is provided) - respond with: ' +
   '1) a short narrative of how the incident likely unfolded across the linked alerts, in chronological order, ' +
   '2) an overall severity/impact assessment for the case as a whole, ' +
   '3) 2-4 concrete next investigative or remediation steps for closing this case out. ' +
@@ -44,7 +45,9 @@ const CASE_SYSTEM_PROMPT =
  */
 export async function generateAiAnalysis(
   settings: AiCallSettings,
-  payload: Record<string, any>,
+  // Only allowlist-projected payloads may reach a provider - a raw alert/case
+  // _source is a compile error here. See server/lib/egress/projection.ts.
+  payload: ProjectedAlert | ProjectedCase,
   mode: 'alert' | 'case' = 'alert'
 ): Promise<string> {
   if (typeof fetch !== 'function') {

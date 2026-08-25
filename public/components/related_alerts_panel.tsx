@@ -1,8 +1,27 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { EuiBasicTable, EuiSpacer, EuiText, EuiButtonIcon, EuiLoadingSpinner } from '@elastic/eui';
+import {
+  EuiBasicTable,
+  EuiSpacer,
+  EuiText,
+  EuiButtonIcon,
+  EuiButton,
+  EuiLoadingSpinner,
+  EuiBadge,
+  EuiFlexGroup,
+  EuiFlexItem,
+  EuiHorizontalRule,
+} from '@elastic/eui';
 import { Alert } from '../../common';
 import { AlertsApiService } from '../services/api';
 import { AlertMultiPicker } from './alert_multi_picker';
+import { formatAbsolute } from '../design';
+
+interface Suggested {
+  _id: string;
+  _source: any;
+  reasons: string[];
+  score: number;
+}
 
 interface Props {
   alertId: string;
@@ -14,6 +33,7 @@ interface Props {
 
 export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onError, onToast, onOpenAlert }) => {
   const [related, setRelated] = useState<Alert[]>([]);
+  const [suggested, setSuggested] = useState<Suggested[]>([]);
   const [loading, setLoading] = useState(true);
   const [linking, setLinking] = useState(false);
 
@@ -26,6 +46,13 @@ export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onErr
       onError('Failed to load related alerts');
     } finally {
       setLoading(false);
+    }
+    // Suggestions are advisory — a failure here shouldn't disturb the panel.
+    try {
+      const sug: any = await apiService.fetchSuggestedAlerts(alertId);
+      setSuggested(sug?.alerts || []);
+    } catch (e) {
+      setSuggested([]);
     }
   }, [alertId]);
 
@@ -41,6 +68,19 @@ export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onErr
       onToast?.(`Linked ${ids.length} alert(s)`, 'success');
     } catch (e) {
       onError('Failed to link alerts');
+    } finally {
+      setLinking(false);
+    }
+  };
+
+  const linkOne = async (id: string) => {
+    try {
+      setLinking(true);
+      await apiService.updateRelatedAlerts(alertId, [id], 'add');
+      await load();
+      onToast?.('Alert linked', 'success');
+    } catch (e) {
+      onError('Failed to link alert');
     } finally {
       setLinking(false);
     }
@@ -72,9 +112,9 @@ export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onErr
         <EuiBasicTable
           items={related}
           columns={[
-            { field: '_source', name: 'Timestamp', render: (v: Alert['_source']) => new Date(v['@timestamp']).toLocaleString() },
-            { field: '_source', name: 'Rule', render: (v: Alert['_source']) => v.rule?.description || 'N/A' },
-            { field: '_source', name: 'Agent', render: (v: Alert['_source']) => v.agent?.name || 'N/A' },
+            { field: '_source', name: 'Timestamp', render: (v: Alert['_source']) => formatAbsolute(v['@timestamp']) },
+            { field: '_source', name: 'Rule', render: (v: Alert['_source']) => v.rule?.description || '—' },
+            { field: '_source', name: 'Agent', render: (v: Alert['_source']) => v.agent?.name || '—' },
             {
               name: 'Actions',
               actions: [
@@ -84,6 +124,54 @@ export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onErr
             },
           ]}
         />
+      )}
+
+      {suggested.length > 0 && (
+        <>
+          <EuiSpacer size="l" />
+          <EuiHorizontalRule margin="none" />
+          <EuiSpacer size="m" />
+          <EuiText size="s">
+            <h4>Suggested</h4>
+          </EuiText>
+          <EuiText size="xs" color="subdued">
+            Alerts near this one in time that share a host, source IP, user, or rule. Ranked by overlap.
+          </EuiText>
+          <EuiSpacer size="s" />
+          <EuiBasicTable
+            items={suggested}
+            columns={[
+              { field: '_source', name: 'Timestamp', render: (v: any) => formatAbsolute(v['@timestamp']) },
+              { field: '_source', name: 'Rule', render: (v: any) => v.rule?.description || '—' },
+              {
+                name: 'Shared',
+                render: (s: Suggested) => (
+                  <EuiFlexGroup gutterSize="xs" wrap responsive={false}>
+                    {s.reasons.map((r) => (
+                      <EuiFlexItem grow={false} key={r}>
+                        <EuiBadge color="hollow">{r}</EuiBadge>
+                      </EuiFlexItem>
+                    ))}
+                  </EuiFlexGroup>
+                ),
+              },
+              {
+                name: 'Actions',
+                width: '150px',
+                actions: [
+                  { render: (s: Suggested) => <EuiButtonIcon iconType="eye" aria-label="View" onClick={() => onOpenAlert({ _id: s._id, _source: s._source })} /> },
+                  {
+                    render: (s: Suggested) => (
+                      <EuiButton size="s" iconType="link" onClick={() => linkOne(s._id)} isDisabled={linking}>
+                        Link
+                      </EuiButton>
+                    ),
+                  },
+                ],
+              },
+            ]}
+          />
+        </>
       )}
 
       <EuiSpacer size="l" />

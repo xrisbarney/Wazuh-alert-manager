@@ -1,27 +1,19 @@
 import { RequestHandlerContext, OpenSearchDashboardsRequest } from '../../../../src/core/server';
+import { trustedIdentity } from './identity';
 
 /**
- * Best-effort lookup of the logged-in dashboard user, using the OpenSearch
- * Security plugin's account API when present. Falls back to a generic
- * identity so the plugin keeps working on clusters without the security
- * plugin installed (e.g. local dev clusters with security disabled).
+ * The display name of the acting user, for audit-history attribution.
+ *
+ * Delegates to trustedIdentity(), which resolves identity from the OpenSearch
+ * Security plugin and NEVER from a client-controlled request header. On a
+ * cluster without the security plugin this returns a generic 'dashboard_user'
+ * label. For anything that must AUTHORISE on identity (destructive actions),
+ * call trustedIdentity() directly and check `source === 'security_plugin'`
+ * rather than trusting this string.
  */
 export async function getCurrentUsername(
   context: RequestHandlerContext,
   request: OpenSearchDashboardsRequest
 ): Promise<string> {
-  try {
-    const client = context.core.opensearch.client.asCurrentUser;
-    const res: any = await client.transport.request({
-      method: 'GET',
-      path: '/_plugins/_security/api/account',
-    });
-    return res?.body?.user_name || res?.body?.username || 'dashboard_user';
-  } catch (e) {
-    const headerUser = request.headers['x-forwarded-user'];
-    if (typeof headerUser === 'string' && headerUser) {
-      return headerUser;
-    }
-    return 'dashboard_user';
-  }
+  return (await trustedIdentity(context, request)).name;
 }

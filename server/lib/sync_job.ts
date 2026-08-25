@@ -2,8 +2,23 @@ import { Logger } from '../../../../src/core/server';
 import { ALERT_STATUS_INDEX, META_INDEX } from '../../common';
 import { AlertManagerConfigType } from '../config';
 import { acquireOrRenewLock, releaseLock, generateHolderId } from './sync_lock';
+import { evaluateCorrelationRules } from './correlation_eval';
 
 const SYNC_STATE_DOC_ID = 'sync_state';
+
+// Fields this plugin writes onto an alert document and therefore must never let
+// a resync of the source alert overwrite. Keep in sync with the plugin-owned
+// properties in server/lib/mappings.ts (alertStatusMapping).
+const PLUGIN_OWNED_FIELDS = [
+  'status',
+  'case_id',
+  'assigned_to',
+  'related_alert_ids',
+  'ai_analysis',
+  'updated_at',
+  'updated_by',
+  'history',
+];
 
 async function getLastRun(client: any, config: AlertManagerConfigType): Promise<string> {
   try {
@@ -52,7 +67,12 @@ export async function runSyncOnce(
     const results: any = await client.search({
       index: config.sync.sourceIndexPattern,
       size: config.sync.batchSize,
-      body: { query: { bool: { must } } },
+      // Sort ascending so a full batch is the OLDEST alerts in the window and
+      // the watermark can advance to the last one we actually copied. Without
+      // a sort, OpenSearch returns an arbitrary batchSize subset and anything
+      // past it in a >batchSize window is never synced - the window closes on
+      // the next tick and those alerts are lost permanently.
+      body: { query: { bool: { must } }, sort: [{ '@timestamp': { order: 'asc' } }] },
     });
     hits = results?.body?.hits?.hits || [];
   } catch (e: any) {
@@ -65,10 +85,18 @@ export async function runSyncOnce(
     return;
   }
 
-  if (hits.length >= config.sync.batchSize) {
+  // When the batch is full there are more alerts in this window than one tick
+  // can carry. Advance the watermark only as far as the last alert we actually
+  // copied (they are sorted ascending), so the next tick resumes from there
+  // and nothing is skipped. Only an empty/partial batch is safe to fast-forward
+  // to `now`.
+  const batchFull = hits.length >= config.sync.batchSize;
+  const lastHitTs = hits[hits.length - 1]?._source?.['@timestamp'];
+  const nextWatermark = batchFull && lastHitTs ? lastHitTs : now;
+  if (batchFull) {
     logger.warn(
-      `wazuh-alert-manager sync: hit the batch size limit (${config.sync.batchSize}) for window ${lastRun} - ${now}. ` +
-        'Some alerts may be delayed to the next sync cycle. Consider lowering sync.intervalSeconds.'
+      `wazuh-alert-manager sync: batch size limit (${config.sync.batchSize}) reached for window ${lastRun} - ${now}. ` +
+        `Continuing from ${nextWatermark} on the next tick. Lower sync.intervalSeconds to drain faster.`
     );
   }
 
@@ -87,15 +115,22 @@ export async function runSyncOnce(
       upsert: {},
       script: {
         lang: 'painless',
+        // Copy every field from the source alert EXCEPT the ones this plugin
+        // owns - status, case_id, assignment, AI analysis, audit history, etc.
+        // The loop is key-agnostic, so without this guard a same-named field in
+        // a Wazuh alert would silently clobber an analyst's triage state on the
+        // next resync of that document.
         source: `
           for (entry in params.doc.entrySet()) {
-            ctx._source[entry.getKey()] = entry.getValue();
+            if (!params.protected.contains(entry.getKey())) {
+              ctx._source[entry.getKey()] = entry.getValue();
+            }
           }
           if (ctx._source.status == null) {
             ctx._source.status = 'open';
           }
         `,
-        params: { doc: hit._source },
+        params: { doc: hit._source, protected: PLUGIN_OWNED_FIELDS },
       },
     });
   }
@@ -122,8 +157,20 @@ export async function runSyncOnce(
     return;
   }
 
-  await setLastRun(client, now);
-  logger.debug(`wazuh-alert-manager sync: copied ${hits.length} alerts (${lastRun} - ${now})`);
+  await setLastRun(client, nextWatermark);
+  logger.debug(
+    `wazuh-alert-manager sync: copied ${hits.length} alerts (${lastRun} - ${now}); watermark now ${nextWatermark}`
+  );
+
+  // Escalate correlated bursts into cases. Wrapped so a rule-engine failure can
+  // never break alert ingestion. Runs under the same lease held above (single
+  // writer). Note: alerts from THIS tick may not be search-refreshed yet, so a
+  // burst completing within one tick can fire on the next - an acceptable delay.
+  try {
+    await evaluateCorrelationRules(client, hits, logger);
+  } catch (e: any) {
+    logger.error(`wazuh-alert-manager: correlation-rule evaluation failed: ${e.message}`);
+  }
 }
 
 export function startSyncJob(client: any, config: AlertManagerConfigType, logger: Logger): () => void {

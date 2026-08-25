@@ -11,6 +11,7 @@ import {
 } from '../../common';
 import { getCurrentUsername } from '../lib/opensearch';
 import { generateAiAnalysis } from '../lib/ai_providers';
+import { projectAlert, projectCase, ProjectedAlert, ProjectedCase } from '../lib/egress/projection';
 import { APPEND_HISTORY_SCRIPT_SOURCE, buildHistoryEntry } from '../lib/history';
 import { encryptSecret, decryptSecret } from '../lib/crypto';
 import { getEncryptionKey, ENCRYPTION_KEY_ENV_VAR } from '../lib/secrets_config';
@@ -135,40 +136,41 @@ export function defineAiRoutes(router: IRouter) {
       const user = await getCurrentUsername(context, request);
 
       try {
-        let payload: Record<string, any>;
+        // The payload is allowlist-projected before it can be handed to a
+        // provider - see server/lib/egress/projection.ts. Raw _source never
+        // leaves the network.
+        let payload: ProjectedAlert | ProjectedCase;
         let targetIndex: string;
         let targetId: string;
 
         if (alertId) {
           const alertRes: any = await client.get({ index: ALERT_STATUS_INDEX, id: alertId });
-          payload = alertRes.body._source;
+          payload = projectAlert(alertRes.body._source);
           targetIndex = ALERT_STATUS_INDEX;
           targetId = alertId;
         } else {
           const caseRes: any = await client.get({ index: CASES_INDEX, id: caseId });
           const caseDoc = caseRes.body._source;
           const alertIds: string[] = caseDoc.alert_ids || [];
+          // Bound the fan-out: a case's alert_ids can grow past any single
+          // request's cap over repeated links, and projectCase caps how many
+          // are actually sent, so only fetch what can be used.
+          const boundedIds = alertIds.slice(0, 50);
 
-          let alerts: any[] = [];
-          if (alertIds.length) {
-            const mgetRes: any = await client.mget({ index: ALERT_STATUS_INDEX, body: { ids: alertIds } });
-            alerts = mgetRes.body.docs.filter((d: any) => d.found).map((d: any) => d._source);
+          let alertSources: any[] = [];
+          if (boundedIds.length) {
+            const mgetRes: any = await client.mget({ index: ALERT_STATUS_INDEX, body: { ids: boundedIds } });
+            alertSources = mgetRes.body.docs.filter((d: any) => d.found).map((d: any) => d._source);
           }
 
-          const commentsRes: any = await client.search({
+          // Count comments without pulling their bodies across the boundary.
+          const commentCountRes: any = await client.count({
             index: COMMENTS_INDEX,
-            body: { size: 200, sort: [{ created_at: { order: 'asc' } }], query: { term: { case_id: caseId } } },
+            body: { query: { term: { case_id: caseId } } },
           });
-          const comments = commentsRes.body.hits.hits.map((h: any) => h._source);
+          const commentCount = commentCountRes.body.count ?? 0;
 
-          payload = {
-            case_title: caseDoc.title,
-            case_description: caseDoc.description,
-            case_severity: caseDoc.severity,
-            case_status: caseDoc.status,
-            linked_alerts: alerts,
-            comments,
-          };
+          payload = projectCase(caseDoc, alertSources, alertIds.length, commentCount);
           targetIndex = CASES_INDEX;
           targetId = caseId;
         }

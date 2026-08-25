@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { EuiBasicTable, EuiSpacer, EuiText, EuiFieldSearch, EuiButton, EuiCheckbox } from '@elastic/eui';
 import { Alert } from '../../common';
 import { AlertsApiService } from '../services/api';
+import { formatAbsolute } from '../design';
 
 interface Props {
   apiService: AlertsApiService;
@@ -92,9 +93,9 @@ export const AlertMultiPicker: React.FC<Props> = ({
                   />
                 ),
               },
-              { field: '_source', name: 'Timestamp', render: (v: Alert['_source']) => new Date(v['@timestamp']).toLocaleString() },
-              { field: '_source', name: 'Rule', render: (v: Alert['_source']) => v.rule?.description || 'N/A' },
-              { field: '_source', name: 'Agent', render: (v: Alert['_source']) => v.agent?.name || 'N/A' },
+              { field: '_source', name: 'Timestamp', render: (v: Alert['_source']) => formatAbsolute(v['@timestamp']) },
+              { field: '_source', name: 'Rule', render: (v: Alert['_source']) => v.rule?.description || '—' },
+              { field: '_source', name: 'Agent', render: (v: Alert['_source']) => v.agent?.name || '—' },
             ]}
           />
           <EuiSpacer size="s" />

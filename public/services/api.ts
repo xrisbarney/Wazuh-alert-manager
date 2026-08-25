@@ -1,6 +1,7 @@
 import { CoreStart } from '../../../../src/core/public';
 import { API_ROOT } from '../../common';
 import { AlertStatus, CaseSeverity, CaseStatus, AiProvider, ReportMetrics, AttackGraph } from '../../common';
+import { CorrelationRule, CorrelationRulePreview } from '../../common';
 
 export interface AlertFilterParams {
   statuses?: AlertStatus[];
@@ -153,6 +154,21 @@ export class AlertsApiService {
     return this.http.get(`${API_ROOT}/alerts/${alertId}/related`);
   }
 
+  async fetchSuggestedAlerts(alertId: string): Promise<{ alerts: Array<{ _id: string; _source: any; reasons: string[]; score: number }> }> {
+    return this.http.get(`${API_ROOT}/alerts/${alertId}/suggested`);
+  }
+
+  async fetchPrecedent(alertId: string): Promise<{
+    ruleId: string | null;
+    agentName: string | null;
+    ruleDescription: string | null;
+    total: number;
+    byStatus: { open?: number; in_progress?: number; closed?: number };
+    escalatedToCase: number;
+  }> {
+    return this.http.get(`${API_ROOT}/alerts/${alertId}/precedent`);
+  }
+
   async updateRelatedAlerts(alertId: string, relatedIds: string[], mode: 'add' | 'remove') {
     return this.http.post(`${API_ROOT}/alerts/${alertId}/related`, { body: JSON.stringify({ relatedIds, mode }) });
   }
@@ -177,5 +193,25 @@ export class AlertsApiService {
     const res: any = await this.fetchCases({ q });
     const cases = res?.cases || [];
     return excludeId ? cases.filter((c: any) => c.id !== excludeId) : cases;
+  }
+
+  async fetchRules(): Promise<{ rules: CorrelationRule[] }> {
+    return this.http.get(`${API_ROOT}/rules`);
+  }
+
+  async createRule(payload: Partial<CorrelationRule>) {
+    return this.http.post(`${API_ROOT}/rules`, { body: JSON.stringify(payload) });
+  }
+
+  async updateRule(id: string, payload: Partial<CorrelationRule>) {
+    return this.http.put(`${API_ROOT}/rules/${id}`, { body: JSON.stringify(payload) });
+  }
+
+  async deleteRule(id: string) {
+    return this.http.delete(`${API_ROOT}/rules/${id}`);
+  }
+
+  async previewRule(payload: Partial<CorrelationRule> & { lookbackHours?: number }): Promise<CorrelationRulePreview> {
+    return this.http.post(`${API_ROOT}/rules/preview`, { body: JSON.stringify(payload) });
   }
 }

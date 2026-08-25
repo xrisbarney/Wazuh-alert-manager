@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { EuiFlexGroup, EuiFlexItem, EuiText, EuiButton, EuiPopover, EuiContextMenuPanel, EuiContextMenuItem, EuiSpacer } from '@elastic/eui';
+import { EuiFlexGroup, EuiFlexItem, EuiText, EuiButton, EuiPopover, EuiContextMenuPanel, EuiContextMenuItem, EuiSpacer, EuiPanel } from '@elastic/eui';
 import { AlertStatus } from '../../common';
 import { STATUS_OPTIONS } from './status_badge';
 import { AssigneePicker } from './assignee_picker';
@@ -36,11 +36,8 @@ export const BulkActionsBar: React.FC<Props> = ({
   if (selectedCount === 0) return null;
 
   return (
-    <EuiFlexGroup
-      alignItems="center"
-      gutterSize="m"
-      style={{ background: '#f5f7fa', padding: '8px 12px', borderRadius: 4, marginBottom: 8 }}
-    >
+    <EuiPanel color="subdued" paddingSize="s" hasShadow={false} hasBorder style={{ marginBottom: 8 }}>
+    <EuiFlexGroup alignItems="center" gutterSize="m">
       <EuiFlexItem grow={false}>
         <EuiText size="s">
           <strong>{selectedCount}</strong> selected
@@ -156,5 +153,6 @@ export const BulkActionsBar: React.FC<Props> = ({
         </EuiButton>
       </EuiFlexItem>
     </EuiFlexGroup>
+    </EuiPanel>
   );
 };

@@ -8,6 +8,7 @@ import { defineAiRoutes } from './ai';
 import { defineUserRoutes } from './users';
 import { defineReportRoutes } from './reports';
 import { defineAttackPathRoutes } from './attack_path';
+import { defineRuleRoutes } from './rules';
 
 export function defineRoutes(router: IRouter) {
   router.get(
@@ -28,4 +29,5 @@ export function defineRoutes(router: IRouter) {
   defineUserRoutes(router);
   defineReportRoutes(router);
   defineAttackPathRoutes(router);
+  defineRuleRoutes(router);
 }

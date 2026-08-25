@@ -143,7 +143,7 @@ export interface SlaBreakdownEntry {
 
 export interface CaseMetrics {
   totalCases: number;
-  statusBreakdown: { open: number; closed: number };
+  statusBreakdown: { open: number; in_progress: number; closed: number };
   severityBreakdown: Record<CaseSeverity, number>;
   meanTimeToCloseMinutes: number | null;
   closedCount: number;
@@ -154,8 +154,11 @@ export interface ReportMetrics {
   to: string;
   totalAlerts: number;
   sampledAlerts: number;
+  sampleLimit?: number;
   truncated: boolean;
   statusBreakdown: { open: number; in_progress: number; closed: number };
+  alertsPerDay?: Array<{ date: string; count: number }>;
+  statusPerDay?: Array<{ date: string; open: number; in_progress: number; closed: number }>;
   resolvedCount: number;
   assignedCount: number;
   meanTimeToResolveMinutes: number | null;
@@ -163,7 +166,90 @@ export interface ReportMetrics {
   slaCompliancePct: number | null;
   slaBreakdown: SlaBreakdownEntry[];
   slaPolicy: Array<{ minLevel: number; label: string; targetMinutes: number }>;
+  analysts?: AnalystMetrics[];
+  caseAnalysts?: CaseAnalystMetrics[];
   cases: CaseMetrics;
+}
+
+export interface AnalystMetrics {
+  assignee: string;
+  total: number;
+  open: number;
+  in_progress: number;
+  closed: number;
+  resolvedCount: number;
+  meanTimeToResolveMinutes: number | null;
+}
+
+export interface CaseAnalystMetrics {
+  assignee: string;
+  open: number;
+  in_progress: number;
+  closed: number;
+  total: number;
+  meanTimeToCloseMinutes: number | null;
+}
+
+export type CorrelationEntity = 'agent' | 'srcip' | 'dstip' | 'user' | 'dstuser' | 'process';
+
+export type MatchMode = 'any' | 'all';
+
+// When and over what an automation rule fires:
+//  - 'per_alert': the actions apply to every matching alert as it is ingested.
+//  - 'burst': alerts are grouped by `entity`; the rule fires for an entity once
+//    at least `threshold` matching alerts land on it within `windowMinutes`.
+//    Actions then apply to that entity's burst (and case creation is possible).
+export interface CorrelationRuleTrigger {
+  type: 'per_alert' | 'burst';
+  entity?: CorrelationEntity;
+  windowMinutes?: number;
+  threshold?: number;
+}
+
+// Actions an automation rule can take when it fires. At least one must be
+// selected. Any action works with either trigger: `setStatus`/`assignTo` give
+// auto-close and auto-assign (per-alert, or scoped to a burst); `createCase`
+// requires the 'burst' trigger.
+export interface CorrelationRuleActions {
+  createCase: boolean;
+  caseSeverity?: CaseSeverity;
+  setStatus?: AlertStatus | null;
+  assignTo?: string | null;
+}
+
+// An automation rule. Alerts are selected by `match`, the rule fires per
+// `trigger`, and `actions` decide what happens. `match` sections each carry an
+// optional 'any'/'all' mode: 'all' means the entity must, within the window,
+// have seen every listed value at least once (co-occurrence, not volume).
+export interface CorrelationRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  match: {
+    ruleGroups?: string[];
+    ruleGroupsMode?: MatchMode;
+    ruleIds?: string[];
+    ruleIdsMode?: MatchMode;
+    agentNames?: string[];
+    agentNamesMode?: MatchMode;
+    minLevel?: number;
+  };
+  trigger: CorrelationRuleTrigger;
+  actions: CorrelationRuleActions;
+  created_by?: string;
+  created_at?: string;
+  updated_at?: string;
+  matchCount?: number;
+  lastFired?: string | null;
+}
+
+export interface CorrelationRulePreview {
+  triggerType: 'per_alert' | 'burst';
+  windowMinutes: number;
+  lookbackHours: number;
+  matchingAlerts: number;
+  triggeringEntities: Array<{ entity: string; count: number }>;
+  wouldOpenCases: number;
 }
 
 export interface FilterOptions {
