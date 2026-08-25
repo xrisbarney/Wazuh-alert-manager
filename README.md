@@ -1,5 +1,7 @@
 # 🚨 wazuhAlertManager
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22093124.svg)](https://doi.org/10.5281/zenodo.22093124)
+
 An OpenSearch Dashboards plugin that turns Wazuh alerts into a small SOC
 work desk: status workflow, comments, audit history, cross-alert linking,
 case management with multi-alert bulk actions, dropdown-based filtering,
