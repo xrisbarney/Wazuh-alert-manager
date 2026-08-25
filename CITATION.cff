@@ -1,0 +1,47 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Wazuh Alert Manager"
+abstract: >-
+  An OpenSearch Dashboards plugin that turns Wazuh alerts into a security
+  operations workbench: an alert lifecycle (open / in progress / closed) with
+  assignment and audit history, investigative cases with an attack-path graph
+  and MITRE kill-chain view, and a trigger/action automation engine that
+  escalates alert bursts into cases and auto-closes or auto-assigns routine
+  alerts, with deterministic triage aids (precedent and suggested related
+  alerts) and per-analyst reporting.
+type: software
+version: "1.5.0"
+date-released: "2026-08-25"
+license: Apache-2.0
+repository-code: "https://github.com/xrisbarney/Wazuh-alert-manager"
+url: "https://github.com/xrisbarney/Wazuh-alert-manager"
+keywords:
+  - security operations
+  - SIEM
+  - Wazuh
+  - OpenSearch Dashboards
+  - alert triage
+  - case management
+  - alert correlation
+  - SOAR
+authors:
+  - given-names: Christian
+    family-names: Bassey
+    email: chris@theshadowmatrix.org
+    affiliation: "ShadowMatrix CDF"
+    orcid: "https://orcid.org/0009-0001-1589-1374"
+  - given-names: Ifeanyi
+    family-names: Onyia-Odike
+    email: ifeanyi@theshadowmatrix.org
+    affiliation: "ShadowMatrix CDF"
+    orcid: "https://orcid.org/0009-0009-1759-1736"
+  - given-names: "Samson Olugbenga"
+    family-names: Idowu
+    email: samson@theshadowmatrix.org
+    affiliation: "ShadowMatrix CDF"
+    orcid: "https://orcid.org/0009-0004-7539-0338"
+  - given-names: Isaac
+    family-names: Yusuf
+    email: iyusuf3908@stu.ui.edu.ng
+    affiliation: "University of Ibadan"
+    orcid: "https://orcid.org/0000-0001-9072-603X"
