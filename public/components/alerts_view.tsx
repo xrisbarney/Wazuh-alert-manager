@@ -38,6 +38,9 @@ interface Props {
 
 export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, openAlertId, onOpenAlertHandled }) => {
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  // case_id -> case title, resolved lazily so the Case column shows a readable
+  // name instead of a raw id.
+  const [caseTitles, setCaseTitles] = useState<Record<string, string>>({});
   const [totalAlerts, setTotalAlerts] = useState(0);
   const [counts, setCounts] = useState<AlertCounts>({ open: 0, in_progress: 0, closed: 0, total: 0 });
   const [loading, setLoading] = useState(true);
@@ -111,14 +114,38 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
         sortField: sortField.replace(/^_source\./, ''),
         sortDirection,
       });
-      setAlerts(res?.hits?.hits || []);
+      const hits: Alert[] = res?.hits?.hits || [];
+      setAlerts(hits);
       setTotalAlerts(res?.hits?.total?.value || 0);
+      resolveCaseTitles(hits);
     } catch (e: any) {
       onToast('Error fetching alerts', 'danger', e?.body?.message || e.message);
     } finally {
       setLoading(false);
     }
   }, [buildFilterParams, pageIndex, pageSize, sortField, sortDirection]);
+
+  // Fetch titles for any case_ids on the page we haven't seen yet, so the Case
+  // column can show the case name. Best-effort; failures leave the id fallback.
+  const resolveCaseTitles = useCallback(
+    (hits: Alert[]) => {
+      const ids = Array.from(
+        new Set(hits.map((h) => h._source.case_id).filter((id): id is string => !!id))
+      ).filter((id) => !caseTitles[id]);
+      if (!ids.length) return;
+      ids.forEach((id) => {
+        apiService
+          .fetchCase(id)
+          .then((res: any) => {
+            if (res?.case?.title) setCaseTitles((prev) => ({ ...prev, [id]: res.case.title }));
+          })
+          .catch(() => {
+            /* leave the id fallback */
+          });
+      });
+    },
+    [caseTitles, apiService]
+  );
 
   const fetchFilterOptions = useCallback(async () => {
     try {
@@ -348,7 +375,15 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
       name: 'Case',
       render: (v: Alert['_source']) =>
         v.case_id ? (
-          <EuiBadge color="hollow">{v.case_id.slice(0, 8)}</EuiBadge>
+          <EuiBadge
+            color="primary"
+            iconType="folderOpen"
+            onClick={() => onOpenCase(v.case_id!)}
+            onClickAriaLabel="Open linked case"
+            title={caseTitles[v.case_id] || v.case_id}
+          >
+            {caseTitles[v.case_id] || v.case_id.slice(0, 8)}
+          </EuiBadge>
         ) : (
           <EuiText size="s" color="subdued">
             —

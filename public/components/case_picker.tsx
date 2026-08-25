@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { EuiComboBox, EuiComboBoxOptionOption } from '@elastic/eui';
 import { AlertsApiService } from '../services/api';
 
@@ -32,6 +32,33 @@ export const CasePicker: React.FC<Props> = ({
   const [selected, setSelected] = useState<EuiComboBoxOptionOption[]>(
     value ? [{ label: valueLabel || value, value }] : []
   );
+
+  // Keep the displayed selection in sync with `value` (the tied case_id) as it
+  // changes — e.g. when a different alert's flyout re-uses this control — and,
+  // when only an id is supplied, resolve the case's title so the picker shows a
+  // human-readable name instead of the raw id. Runs once per value change.
+  useEffect(() => {
+    let live = true;
+    if (!value) {
+      setSelected([]);
+      return;
+    }
+    // show something immediately, then upgrade the label to the case title
+    setSelected([{ label: valueLabel || value, value }]);
+    if (!valueLabel) {
+      apiService
+        .fetchCase(value)
+        .then((res: any) => {
+          if (live && res?.case) setSelected([{ label: `${res.case.title} (${res.case.status})`, value }]);
+        })
+        .catch(() => {
+          /* leave the id as the label if the case can't be fetched */
+        });
+    }
+    return () => {
+      live = false;
+    };
+  }, [value, valueLabel]);
 
   const search = async (query: string) => {
     if (!query.trim()) {
