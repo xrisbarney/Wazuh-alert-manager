@@ -1,0 +1,40 @@
+{
+  "title": "Wazuh Alert Manager: an alert-triage and case-management workbench for security operations centres",
+  "description": "An OpenSearch Dashboards plugin that turns Wazuh alerts into a security operations workbench: an alert lifecycle (open / in progress / closed) with assignment and audit history, investigative cases with an attack-path graph and MITRE kill-chain view, and a trigger/action automation engine that escalates alert bursts into cases and auto-closes or auto-assigns routine alerts, with deterministic triage aids (precedent and suggested related alerts) and per-analyst reporting. Supports Wazuh 4.12, 4.13 and 4.14.",
+  "upload_type": "software",
+  "access_right": "open",
+  "license": "Apache-2.0",
+  "version": "1.5.0",
+  "keywords": [
+    "security operations",
+    "SIEM",
+    "Wazuh",
+    "OpenSearch Dashboards",
+    "alert triage",
+    "case management",
+    "alert correlation",
+    "SOAR"
+  ],
+  "creators": [
+    {
+      "name": "Bassey, Christian",
+      "orcid": "0009-0001-1589-1374",
+      "affiliation": "ShadowMatrix CDF"
+    },
+    {
+      "name": "Onyia-Odike, Ifeanyi",
+      "orcid": "0009-0009-1759-1736",
+      "affiliation": "ShadowMatrix CDF"
+    },
+    {
+      "name": "Idowu, Samson Olugbenga",
+      "orcid": "0009-0004-7539-0338",
+      "affiliation": "ShadowMatrix CDF"
+    },
+    {
+      "name": "Yusuf, Isaac",
+      "orcid": "0000-0001-9072-603X",
+      "affiliation": "University of Ibadan"
+    }
+  ]
+}

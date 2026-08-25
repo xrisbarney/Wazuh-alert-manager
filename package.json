@@ -2,6 +2,7 @@
   "name": "wazuhAlertManager",
   "version": "1.5.0",
   "private": true,
+  "license": "Apache-2.0",
   "scripts": {
     "build": "yarn plugin-helpers build",
     "plugin-helpers": "../../scripts/use_node ../../scripts/plugin_helpers",
