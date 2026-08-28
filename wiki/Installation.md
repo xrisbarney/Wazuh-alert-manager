@@ -131,6 +131,53 @@ If you deploy via a Helm chart, set the dashboard image to your custom image thr
 
 On first start the plugin provisions its own indices (see [[Architecture]]) and begins syncing alert workflow state. You do **not** need to reindex `wazuh-alerts-*`.
 
+## Configuration, sizing & retention
+
+The plugin reads its settings from the dashboard config file
+(`/etc/wazuh-dashboard/opensearch_dashboards.yml`, or
+`/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml`). **Changing any
+setting is a config edit + a dashboard restart — no rebuild or reinstall.**
+
+```yaml
+# opensearch_dashboards.yml  (all keys optional; defaults shown)
+wazuhAlertManager.sync.minRuleLevel: 7        # only copy alerts of this level or higher (default: all levels)
+wazuhAlertManager.sync.intervalSeconds: 60    # how often the sync/automation tick runs (min 15)
+wazuhAlertManager.sync.sourceIndexPattern: "wazuh-alerts-*"
+wazuhAlertManager.sync.batchSize: 10000       # max alerts copied per tick
+wazuhAlertManager.enabled: true
+```
+
+```bash
+sudo systemctl restart wazuh-dashboard
+```
+
+### Sizing the `wazuh-alert-status` index
+
+The plugin keeps its own `wazuh-alert-status` index — a copy of the alerts it
+tracks, plus workflow state (status, assignee, `case_id`, history). Unlike
+`wazuh-alerts-*`, it does **not** roll over or auto-expire, so on high-volume
+deployments plan for its growth.
+
+- **`minRuleLevel` is the main growth control.** By default every alert level is
+  copied; setting `minRuleLevel` to, say, `7` (High+) or `12` (Critical) cuts the
+  copied volume dramatically. It applies to **newly synced** alerts going forward
+  — it does not remove alerts already copied below the threshold.
+- **Monitor size** under *Index Management → Indexes → `wazuh-alert-status`*.
+
+### Retention — important caveat
+
+`wazuh-alert-status` holds **workflow state**, not immutable detection data, and
+**cases reference alert IDs stored in it**. Do **not** apply a blunt age-based
+**ISM delete** policy to it: ISM deletes at the index level, so on this single,
+non-rolling index it would drop the **entire** index (all workflow state), and an
+age/rollover-based delete would remove **open / in-progress** alerts and
+**orphan cases** whose linked alerts were deleted. If you need hard retention,
+prune only **closed and unlinked** alerts older than *N* days (e.g. a scheduled
+`delete_by_query` that excludes open/in-progress and case-linked alerts) — never
+a whole-index or age-only policy against **this** single non-rolling index.
+Built-in **age-based** retention via date-partitioned status indices is planned
+(see [[Roadmap]]); until then, bound growth with `minRuleLevel`.
+
 ## Uninstall
 
 ```bash
