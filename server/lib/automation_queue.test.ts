@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import {
   automationEventId,
   automationExecutionId,
+  automationQueueHealth,
   enqueueAutomationEvents,
   reconcileAutomationAdmissions,
   ensureAutomationSettings,
@@ -507,5 +508,26 @@ describe('durable automation queue', () => {
     const chunks = chunkBulkPairs(body);
     expect(chunks.map((chunk) => chunk.length / 2)).toEqual([500, 1]);
     expect(chunks.every((chunk) => chunk.length % 2 === 0)).toBe(true);
+  });
+
+  test('requests an exact backlog count for queue health and admission gating', async () => {
+    const client: any = {
+      search: jest.fn().mockResolvedValue({ body: {
+        hits: { total: { value: 100000, relation: 'eq' } },
+        aggregations: {
+          oldest: { value: null }, retries: { doc_count: 7 },
+          states: { buckets: [{ key: 'pending', doc_count: 98616 }] },
+          max_fencing_generation: { value: 1 },
+        },
+      } }),
+      count: jest.fn().mockResolvedValue({ body: { count: 0 } }),
+      get: jest.fn().mockRejectedValue(notFound()),
+    };
+
+    const health = await automationQueueHealth(client);
+
+    expect(client.search.mock.calls[0][0].body.track_total_hits).toBe(true);
+    expect(health.lag).toBe(100000);
+    expect(health.admissionOpen).toBe(false);
   });
 });

@@ -1,0 +1,12 @@
+{
+  "collected_at_utc": "2026-08-29T22:27:33Z",
+  "platform": "Linux-6.8.0-86-generic-x86_64-with-glibc2.39",
+  "python": "3.12.3",
+  "cpu_count": 6,
+  "cpu_model": "Intel(R) Core(TM) i7-8665U CPU @ 1.90GHz",
+  "memory_bytes": 10425561088,
+  "root_filesystem_bytes": 65334538240,
+  "wazuh_dashboard_package": "wazuh-dashboard 4.14.7-1",
+  "wazuh_indexer_package": "wazuh-indexer 4.14.7-1",
+  "plugin_release": "v2.0.1"
+}

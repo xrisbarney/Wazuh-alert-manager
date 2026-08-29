@@ -8,3 +8,5 @@
 /runtime-evidence/browser
 /.playwright-profile
 /.env.e2e.local
+/benchmark/results/
+/benchmark/__pycache__/

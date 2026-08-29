@@ -1170,6 +1170,9 @@ export async function automationQueueHealth(client: any) {
       index: AUTOMATION_QUEUE_INDEX,
       body: {
         size: 0,
+        // OpenSearch otherwise caps hits.total.value at 10,000. Queue capacity
+        // and admission decisions must use the exact active backlog.
+        track_total_hits: true,
         query: { terms: { state: ['pending', 'claimed', 'retry', 'deferred'] } },
         aggs: {
           oldest: { min: { field: 'enqueued_at' } },
