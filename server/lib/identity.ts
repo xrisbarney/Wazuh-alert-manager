@@ -3,6 +3,8 @@ import { RequestHandlerContext, OpenSearchDashboardsRequest } from '../../../../
 export interface TrustedIdentity {
   name: string;
   roles: string[];
+  securityRoles: string[];
+  backendRoles: string[];
   // 'security_plugin' means the OpenSearch Security plugin named this user and
   // the identity is trustworthy for attribution AND authorisation. 'anonymous'
   // means we could not establish who this is - safe to display, NEVER safe to
@@ -32,9 +34,17 @@ export async function trustedIdentity(
     });
     const name = res?.body?.user_name || res?.body?.username;
     if (name) {
+      const assignedRoles = Array.isArray(res?.body?.roles) ? res.body.roles : [];
+      const backendRoles = Array.isArray(res?.body?.backend_roles) ? res.body.backend_roles : [];
       return {
         name,
-        roles: Array.isArray(res?.body?.roles) ? res.body.roles : [],
+        // Wazuh installations commonly grant administrator rights through a
+        // backend role while OpenSearch Security also expands mapped roles.
+        // Treat both server-authenticated collections as trusted and de-dupe
+        // them so authorisation behaves consistently across 4.12-4.14.
+        roles: Array.from(new Set([...assignedRoles, ...backendRoles])),
+        securityRoles: assignedRoles,
+        backendRoles,
         source: 'security_plugin',
       };
     }
@@ -42,5 +52,5 @@ export async function trustedIdentity(
     // Security plugin absent (e.g. a dev cluster with security disabled) or the
     // account call failed - fall through to anonymous.
   }
-  return { name: 'dashboard_user', roles: [], source: 'anonymous' };
+  return { name: 'dashboard_user', roles: [], securityRoles: [], backendRoles: [], source: 'anonymous' };
 }

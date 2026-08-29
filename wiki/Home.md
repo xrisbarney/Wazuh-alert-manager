@@ -4,6 +4,8 @@
 
 > ⚠️ **Unofficial** — this plugin is not produced or endorsed by Wazuh Inc. It reads Wazuh's alerts and stores its own workflow state in separate indices; it never modifies `wazuh-alerts-*`.
 
+![Alert queue with operational summaries and filters](images/workbench-alert-queue.png)
+
 ## What it gives you
 
 - **Alert lifecycle** — every alert carries an **Open → In progress → Closed** status, an assignee, and an audit history, stored independently of the raw Wazuh alert.
@@ -17,9 +19,9 @@
 
 | Wazuh | OpenSearch Dashboards | Plugin build |
 |-------|-----------------------|--------------|
-| 4.12  | 2.19.1                | `wazuhAlertManager-1.5.0-wazuh4.12.zip` |
-| 4.13  | 2.19.2                | `wazuhAlertManager-1.5.0-wazuh4.13.zip` |
-| 4.14  | 2.19.5                | `wazuhAlertManager-1.5.0-wazuh4.14.zip` |
+| 4.12  | 2.19.1                | `wazuhAlertManager-2.19.1.zip` |
+| 4.13  | 2.19.2                | `wazuhAlertManager-2.19.2.zip` |
+| 4.14  | 2.19.5                | `wazuhAlertManager-2.19.5.zip` |
 
 Download the zip for your version from the **[Releases page](https://github.com/xrisbarney/Wazuh-alert-manager/releases)**. The server code is identical across builds; only the target-version stamp differs.
 
@@ -28,6 +30,9 @@ Download the zip for your version from the **[Releases page](https://github.com/
 - **[[Installation]]** — install/upgrade the plugin.
 - **[[User Guide]]** — the Workbench (Alerts, Cases, Settings) and Reporting.
 - **[[Automation Rules]]** — the rule engine in depth.
+- **[[Lifecycle, Retention and RBAC|Lifecycle-Retention-and-RBAC]]** — rollover, retirement, restore, retention, and administrator permissions.
+- **[[Case Evidence and Case Lifecycle|Case-Evidence-and-Case-Lifecycle]]** — what remains live, what is archived, and how a case is reopened safely.
 - **[[Security Model]]** — identity, data egress, and what leaves the network.
 - **[[Troubleshooting]]** — common issues (including the indexer startup timeout).
 - **[[Architecture]]** — how the sync job and indices work.
+- **[[Release Notes 2.0|Release-Notes-2.0]]** — v2.0 features, compatibility, and validation scope.

@@ -11,6 +11,9 @@ name: Build and release plugin
 # build (e.g. to sanity-check a branch) without cutting a release.
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     tags:
       - "v*"
@@ -134,6 +137,10 @@ jobs:
           NODE_OPTIONS: "--max-old-space-size=6144"
         run: yarn build
 
+      - name: yarn test
+        working-directory: wazuh-dashboard/plugins/wazuhAlertManager
+        run: yarn test
+
       - name: Locate build output
         id: find_zip
         working-directory: wazuh-dashboard/plugins/wazuhAlertManager/build
@@ -145,17 +152,22 @@ jobs:
           fi
           echo "zip_name=$zip_path" >> "$GITHUB_OUTPUT"
 
-      - name: Rename artifact with wazuh version
+      - name: Prepare installer-compatible artifact and checksum
         working-directory: wazuh-dashboard/plugins/wazuhAlertManager/build
         run: |
-          cp "${{ steps.find_zip.outputs.zip_name }}" \
-             "wazuhAlertManager-${{ steps.plugin_version.outputs.version }}-wazuh${{ matrix.wazuhVersion }}.zip"
+          expected="wazuhAlertManager-${{ matrix.osdVersion }}.zip"
+          if [ "${{ steps.find_zip.outputs.zip_name }}" != "$expected" ]; then
+            mv "${{ steps.find_zip.outputs.zip_name }}" "$expected"
+          fi
+          sha256sum "$expected" > "$expected.sha256"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: wazuhAlertManager-wazuh${{ matrix.wazuhVersion }}
-          path: wazuh-dashboard/plugins/wazuhAlertManager/build/wazuhAlertManager-*-wazuh${{ matrix.wazuhVersion }}.zip
+          path: |
+            wazuh-dashboard/plugins/wazuhAlertManager/build/wazuhAlertManager-${{ matrix.osdVersion }}.zip
+            wazuh-dashboard/plugins/wazuhAlertManager/build/wazuhAlertManager-${{ matrix.osdVersion }}.zip.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -167,14 +179,24 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout installer
+        uses: actions/checkout@v4
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
+      - name: Prepare installer checksum
+        run: sha256sum install.sh > install.sh.sha256
+
       - name: Create release with all version zips attached
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: |
+            dist/*.zip
+            dist/*.sha256
+            install.sh
+            install.sh.sha256
           generate_release_notes: true

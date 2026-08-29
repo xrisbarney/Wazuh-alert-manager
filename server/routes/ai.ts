@@ -2,8 +2,6 @@ import { schema } from '@osd/config-schema';
 import { IRouter } from '../../../../src/core/server';
 import {
   API_ROOT,
-  ALERT_STATUS_INDEX,
-  CASES_INDEX,
   COMMENTS_INDEX,
   META_INDEX,
   AI_PROVIDERS,
@@ -15,6 +13,11 @@ import { projectAlert, projectCase, ProjectedAlert, ProjectedCase } from '../lib
 import { APPEND_HISTORY_SCRIPT_SOURCE, buildHistoryEntry } from '../lib/history';
 import { encryptSecret, decryptSecret } from '../lib/crypto';
 import { getEncryptionKey, ENCRYPTION_KEY_ENV_VAR } from '../lib/secrets_config';
+import { resolveAlerts } from '../lib/index_resolution';
+import { requirePluginAdmin } from '../lib/authorization';
+import { validateAiBaseUrl } from '../lib/ai_url_policy';
+import { appendActivity } from '../lib/activity';
+import { resolveCase } from '../lib/case_index_resolution';
 
 async function loadAiSettings(client: any): Promise<any | null> {
   try {
@@ -55,6 +58,11 @@ export function defineAiRoutes(router: IRouter) {
       },
     },
     async (context, request, response) => {
+      try {
+        await requirePluginAdmin(context, request);
+      } catch (e: any) {
+        return response.forbidden({ body: { message: e.message } });
+      }
       const { enabled, provider, apiKey, model, baseUrl } = request.body as any;
       const trimmedKey = apiKey && apiKey.trim() ? apiKey.trim() : '';
       const encryptionKey = getEncryptionKey();
@@ -77,11 +85,18 @@ export function defineAiRoutes(router: IRouter) {
       // way for the form to represent "leave it alone".
       const resolvedKey = trimmedKey ? encryptSecret(trimmedKey, encryptionKey!) : existing?.apiKey || '';
 
+      let safeBaseUrl: string | null;
+      try {
+        safeBaseUrl = validateAiBaseUrl(provider, baseUrl);
+      } catch (e: any) {
+        return response.badRequest({ body: { message: e.message } });
+      }
+
       const doc = {
         enabled,
         provider,
         model: model ?? '',
-        baseUrl: baseUrl ?? '',
+        baseUrl: safeBaseUrl ?? '',
         apiKey: resolvedKey,
         updated_at: new Date().toISOString(),
       };
@@ -144,13 +159,15 @@ export function defineAiRoutes(router: IRouter) {
         let targetId: string;
 
         if (alertId) {
-          const alertRes: any = await client.get({ index: ALERT_STATUS_INDEX, id: alertId });
-          payload = projectAlert(alertRes.body._source);
-          targetIndex = ALERT_STATUS_INDEX;
+          const locations = await resolveAlerts(client, [alertId], true);
+          const alert = locations.get(alertId);
+          if (!alert) return response.notFound({ body: { message: 'Alert not found' } });
+          payload = projectAlert(alert.source);
+          targetIndex = alert.index;
           targetId = alertId;
         } else {
-          const caseRes: any = await client.get({ index: CASES_INDEX, id: caseId });
-          const caseDoc = caseRes.body._source;
+          const caseRes = await resolveCase(client, caseId);
+          const caseDoc = caseRes.source;
           const alertIds: string[] = caseDoc.alert_ids || [];
           // Bound the fan-out: a case's alert_ids can grow past any single
           // request's cap over repeated links, and projectCase caps how many
@@ -159,19 +176,19 @@ export function defineAiRoutes(router: IRouter) {
 
           let alertSources: any[] = [];
           if (boundedIds.length) {
-            const mgetRes: any = await client.mget({ index: ALERT_STATUS_INDEX, body: { ids: boundedIds } });
-            alertSources = mgetRes.body.docs.filter((d: any) => d.found).map((d: any) => d._source);
+            const locations = await resolveAlerts(client, boundedIds, true);
+            alertSources = boundedIds.map((id) => locations.get(id)?.source).filter(Boolean);
           }
 
           // Count comments without pulling their bodies across the boundary.
           const commentCountRes: any = await client.count({
             index: COMMENTS_INDEX,
-            body: { query: { term: { case_id: caseId } } },
+            body: { query: { bool: { filter: [{ term: { event_type: 'comment' } }, { term: { case_id: caseId } }] } } },
           });
           const commentCount = commentCountRes.body.count ?? 0;
 
           payload = projectCase(caseDoc, alertSources, alertIds.length, commentCount);
-          targetIndex = CASES_INDEX;
+          targetIndex = caseRes.index;
           targetId = caseId;
         }
 
@@ -201,6 +218,12 @@ export function defineAiRoutes(router: IRouter) {
               },
             },
           },
+        });
+        await appendActivity(client, {
+          targetType: caseId ? 'case' : 'alert',
+          targetId,
+          user,
+          action: 'ai_analysis_generated',
         });
 
         return response.ok({ body: analysis });

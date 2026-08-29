@@ -45,18 +45,34 @@ sudo systemctl restart wazuh-manager
 
 ---
 
-## Analyst/assignee metrics look empty on an old install
+## Analyst/assignee metrics are empty
 
-On installs whose `wazuh-alert-status` index predates the explicit `assigned_to` **keyword** mapping, that field stays `text` and won't aggregate. The plugin fail-safes (falling back to the `.keyword` subfield where possible) rather than forcing an incompatible mapping change. A **reindex** of `wazuh-alert-status` is the full fix. **Fresh installs are unaffected.**
+Current operational data is stored under the `wazuh-alert-status-v2-*` aliases and generations, where `assigned_to` is mapped as a keyword. Check system health and dashboard migration logs for a failed v2 provisioning or legacy migration step. Do not point the plugin at a native Wazuh index or broaden its managed write prefixes. Repair the failed v2 migration/provisioning issue before rebuilding an affected plugin-owned generation.
 
 ---
 
 ## A rule isn't firing
 
-- Use the rule's **Dry run** to confirm it matches anything over the last 24h.
-- Remember **create case** requires the **burst** trigger; a per-alert rule can only set status / assign.
-- For **All of** conditions, the *same entity* must have seen **every** listed value within the window — and the **threshold** is a separate volume floor (set it to the number of required values for a pure "one of each" rule).
-- Rules act on **newly synced** alerts, so back-dated data already ingested won't be re-evaluated.
+- Confirm the rule is enabled and the runtime badge says **Queue running**. A disabled rule and a paused queue are independent states.
+- Preview the exact saved revision. Check matching totals, missing-entity count/rate, truncation, precondition skips, conflicts, and safety/rate-cap skips.
+- Match owns agent scope. On Trigger, verify each AND predicate can resolve from the same alert and that at least one OR group can match. Missing values do not form an `unknown` group.
+- Entity comparison is normalized: ports must be 0-65535, user/process values are lowercased, and IP values must be valid canonicalizable addresses.
+- For a burst, threshold and sliding window apply independently to each resolved group/key. Cooldown and quiet-period rearm can legitimately suppress a repeated sustained burst.
+- Rules act only on alerts newly ingested into the plugin. Creating, editing, or enabling a rule does not evaluate alerts already ingested, and there is no replay/backfill control.
+
+## Automation queue is paused or admission is closed
+
+- **Queue paused** preserves enabled rules and durable events but stops processing. An `all_access` administrator can resume it from the Automation runtime panel.
+- Admission closes when the active backlog or deferred-event cap is reached. Review queue state counts and increase caps only after checking worker health and capacity.
+- Work completed after resume is delayed completion of ingestion-time events using their captured ruleset revisions, not a historical replay using current rules.
+- If controls are read-only, the effective Wazuh/OpenSearch Security identity lacks `all_access`. Configure role mappings using the [Wazuh user administration documentation](https://documentation.wazuh.com/current/user-manual/user-administration/index.html); an SSO/LDAP group name alone is not sufficient.
+
+## Automation dead-letter events
+
+- The dead-letter list is cursor-paginated. Use **Next** and **Previous** rather than assuming the first page is complete.
+- **Retry** requeues the recoverable event with its captured ruleset snapshot and is idempotent. It does not apply current rules to historical alerts.
+- **Resolve** removes the dead-letter document without running it. Use this only after determining that the event should not be retried or its payload is unrecoverable.
+- Both mutations require `all_access`. A recurring stage/error after retry indicates an underlying mapping, payload, authorization, or storage issue; inspect the dashboard log before repeatedly retrying.
 
 ---
 

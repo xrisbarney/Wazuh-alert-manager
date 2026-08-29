@@ -41,7 +41,17 @@ A single-row filter bar: status toggles, severity/level, rule, agent, alert type
 
 ## Cases
 
+![Case queue with collapsible summary, severity, assignee, status, date, and search filters](images/workbench-case-queue.png)
+
 A **case** groups related alerts into a single investigation.
+
+### Queue filters
+
+Status, Severity, Assignee, Created time, and title/description search are
+combined with **AND**. Status, Severity, and Assignee are multi-select controls.
+Choosing `High + Critical` means either severity; choosing `admin + Unassigned`
+means either ownership state. Summary cards use the same filters except Status,
+so they continue to show the filtered Open/In-progress/Closed distribution.
 
 - **Fields** — title, description, **severity** (Low / Medium / High / Critical), **status** (Open / In progress / Closed), assignee, and linked alerts.
 - **Default view** shows Open + In progress.
@@ -54,7 +64,26 @@ Cases can be created manually from selected alerts, or automatically by [[Automa
 
 ## Settings
 
-Two tabs:
+Settings include:
 
-- **Automation rules** — create and manage the rule engine. See [[Automation Rules]].
-- **AI analysis** — configure an optional LLM provider. See [[AI Analysis]].
+- **Automation rules** — create, preview, revision, activate, pause, and diagnose
+  ingestion-time rules. Queue and automation dead-letter controls are restricted
+  to Wazuh administrators. See [[Automation Rules]].
+- **AI analysis** — configure an optional LLM provider. API keys remain
+  server-side and require the configured encryption key. See [[AI Analysis]].
+- **Background sync** — view the native-alert read pattern, sync watermark,
+  overlap, interval, batch size, and sync-DLQ health. Changes apply to the plugin
+  projection only; `wazuh-alerts-*` remains read-only.
+- **Storage & lifecycle** — configure generation rollover and retention, inspect
+  every plugin-owned alias family, and perform reviewed retire/restore/purge
+  operations. Mutating controls require the effective Wazuh lifecycle role. See
+  [[Lifecycle Retention and RBAC]] and [[Case Evidence and Case Lifecycle]].
+- **About** — compare the browser and server build IDs. `Current` means both
+  bundles came from the same installed release; a mismatch prompts a reload.
+
+## Reporting
+
+Reporting is a separate navigation child rather than a Workbench tab. All
+figures are exact over the selected live, unarchived cohort; no document sample
+is used. See [[Reporting]] for cohort semantics, SLA targets, archive effects,
+backfill coverage, and analyst tabs.

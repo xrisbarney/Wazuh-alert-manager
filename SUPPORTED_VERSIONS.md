@@ -23,9 +23,9 @@ in README.md) - the plugin zip `COPY`'d into the image must match the
 
 | Wazuh version | wazuh-dashboard / OSD version | Status |
 |---|---|---|
-| 4.12 | 2.19.1 | Previously built (v1.0.1 release) |
-| 4.13 | 2.19.2 | Previously built (v1.0.1 release) |
-| 4.14 | 2.19.5 | Current default target, built and tested against a real 4.14 all-in-one install |
+| 4.12 | 2.19.1 | v2.0 release target; built against official `v4.12.0` dashboard source |
+| 4.13 | 2.19.2 | v2.0 release target; built against official `v4.13.1` dashboard source |
+| 4.14 | 2.19.5 | v2.0 release target; built and browser-tested on Wazuh 4.14.7 |
 
 APIs this plugin relies on (all stable across the 2.19.x line, and
 unlikely to move soon):

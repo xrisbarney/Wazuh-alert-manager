@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom';
 import { AppMountParameters, CoreStart } from '../../../src/core/public';
 import { DataPublicPluginStart } from '../../../src/plugins/data/public';
 import { WazuhAlertManagerApp, AppSection } from './components/app';
+import './index.scss';
 
 export const renderApp = (
   coreStart: CoreStart,

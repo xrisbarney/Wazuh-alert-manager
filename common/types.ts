@@ -31,6 +31,9 @@ export interface AuditEntry {
 
 export interface Alert {
   _id: string;
+  _index?: string;
+  _raw_source?: Record<string, any> | null;
+  _source_available?: boolean;
   _source: {
     agent?: {
       ip?: string;
@@ -67,8 +70,51 @@ export interface Comment {
   created_at: string;
 }
 
+export interface CommentListResponse {
+  comments: Comment[];
+  nextCursor: string | null;
+  total: number;
+  truncated: boolean;
+}
+
+export interface EvidenceListResponse {
+  evidence: CaseEvidence[];
+  nextCursor: string | null;
+  total: number;
+  truncated: boolean;
+}
+
+export interface CaseEvidence {
+  id: string;
+  case_id: string;
+  alert_id: string;
+  relationship_state: 'linked' | 'held' | 'archived' | 'purged' | 'legacy';
+  snapshot?: Record<string, any> | null;
+  archive_index?: string | null;
+  archive_id?: string | null;
+  hold_reason?: string | null;
+  legacy_fallback?: boolean;
+  [key: string]: any;
+}
+
+export interface CloseCaseResult {
+  ok: boolean;
+  caseId: string;
+  caseClosed: boolean;
+  linkedAlerts: number;
+  closedAlerts: number;
+  alreadyClosedAlerts: number;
+  excludedAlertIds: string[];
+  evidenceOnlyAlertIds: string[];
+  archiveOnlyAlertIds: string[];
+  failedAlertIds: string[];
+  stages: Array<{ stage: 'resolve' | 'close_alerts' | 'close_case' | 'activity'; attempted: number; succeeded: number; failed: number }>;
+  errors: Array<{ stage: 'close_alerts' | 'close_case' | 'activity'; alertId?: string; message: string }>;
+}
+
 export interface Case {
   id: string;
+  case_uid: string;
   title: string;
   description?: string;
   severity: CaseSeverity;
@@ -153,9 +199,14 @@ export interface ReportMetrics {
   from: string;
   to: string;
   totalAlerts: number;
-  sampledAlerts: number;
-  sampleLimit?: number;
-  truncated: boolean;
+  exact: boolean;
+  alertBasis: 'exact_cohort';
+  timingBasis: 'exact_cohort';
+  caseBasis: 'exact_cohort' | 'unavailable';
+  coverage: {
+    closedMissingReporting: number;
+    assignedMissingReporting: number;
+  };
   statusBreakdown: { open: number; in_progress: number; closed: number };
   alertsPerDay?: Array<{ date: string; count: number }>;
   statusPerDay?: Array<{ date: string; open: number; in_progress: number; closed: number }>;
@@ -190,26 +241,113 @@ export interface CaseAnalystMetrics {
   meanTimeToCloseMinutes: number | null;
 }
 
-export type CorrelationEntity = 'agent' | 'srcip' | 'dstip' | 'user' | 'dstuser' | 'process';
+export type CorrelationEntity =
+  | 'agent'
+  | 'srcip'
+  | 'dstip'
+  | 'srcport'
+  | 'dstport'
+  | 'user'
+  | 'dstuser'
+  | 'process';
 
 export type MatchMode = 'any' | 'all';
 
-// When and over what an automation rule fires:
-//  - 'per_alert': the actions apply to every matching alert as it is ingested.
-//  - 'burst': alerts are grouped by `entity`; the rule fires for an entity once
-//    at least `threshold` matching alerts land on it within `windowMinutes`.
-//    Actions then apply to that entity's burst (and case creation is possible).
+export type RuleProcessingMode = 'continue' | 'stop';
+
+export interface CorrelationRulePreconditions {
+  statuses?: AlertStatus[];
+  assignment?: 'any' | 'unassigned';
+}
+
+export interface CorrelationRuleRateLimit {
+  maxExecutions: number;
+  windowMinutes: number;
+}
+
+export interface CorrelationRuleSafety {
+  acknowledgeMatchAll: boolean;
+  maxActionsPerRun?: number;
+  maxCasesPerRun?: number;
+  rateLimit?: CorrelationRuleRateLimit;
+}
+
+export interface CorrelationRuleCounters {
+  matchedAlerts: number;
+  triggeredEntities: number;
+  actionsAttempted: number;
+  actionsSucceeded: number;
+  actionsSkipped: number;
+  actionsConflicted: number;
+  actionsFailed: number;
+  casesCreated: number;
+  casesExtended: number;
+  evidenceLinksWritten: number;
+}
+
+/** Runtime state stored independently from the editable rule definition. */
+export interface CorrelationRuleExecutionState {
+  document_type: 'rule_execution';
+  rule_id: string;
+  counters: CorrelationRuleCounters;
+  matchCount: number;
+  lastFired: string | null;
+  updated_at: string;
+}
+
+export const correlationRuleExecutionId = (ruleId: string) => `rule-execution:${ruleId}`;
+
+export interface CorrelationEntityPredicate {
+  id: string;
+  order: number;
+  entity: CorrelationEntity;
+  operator: 'exists' | 'equals';
+  value?: string;
+}
+
+export interface CorrelationEntityGroup {
+  id: string;
+  order: number;
+  predicates: CorrelationEntityPredicate[];
+}
+
+/** Predicates are ANDed within a group; groups are ORed. */
+export interface CorrelationEntityExpression {
+  version: 1;
+  groups: CorrelationEntityGroup[];
+}
+
+export type CorrelationCaseRouting =
+  | 'separate_by_group'
+  | 'consolidate_overlapping'
+  | 'one_per_rule';
+
+export interface CorrelationRuleCooldown {
+  durationMinutes: number;
+}
+
+export interface CorrelationRuleRearm {
+  type: 'immediate' | 'after_quiet_period';
+  quietPeriodMinutes: number;
+}
+
+// Canonical trigger schema. Every matching alert fires immediately; a burst
+// applies its threshold/window independently to each resolved expression group.
 export interface CorrelationRuleTrigger {
   type: 'per_alert' | 'burst';
+  entityExpression?: CorrelationEntityExpression;
+  routing?: CorrelationCaseRouting;
+  cooldown?: CorrelationRuleCooldown;
+  rearm?: CorrelationRuleRearm;
+  /** Read compatibility only. Canonical writes use entityExpression. */
   entity?: CorrelationEntity;
   windowMinutes?: number;
   threshold?: number;
 }
 
 // Actions an automation rule can take when it fires. At least one must be
-// selected. Any action works with either trigger: `setStatus`/`assignTo` give
-// auto-close and auto-assign (per-alert, or scoped to a burst); `createCase`
-// requires the 'burst' trigger.
+// selected. Every action, including deduplicated case creation, works with both
+// trigger types.
 export interface CorrelationRuleActions {
   createCase: boolean;
   caseSeverity?: CaseSeverity;
@@ -222,9 +360,17 @@ export interface CorrelationRuleActions {
 // optional 'any'/'all' mode: 'all' means the entity must, within the window,
 // have seen every listed value at least once (co-occurrence, not volume).
 export interface CorrelationRule {
+  /** Absent only on legacy documents returned during schema migration. */
+  schemaVersion?: 2;
   id: string;
   name: string;
   enabled: boolean;
+  revision: number;
+  if_seq_no: number;
+  if_primary_term: number;
+  priority?: number;
+  sortOrder?: number;
+  processingMode?: RuleProcessingMode;
   match: {
     ruleGroups?: string[];
     ruleGroupsMode?: MatchMode;
@@ -236,11 +382,78 @@ export interface CorrelationRule {
   };
   trigger: CorrelationRuleTrigger;
   actions: CorrelationRuleActions;
+  preconditions?: CorrelationRulePreconditions;
+  safety?: CorrelationRuleSafety;
   created_by?: string;
   created_at?: string;
   updated_at?: string;
-  matchCount?: number;
-  lastFired?: string | null;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
+}
+
+export interface CanonicalCorrelationRuleTrigger extends CorrelationRuleTrigger {
+  entityExpression: CorrelationEntityExpression;
+  routing: CorrelationCaseRouting;
+  cooldown: CorrelationRuleCooldown;
+  rearm: CorrelationRuleRearm;
+}
+
+export interface CanonicalCorrelationRule extends Omit<CorrelationRule, 'schemaVersion' | 'trigger'> {
+  schemaVersion: 2;
+  trigger: CanonicalCorrelationRuleTrigger;
+}
+
+export interface CorrelationRuleConcurrency {
+  revision: number;
+  if_seq_no: number;
+  if_primary_term: number;
+}
+
+export type CorrelationRuleCreateRequest = Pick<
+  CanonicalCorrelationRule,
+  'name' | 'match' | 'trigger' | 'actions'
+> &
+  Partial<
+    Pick<
+      CanonicalCorrelationRule,
+      'enabled' | 'priority' | 'sortOrder' | 'processingMode' | 'preconditions' | 'safety'
+    >
+  >;
+
+export type CorrelationRuleUpdateRequest = Partial<CorrelationRuleCreateRequest>;
+
+export interface CorrelationRuleListRequest {
+  size?: number;
+  cursor?: string;
+  includeDeleted?: boolean;
+}
+
+export interface CorrelationRuleRevision {
+  document_type: 'rule_revision';
+  rule_id: string;
+  revision: number;
+  changed_at: string;
+  changed_by: string;
+  change_type: 'create' | 'update' | 'delete' | 'rollback';
+  snapshot: CorrelationRuleCreateRequest;
+}
+
+export interface CorrelationRuleListResponse {
+  rules: CorrelationRule[];
+  nextCursor: string | null;
+}
+
+export interface CorrelationRuleRevisionsResponse {
+  revisions: CorrelationRuleRevision[];
+  page: number;
+  size: number;
+  total: number;
+  nextPage: number | null;
+}
+
+export interface CorrelationRuleDeleteResponse extends CorrelationRuleConcurrency {
+  deleted: true;
+  tombstone: true;
 }
 
 export interface CorrelationRulePreview {
@@ -250,7 +463,30 @@ export interface CorrelationRulePreview {
   matchingAlerts: number;
   triggeringEntities: Array<{ entity: string; count: number }>;
   wouldOpenCases: number;
+  casesCreated?: number;
+  casesExtended?: number;
+  statusChanges?: number;
+  assignments?: number;
+  skips?: number;
+  conflicts?: Array<Record<string, any>>;
+  skippedBySafety?: number;
+  rateLimited?: boolean;
+  missingEntities?: number;
+  missingEntityRate?: number;
+  representativeAlerts?: Array<{ id: string; timestamp: string | null }>;
+  sampledAlerts?: number;
+  totalAlerts?: number;
+  queryTimeMs?: number;
+  truncated?: boolean;
+  token: string;
+  fingerprint: string;
 }
+
+export type CorrelationRulePreviewRequest = CorrelationRuleCreateRequest & {
+  id: string;
+  revision: number;
+  lookbackHours?: number;
+};
 
 export interface FilterOptions {
   ruleIds: Array<{ value: string; count: number }>;

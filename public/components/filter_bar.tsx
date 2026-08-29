@@ -11,12 +11,13 @@ import {
   EuiPopover,
   EuiText,
   EuiSpacer,
-  EuiTextArea,
+  EuiFieldSearch,
   EuiSwitch,
   EuiDatePickerRange,
   EuiDatePicker,
   EuiFilterGroup,
   EuiFilterButton,
+  EuiPanel,
 } from '@elastic/eui';
 import moment from 'moment';
 import { FilterOptions, AlertStatus } from '../../common';
@@ -76,13 +77,23 @@ export const FilterBar: React.FC<Props> = ({
   const [isTimePopoverOpen, setIsTimePopoverOpen] = useState(false);
   const [customStart, setCustomStart] = useState<moment.Moment | null>(null);
   const [customEnd, setCustomEnd] = useState<moment.Moment | null>(null);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const draftSignature = JSON.stringify({ filters, timeRange });
+  const [appliedSignature, setAppliedSignature] = useState(draftSignature);
 
   const statusOptions = STATUS_OPTIONS.map((s) => ({ label: s.text, value: s.value }));
   const ruleIdOptions = toOptions((filterOptions?.ruleIds || []).map((r) => r.value));
   const agentOptions = toOptions((filterOptions?.agents || []).map((a) => a.value));
   const alertTypeOptions = toOptions((filterOptions?.alertTypes || []).map((a) => a.value));
   const assigneeOptions = toOptions((filterOptions?.assignees || []).map((a) => a.value));
+  const customRangeInvalid = Boolean(customStart && customEnd && !customStart.isBefore(customEnd));
+  const levelRangeInvalid = filters.levelMin != null && filters.levelMax != null && filters.levelMin > filters.levelMax;
+  const hasPendingChanges = draftSignature !== appliedSignature;
+  const apply = () => {
+    if (!levelRangeInvalid) {
+      setAppliedSignature(draftSignature);
+      onApply();
+    }
+  };
 
   const formatTimeRangeDisplay = () => {
     if (timeRange.mode === 'absolute') {
@@ -93,8 +104,103 @@ export const FilterBar: React.FC<Props> = ({
   };
 
   return (
-    <>
-      <EuiFlexGroup gutterSize="s" wrap alignItems="flexEnd">
+    <EuiPanel paddingSize="s" hasShadow={false} hasBorder className="wamFilterBar">
+      <EuiFlexGroup gutterSize="s" alignItems="flexStart" wrap className="wamQueryRow">
+        <EuiFlexItem className="wamQueryRow__query">
+          <EuiFormRow
+            label="Query"
+            display="rowCompressed"
+            helpText="Lucene syntax. Combined with the structured filters below using AND."
+            fullWidth
+          >
+            <EuiFieldSearch
+              fullWidth
+              compressed
+              placeholder='Search all fields, or use Lucene: rule.description:*ssh* AND NOT agent.name:"server1"'
+              value={filters.q}
+              onChange={(e) => onChange({ ...filters, q: e.target.value })}
+              onSearch={apply}
+              aria-label="Lucene alert query"
+            />
+          </EuiFormRow>
+        </EuiFlexItem>
+        <EuiFlexItem grow={false} className="wamQueryRow__time">
+          <EuiFormRow label="Time range" display="rowCompressed">
+            <EuiPopover
+              button={
+                <EuiButton className="wamTimeRangeButton" size="s" iconType="calendar" onClick={() => setIsTimePopoverOpen((v) => !v)}>
+                  {formatTimeRangeDisplay()}
+                </EuiButton>
+              }
+              isOpen={isTimePopoverOpen}
+              closePopover={() => setIsTimePopoverOpen(false)}
+              panelPaddingSize="m"
+            >
+              <div className="wamTimePopover">
+                <EuiText size="s"><h4>Quick ranges</h4></EuiText>
+                <EuiSpacer size="s" />
+                {QUICK_TIME_RANGES.map((range) => (
+                  <EuiButtonEmpty
+                    key={range.label}
+                    size="s"
+                    fullWidth
+                    onClick={() => {
+                      onTimeRangeChange({ from: range.start, to: range.end, mode: 'relative' });
+                      setIsTimePopoverOpen(false);
+                    }}
+                  >
+                    {range.label}
+                  </EuiButtonEmpty>
+                ))}
+                <EuiSpacer size="m" />
+                <EuiText size="s"><h4>Custom range</h4></EuiText>
+                <EuiSpacer size="s" />
+                <EuiFormRow
+                  fullWidth
+                  isInvalid={customRangeInvalid}
+                  error={customRangeInvalid ? 'Start must be before end.' : undefined}
+                >
+                  <EuiDatePickerRange
+                    startDateControl={<EuiDatePicker selected={customStart} onChange={setCustomStart} placeholder="Start" showTimeSelect />}
+                    endDateControl={<EuiDatePicker selected={customEnd} onChange={setCustomEnd} placeholder="End" showTimeSelect />}
+                  />
+                </EuiFormRow>
+                <EuiSpacer size="s" />
+                <EuiButton
+                  size="s"
+                  fullWidth
+                  disabled={!customStart || !customEnd || customRangeInvalid}
+                  onClick={() => {
+                    if (customStart && customEnd) {
+                      onTimeRangeChange({ from: customStart.toISOString(), to: customEnd.toISOString(), mode: 'absolute' });
+                      setIsTimePopoverOpen(false);
+                    }
+                  }}
+                >
+                  Use custom range
+                </EuiButton>
+              </div>
+            </EuiPopover>
+          </EuiFormRow>
+        </EuiFlexItem>
+        <EuiFlexItem grow={false} className="wamQueryRow__apply">
+          <EuiFormRow label="Apply filters" display="rowCompressed">
+            <EuiButton size="s" fill onClick={apply} isLoading={loading} disabled={levelRangeInvalid} iconType="search">
+              Apply
+            </EuiButton>
+          </EuiFormRow>
+        </EuiFlexItem>
+      </EuiFlexGroup>
+
+      {hasPendingChanges && (
+        <EuiText size="xs" color="warning" className="wamFilterPending" aria-live="polite">
+          Filters or time range changed. Apply to update the results.
+        </EuiText>
+      )}
+
+      <EuiSpacer size="m" />
+
+      <EuiFlexGroup gutterSize="s" wrap alignItems="flexEnd" className="wamStructuredFilters">
         <EuiFlexItem grow={false}>
           <EuiFormRow label="Status" display="rowCompressed">
             <EuiFilterGroup compressed>
@@ -122,23 +228,25 @@ export const FilterBar: React.FC<Props> = ({
         </EuiFlexItem>
 
         <EuiFlexItem style={{ minWidth: 90 }}>
-          <EuiFormRow label="Level min" display="rowCompressed">
+          <EuiFormRow label="Level min" display="rowCompressed" isInvalid={levelRangeInvalid} error={levelRangeInvalid ? 'Minimum must not exceed maximum.' : undefined}>
             <EuiFieldNumber
               compressed
               min={filterOptions?.levelRange.min ?? 0}
               max={filterOptions?.levelRange.max ?? 15}
               value={filters.levelMin ?? ''}
+              isInvalid={levelRangeInvalid}
               onChange={(e) => onChange({ ...filters, levelMin: e.target.value === '' ? undefined : Number(e.target.value) })}
             />
           </EuiFormRow>
         </EuiFlexItem>
         <EuiFlexItem style={{ minWidth: 90 }}>
-          <EuiFormRow label="Level max" display="rowCompressed">
+          <EuiFormRow label="Level max" display="rowCompressed" isInvalid={levelRangeInvalid}>
             <EuiFieldNumber
               compressed
               min={filterOptions?.levelRange.min ?? 0}
               max={filterOptions?.levelRange.max ?? 15}
               value={filters.levelMax ?? ''}
+              isInvalid={levelRangeInvalid}
               onChange={(e) => onChange({ ...filters, levelMax: e.target.value === '' ? undefined : Number(e.target.value) })}
             />
           </EuiFormRow>
@@ -197,98 +305,11 @@ export const FilterBar: React.FC<Props> = ({
       </EuiFlexGroup>
 
       <EuiSpacer size="s" />
-
-      <EuiFlexGroup gutterSize="s" alignItems="center" justifyContent="flexEnd" responsive={false} wrap>
+      <EuiFlexGroup gutterSize="s" alignItems="center" justifyContent="flexEnd" wrap>
         <EuiFlexItem grow={false}>
-            <EuiPopover
-              button={
-                <EuiButton size="s" iconType="arrowDown" iconSide="right" onClick={() => setIsTimePopoverOpen((v) => !v)}>
-                  {formatTimeRangeDisplay()}
-                </EuiButton>
-              }
-              isOpen={isTimePopoverOpen}
-              closePopover={() => setIsTimePopoverOpen(false)}
-              panelPaddingSize="m"
-            >
-              <div style={{ width: 300 }}>
-                <EuiText size="s">
-                  <h4>Quick ranges</h4>
-                </EuiText>
-                <EuiSpacer size="s" />
-                {QUICK_TIME_RANGES.map((range) => (
-                  <EuiButton
-                    key={range.label}
-                    size="s"
-                    fullWidth
-                    onClick={() => {
-                      onTimeRangeChange({ from: range.start, to: range.end, mode: 'relative' });
-                      setIsTimePopoverOpen(false);
-                    }}
-                    style={{ marginBottom: 4, justifyContent: 'flex-start' }}
-                  >
-                    {range.label}
-                  </EuiButton>
-                ))}
-                <EuiSpacer size="m" />
-                <EuiText size="s">
-                  <h4>Custom range</h4>
-                </EuiText>
-                <EuiSpacer size="s" />
-                <EuiDatePickerRange
-                  startDateControl={
-                    <EuiDatePicker selected={customStart} onChange={setCustomStart} placeholder="Start" showTimeSelect />
-                  }
-                  endDateControl={<EuiDatePicker selected={customEnd} onChange={setCustomEnd} placeholder="End" showTimeSelect />}
-                />
-                <EuiSpacer size="s" />
-                <EuiButton
-                  size="s"
-                  fullWidth
-                  disabled={!customStart || !customEnd}
-                  onClick={() => {
-                    if (customStart && customEnd) {
-                      onTimeRangeChange({ from: customStart.toISOString(), to: customEnd.toISOString(), mode: 'absolute' });
-                      setIsTimePopoverOpen(false);
-                    }
-                  }}
-                >
-                  Apply custom range
-                </EuiButton>
-              </div>
-            </EuiPopover>
-        </EuiFlexItem>
-
-        <EuiFlexItem grow={false}>
-            <EuiButton size="s" fill onClick={onApply} isLoading={loading} iconType="search">
-              Apply
-            </EuiButton>
-        </EuiFlexItem>
-
-        <EuiFlexItem grow={false}>
-            <EuiSwitch label="Auto refresh (5 min)" checked={autoRefreshEnabled} onChange={onToggleAutoRefresh} compressed />
+          <EuiSwitch label="Auto refresh every 5 minutes" checked={autoRefreshEnabled} onChange={onToggleAutoRefresh} compressed />
         </EuiFlexItem>
       </EuiFlexGroup>
-
-      <EuiSpacer size="xs" />
-      <EuiButtonEmpty size="xs" onClick={() => setAdvancedOpen((v) => !v)} iconType={advancedOpen ? 'arrowUp' : 'arrowDown'}>
-        Advanced query (Lucene)
-      </EuiButtonEmpty>
-      {advancedOpen && (
-        <EuiFormRow
-          fullWidth
-          display="rowCompressed"
-          helpText="Optional Lucene query, combined with the filters above using AND. Press Apply to run it."
-        >
-          <EuiTextArea
-            fullWidth
-            rows={3}
-            placeholder="e.g. rule.description:*ssh* AND NOT agent.name:server1"
-            value={filters.q}
-            onChange={(e) => onChange({ ...filters, q: e.target.value })}
-            resize="vertical"
-          />
-        </EuiFormRow>
-      )}
-    </>
+    </EuiPanel>
   );
 };

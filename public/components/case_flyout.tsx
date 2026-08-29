@@ -29,6 +29,7 @@ import {
   EuiCallOut,
   EuiCheckbox,
   EuiButtonEmpty,
+  EuiBadge,
 } from '@elastic/eui';
 import { Alert, Case, AiAnalysis } from '../../common';
 import { AlertsApiService } from '../services/api';
@@ -67,19 +68,48 @@ function describeCaseUpdate(payload: Record<string, any>): string {
 export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onError, onToast, onChanged, onOpenAlert }) => {
   const [loading, setLoading] = useState(true);
   const [caseDoc, setCaseDoc] = useState<Case | null>(null);
-  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [alerts, setAlerts] = useState<Array<Alert & { _evidence?: any }>>([]);
   const [busy, setBusy] = useState(false);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [isExpanded, setIsExpanded] = useState(false);
   const [closeConfirm, setCloseConfirm] = useState<{ openAlerts: Alert[]; excluded: Set<string> } | null>(null);
+  const [canManageLifecycle, setCanManageLifecycle] = useState(false);
+  const [holdAlert, setHoldAlert] = useState<(Alert & { _evidence?: any }) | null>(null);
+  const [holdReason, setHoldReason] = useState('');
+  const [evidenceDetail, setEvidenceDetail] = useState<any>(null);
+  const [evidenceNextCursor, setEvidenceNextCursor] = useState<string | null>(null);
+  const [evidenceTotal, setEvidenceTotal] = useState(0);
+  const [loadingMoreEvidence, setLoadingMoreEvidence] = useState(false);
 
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const res: any = await apiService.fetchCase(caseId);
+      const [res, capabilities]: any[] = await Promise.all([
+        apiService.fetchCase(caseId),
+        apiService.fetchSystemCapabilities(),
+      ]);
       setCaseDoc(res.case);
-      setAlerts(res.alerts || []);
+      const relationships = res.evidence?.evidence || [];
+      const byAlert = new Map(relationships.map((item: any) => [item.alert_id, item]));
+      const expanded: Array<Alert & { _evidence?: any }> = (res.alerts || []).map((item: Alert) => ({
+        ...item,
+        _evidence: byAlert.get(item._id),
+      }));
+      const liveIds = new Set(expanded.map((item) => item._id));
+      for (const relationship of relationships) {
+        if (!liveIds.has(relationship.alert_id)) {
+          expanded.push({
+            _id: relationship.alert_id,
+            _source: relationship.snapshot || {},
+            _evidence: relationship,
+          } as any);
+        }
+      }
+      setAlerts(expanded);
+      setEvidenceNextCursor(res.evidence?.nextCursor || null);
+      setEvidenceTotal(res.evidence?.total || expanded.length);
+      setCanManageLifecycle(Boolean(capabilities?.canManageLifecycle));
       setTitle(res.case.title);
       setDescription(res.case.description || '');
     } catch (e) {
@@ -88,6 +118,31 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
       setLoading(false);
     }
   }, [caseId]);
+
+  const loadMoreEvidence = async () => {
+    if (!evidenceNextCursor) return;
+    try {
+      setLoadingMoreEvidence(true);
+      const page = await apiService.fetchCaseEvidence(caseId, evidenceNextCursor);
+      setAlerts((current) => {
+        const known = new Set(current.map((item) => item._id));
+        const additional = page.evidence
+          .filter((item: any) => !known.has(item.alert_id))
+          .map((item: any) => ({
+            _id: item.alert_id,
+            _source: item.snapshot || {},
+            _evidence: item,
+          } as Alert & { _evidence?: any }));
+        return [...current, ...additional];
+      });
+      setEvidenceNextCursor(page.nextCursor);
+      setEvidenceTotal((current) => Math.max(current, page.total));
+    } catch (e) {
+      onError('Failed to load more case evidence');
+    } finally {
+      setLoadingMoreEvidence(false);
+    }
+  };
 
   useEffect(() => {
     load();
@@ -120,34 +175,40 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
   };
 
   const requestStatusChange = (status: Case['status']) => {
-    if (status === 'closed' && caseDoc?.status !== 'closed') {
-      const openAlerts = alerts.filter((a) => a._source.status !== 'closed');
-      if (openAlerts.length > 0) {
+    if (status === 'closed') {
+      if (caseDoc?.status !== 'closed') {
+        const openAlerts = alerts.filter((a) => a._source.status !== 'closed');
         setCloseConfirm({ openAlerts, excluded: new Set() });
-        return;
       }
+      return;
     }
     update({ status });
   };
 
   const confirmClose = async () => {
     if (!closeConfirm) return;
-    const idsToClose = closeConfirm.openAlerts
-      .map((a) => a._id)
-      .filter((id) => !closeConfirm.excluded.has(id));
     try {
       setBusy(true);
-      const updated: any = await apiService.updateCase(caseId, { status: 'closed' });
-      setCaseDoc(updated);
-      if (idsToClose.length) {
-        await apiService.bulkUpdateAlerts(idsToClose, { status: 'closed' });
-      }
-      onChanged();
-      onToast?.(
-        'Case closed',
-        'success',
-        idsToClose.length ? `Closed ${idsToClose.length} linked alert(s) with it.` : undefined
+      const result = await apiService.closeCase(
+        caseId,
+        closeConfirm.openAlerts.map((alert) => alert._id).filter((id) => closeConfirm.excluded.has(id))
       );
+      onChanged();
+      if (result.ok) {
+        onToast?.(
+          'Case closed',
+          'success',
+          `${result.closedAlerts} linked alert(s) closed; ${result.evidenceOnlyAlertIds.length} archive/snapshot-only link(s) retained.`
+        );
+      } else {
+        onToast?.(
+          result.caseClosed ? 'Case closed with partial alert failures' : 'Case close was incomplete',
+          'danger',
+          result.failedAlertIds.length
+            ? `Failed alert IDs: ${result.failedAlertIds.join(', ')}`
+            : result.errors.map((error) => error.message).join('; ')
+        );
+      }
     } catch (e) {
       onError('Failed to close case');
     } finally {
@@ -157,9 +218,57 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
     }
   };
 
-  if (loading || !caseDoc) {
+  const viewEvidence = async (alert: Alert & { _evidence?: any }) => {
+    if (!alert._evidence) {
+      onOpenAlert?.(alert);
+      return;
+    }
+    try {
+      setBusy(true);
+      const detail: any = await apiService.fetchCaseEvidenceAlert(caseId, alert._id);
+      if (detail.availability === 'live' && detail.alert) onOpenAlert?.(detail.alert);
+      else setEvidenceDetail(detail);
+    } catch (e: any) {
+      onError(e?.body?.message || 'Failed to resolve case evidence');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applyHold = async () => {
+    if (!holdAlert || !holdReason.trim()) return;
+    try {
+      setBusy(true);
+      await apiService.setEvidenceHold(caseId, holdAlert._id, holdReason.trim());
+      onToast?.('Evidence hold set', 'success');
+      setHoldAlert(null);
+      setHoldReason('');
+      await load();
+    } catch (e: any) {
+      onError(e?.body?.message || 'Failed to set evidence hold');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const releaseHold = async (alert: Alert & { _evidence?: any }) => {
+    try {
+      setBusy(true);
+      await apiService.releaseEvidenceHold(caseId, alert._id);
+      onToast?.('Evidence hold released', 'success');
+      await load();
+    } catch (e: any) {
+      onError(e?.body?.message || 'Failed to release evidence hold');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Keep the existing flyout mounted during refreshes so its selected tab,
+  // scroll position, and analyst context are not reset after every mutation.
+  if (!caseDoc) {
     return (
-      <EuiFlyout onClose={onClose} size="m">
+      <EuiFlyout onClose={onClose} size="m" className="wamCaseFlyout">
         <EuiFlyoutBody>
           <EuiLoadingSpinner size="xl" />
         </EuiFlyoutBody>
@@ -169,7 +278,7 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
 
   return (
     <>
-    <EuiFlyout onClose={onClose} size={isExpanded ? '95vw' : 'l'} aria-labelledby="case-details-flyout">
+    <EuiFlyout onClose={onClose} size={isExpanded ? '95vw' : 'l'} aria-labelledby="case-details-flyout" className="wamCaseFlyout">
       <EuiFlyoutHeader hasBorder>
         <EuiFlexGroup alignItems="center" gutterSize="s" responsive={false}>
           <EuiFlexItem>
@@ -269,7 +378,7 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
             },
             {
               id: 'alerts',
-              name: `Linked Alerts (${alerts.length})`,
+              name: `Linked Alerts (${evidenceTotal})`,
               content: (
                 <div>
                   <EuiSpacer size="m" />
@@ -289,12 +398,30 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
                         render: (v: Alert['_source']) => <StatusBadge status={v.status} />,
                       },
                       {
+                        field: '_evidence',
+                        name: 'Evidence',
+                        render: (v: any) => v ? (
+                          <EuiToolTip content={v.hold_reason || (v.archive_index ? `Trusted archive: ${v.archive_index}` : 'Live relationship snapshot')}>
+                            <EuiBadge color={v.hold_reason ? 'warning' : v.relationship_state === 'archived' ? 'primary' : v.relationship_state === 'purged' ? 'danger' : 'hollow'}>
+                              {v.hold_reason ? 'Held' : v.relationship_state === 'archived' ? 'Archived' : v.relationship_state === 'purged' ? 'Purged snapshot' : v.relationship_state === 'legacy' ? 'Legacy link' : 'Live'}
+                            </EuiBadge>
+                          </EuiToolTip>
+                        ) : <EuiBadge color="hollow">Legacy link</EuiBadge>,
+                      },
+                      {
                         name: 'Actions',
                         actions: [
                           {
-                            render: (alert: Alert) => (
+                            render: (alert: Alert & { _evidence?: any }) => (
                               <>
-                                <EuiButtonIcon iconType="eye" aria-label="View" onClick={() => onOpenAlert?.(alert)} />
+                                <EuiButtonIcon iconType="eye" aria-label="View evidence" onClick={() => viewEvidence(alert)} />
+                                {alert._evidence && canManageLifecycle && (
+                                  <EuiButtonIcon
+                                    iconType={alert._evidence.hold_reason ? 'lockOpen' : 'lock'}
+                                    aria-label={alert._evidence.hold_reason ? 'Release evidence hold' : 'Set evidence hold'}
+                                    onClick={() => alert._evidence.hold_reason ? releaseHold(alert) : setHoldAlert(alert)}
+                                  />
+                                )}
                                 <EuiButtonIcon
                                   iconType="unlink"
                                   aria-label="Remove from case"
@@ -307,10 +434,18 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
                       },
                     ]}
                   />
+                  {evidenceNextCursor && (
+                    <>
+                      <EuiSpacer size="s" />
+                      <EuiButton size="s" onClick={loadMoreEvidence} isLoading={loadingMoreEvidence}>
+                        Load more linked alerts ({alerts.length} of {evidenceTotal})
+                      </EuiButton>
+                    </>
+                  )}
                   <EuiSpacer size="l" />
                   <AlertMultiPicker
                     apiService={apiService}
-                    excludeIds={caseDoc.alert_ids}
+                    excludeIds={Array.from(new Set([...(caseDoc.alert_ids || []), ...alerts.map((alert) => alert._id)]))}
                     onLinkSelected={(ids) => update({ addAlertIds: ids })}
                     linking={busy}
                     buttonLabel="Add to case"
@@ -321,7 +456,7 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
             },
             {
               id: 'attack-path',
-              name: 'Attack Path',
+              name: 'Attack Graph',
               content: (
                 <div>
                   <EuiSpacer size="m" />
@@ -382,16 +517,17 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
         />
       </EuiFlyoutBody>
     </EuiFlyout>
-    {closeConfirm && (
+      {closeConfirm && (
       <EuiModal onClose={() => setCloseConfirm(null)}>
         <EuiModalHeader>
           <EuiModalHeaderTitle>Close this case?</EuiModalHeaderTitle>
         </EuiModalHeader>
         <EuiModalBody>
-          <EuiCallOut title="This will also close linked alerts" color="warning" iconType="alert">
+          <EuiCallOut title="This will also close linked live alerts" color="warning" iconType="alert">
             <p>
-              {closeConfirm.openAlerts.length} linked alert{closeConfirm.openAlerts.length === 1 ? '' : 's'} still
-              open will be closed along with this case. Uncheck any alert you want to leave open.
+              {closeConfirm.openAlerts.length} currently loaded linked alert{closeConfirm.openAlerts.length === 1 ? '' : 's'} still
+              open. The server will resolve all relationships and close every linked live alert except those unchecked below;
+              archive and snapshot-only evidence stays attached to the case.
             </p>
           </EuiCallOut>
           <EuiSpacer size="m" />
@@ -422,7 +558,53 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
           </EuiButton>
         </EuiModalFooter>
       </EuiModal>
-    )}
+      )}
+      {holdAlert && (
+        <EuiModal onClose={() => setHoldAlert(null)}>
+          <EuiModalHeader><EuiModalHeaderTitle>Place evidence hold</EuiModalHeaderTitle></EuiModalHeader>
+          <EuiModalBody>
+            <EuiCallOut color="warning" title="Held evidence blocks archive purge">
+              Record the investigation, legal, or regulatory reason for retaining full evidence.
+            </EuiCallOut>
+            <EuiSpacer size="m" />
+            <EuiFormRow label="Hold reason" fullWidth>
+              <EuiTextArea fullWidth value={holdReason} maxLength={1000} onChange={(e) => setHoldReason(e.target.value)} />
+            </EuiFormRow>
+          </EuiModalBody>
+          <EuiModalFooter>
+            <EuiButtonEmpty onClick={() => setHoldAlert(null)}>Cancel</EuiButtonEmpty>
+            <EuiButton fill color="warning" disabled={!holdReason.trim()} isLoading={busy} onClick={applyHold}>Place hold</EuiButton>
+          </EuiModalFooter>
+        </EuiModal>
+      )}
+      {evidenceDetail && (
+        <EuiModal onClose={() => setEvidenceDetail(null)} style={{ width: 760 }}>
+          <EuiModalHeader><EuiModalHeaderTitle>Archived alert evidence</EuiModalHeaderTitle></EuiModalHeader>
+          <EuiModalBody>
+            <EuiCallOut
+              color={evidenceDetail.availability === 'archived' ? 'success' : evidenceDetail.availability === 'purged' ? 'warning' : 'primary'}
+              title={`Evidence availability: ${String(evidenceDetail.availability).replace('_', ' ')}`}
+            >
+              Full evidence is resolved server-side from the trusted locator stored on this case relationship. The browser cannot choose an index.
+            </EuiCallOut>
+            <EuiSpacer size="m" />
+            <EuiDescriptionList type="column" compressed>
+              <EuiDescriptionListTitle>Alert ID</EuiDescriptionListTitle>
+              <EuiDescriptionListDescription>{evidenceDetail.evidence?.alert_id}</EuiDescriptionListDescription>
+              <EuiDescriptionListTitle>Archive state</EuiDescriptionListTitle>
+              <EuiDescriptionListDescription>{evidenceDetail.evidence?.relationship_state}</EuiDescriptionListDescription>
+              <EuiDescriptionListTitle>Archived at</EuiDescriptionListTitle>
+              <EuiDescriptionListDescription>{formatAbsolute(evidenceDetail.evidence?.archived_at)}</EuiDescriptionListDescription>
+            </EuiDescriptionList>
+            <EuiSpacer size="m" />
+            <EuiText size="s"><h4>Resolved full alert or retained snapshot</h4></EuiText>
+            <pre style={{ maxHeight: 360, overflow: 'auto', whiteSpace: 'pre-wrap' }}>
+              {JSON.stringify(evidenceDetail.alert?._source || evidenceDetail.evidence?.snapshot || {}, null, 2)}
+            </pre>
+          </EuiModalBody>
+          <EuiModalFooter><EuiButton onClick={() => setEvidenceDetail(null)}>Close</EuiButton></EuiModalFooter>
+        </EuiModal>
+      )}
     </>
   );
 };

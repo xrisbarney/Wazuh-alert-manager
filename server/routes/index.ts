@@ -9,6 +9,8 @@ import { defineUserRoutes } from './users';
 import { defineReportRoutes } from './reports';
 import { defineAttackPathRoutes } from './attack_path';
 import { defineRuleRoutes } from './rules';
+import { defineSystemRoutes } from './system';
+import { defineEvidenceRoutes } from './evidence';
 
 export function defineRoutes(router: IRouter) {
   router.get(
@@ -30,4 +32,6 @@ export function defineRoutes(router: IRouter) {
   defineReportRoutes(router);
   defineAttackPathRoutes(router);
   defineRuleRoutes(router);
+  defineSystemRoutes(router);
+  defineEvidenceRoutes(router);
 }

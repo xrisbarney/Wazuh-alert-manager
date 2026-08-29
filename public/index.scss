@@ -1,1 +1,412 @@
-/* stylelint-disable no-empty-source */
+.wamApp {
+  background: linear-gradient(180deg, var(--euiColorLightestShade, var(--ouiColorLightestShade, rgba(0, 119, 204, 0.035))), transparent 240px);
+  min-height: 100%;
+}
+
+.wamPageIntro__icon {
+  align-items: center;
+  background: var(--euiColorLightestShade, var(--ouiColorLightestShade, rgba(0, 119, 204, 0.1)));
+  border-radius: 12px;
+  color: var(--euiColorPrimary, var(--ouiColorPrimary, #0077cc));
+  display: inline-flex;
+  height: 48px;
+  justify-content: center;
+  width: 48px;
+}
+
+.wamWorkbenchTabs {
+  padding: 0 8px;
+}
+
+.wamWorkbenchHeader {
+  // Empty-shade is the theme-aware content surface. Wazuh's page-background
+  // token can remain dark in light mode, which makes inherited text illegible.
+  background: var(--euiColorEmptyShade, var(--ouiColorEmptyShade, #fff));
+  position: sticky;
+  top: 48px;
+  z-index: 20;
+}
+
+.wamGlobalToasts {
+  z-index: 10000 !important;
+}
+
+.wamPageContent {
+  border-radius: 12px;
+  box-shadow: 0 8px 28px var(--euiShadowColor, var(--ouiShadowColor, rgba(20, 30, 55, 0.08)));
+}
+
+.wamQueueStats .euiPanel {
+  border-radius: 10px;
+  min-height: 64px;
+}
+
+.wamQueueStats .euiStat__description {
+  white-space: nowrap;
+}
+
+.wamSummaryToggle {
+  white-space: nowrap;
+}
+
+.wamAlertTable {
+  overflow-x: auto;
+}
+
+.wamAlertTable .euiTableHeaderCell {
+  background: inherit;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.wamAlertRow {
+  border-left: 3px solid transparent;
+  transition: background-color 120ms ease, transform 120ms ease;
+}
+
+.wamAlertRow:hover {
+  background-color: var(--euiColorLightestShade, var(--ouiColorLightestShade, rgba(0, 119, 204, 0.045)));
+}
+
+.wamClickableRow {
+  cursor: pointer;
+}
+
+.wamClickableRow:hover {
+  background-color: var(--euiColorLightestShade, var(--ouiColorLightestShade, rgba(0, 119, 204, 0.045)));
+}
+
+.wamClickableRow:focus {
+  outline: 2px solid var(--euiColorPrimary, var(--ouiColorPrimary, #0077cc));
+  outline-offset: -2px;
+}
+
+.wamCaseTable {
+  overflow-x: auto;
+}
+
+.wamTablePrimary {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+  min-width: 0;
+}
+
+.wamTablePrimary strong,
+.wamTableSecondary {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wamTableSecondary {
+  color: inherit;
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+.wamAlertId,
+.wamFieldName,
+.wamFieldValue {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.wamFieldName {
+  font-size: 0.75rem;
+}
+
+.wamDocumentFields .euiTableRowCell {
+  vertical-align: top;
+}
+
+.wamAlertFlyoutTabs > .euiTabs,
+.wamReportTabs > .euiTabs,
+.wamSettingsTabs > .euiTabs {
+  flex-wrap: nowrap;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.wamAlertFlyoutTabs > .euiTabs .euiTab,
+.wamReportTabs > .euiTabs .euiTab,
+.wamSettingsTabs > .euiTabs .euiTab {
+  flex: 0 0 auto;
+}
+
+.wamFilterBar {
+  border-radius: 10px;
+}
+
+.wamQueryRow .euiFormRow,
+.wamQueryRow .euiFormRow__fieldWrapper {
+  max-width: none;
+}
+
+.wamQueryRow__query {
+  min-width: 280px;
+}
+
+.wamTimeRangeButton {
+  max-width: 360px;
+}
+
+.wamTimeRangeButton .euiButton__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wamFilterPending {
+  margin-top: 4px;
+}
+
+.wamStructuredFilters > .euiFlexItem {
+  flex-basis: 140px;
+}
+
+.wamTimePopover {
+  width: 320px;
+}
+
+.wamTimePopover .euiButtonEmpty {
+  justify-content: flex-start;
+}
+
+.wamReportStats .euiPanel,
+.wamOutcomeStats .euiPanel {
+  border-radius: 10px;
+  height: 100%;
+}
+
+.wamReportDatePicker {
+  min-width: 340px;
+}
+
+.wamReportCharts .euiPanel {
+  border-radius: 10px;
+  height: 100%;
+  min-height: 320px;
+}
+
+.wamSettingsSection {
+  padding-top: 20px;
+}
+
+.wamSyncSettingsPanel {
+  border-radius: 10px;
+  max-width: 680px;
+}
+
+.wamSettingsIcon {
+  align-items: center;
+  background: var(--euiColorLightestShade, var(--ouiColorLightestShade, rgba(0, 119, 204, 0.1)));
+  border-radius: 8px;
+  color: var(--euiColorPrimary, var(--ouiColorPrimary, #0077cc));
+  display: inline-flex;
+  height: 40px;
+  justify-content: center;
+  width: 40px;
+}
+
+.wamSettingsLoading {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 180px;
+}
+
+.wamSyncHealthPanel {
+  border-radius: 10px;
+  max-width: 680px;
+}
+
+.wamDonut__value {
+  fill: var(--euiTextColor, var(--ouiTextColor, #1d1e24));
+}
+
+.wamDonut__label {
+  fill: var(--euiColorDarkShade, var(--ouiColorDarkShade, #69707d));
+}
+
+.wamDonut__empty {
+  stroke: var(--euiColorLightShade, var(--ouiColorLightShade, #d3dae6));
+}
+
+.wamAutomationHealth {
+  border-radius: 10px;
+}
+
+.wamAutomationStats .euiPanel {
+  min-width: 120px;
+}
+
+.wamAutomationSettings {
+  margin-top: 12px;
+}
+
+.wamEntityGroup {
+  border-left: 4px solid var(--euiColorPrimary, var(--ouiColorPrimary, #0077cc));
+}
+
+.wamRuleOperator {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 34px;
+}
+
+.wamPredicateRow > .euiFlexItem {
+  min-width: 150px;
+}
+
+.wamPredicateRow > .euiFlexItem:last-child {
+  min-width: auto;
+  padding-bottom: 8px;
+}
+
+.wamRuleSummary {
+  overflow-wrap: anywhere;
+}
+
+.wamHelpText {
+  color: var(--euiColorPrimary, var(--ouiColorPrimary, #0077cc));
+  cursor: help;
+  font-size: 0.75rem;
+  text-decoration: underline dotted;
+}
+
+.wamPreviewStats > .euiFlexItem {
+  flex-basis: 140px;
+}
+
+.wamPreviewJson {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.wamRepresentativeAlerts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.wamRuleIdentity {
+  min-width: 180px;
+}
+
+.wamAlertRow--critical { border-left-color: var(--euiColorDanger, var(--ouiColorDanger, #bd271e)); }
+.wamAlertRow--high { border-left-color: var(--euiColorWarning, var(--ouiColorWarning, #f5892e)); }
+.wamAlertRow--medium { border-left-color: var(--euiColorAccent, var(--ouiColorAccent, #fec514)); }
+.wamAlertRow--low { border-left-color: var(--euiColorMediumShade, var(--ouiColorMediumShade, #98a2b3)); }
+
+@media (min-width: 769px) and (max-width: 1100px) {
+  .wamQueryRow__query {
+    flex-basis: 100%;
+  }
+
+  .wamQueryRow__time {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .wamQueryRow__time .euiFormRow,
+  .wamQueryRow__time .euiPopover,
+  .wamQueryRow__time .euiPopover__anchor,
+  .wamQueryRow__time .wamTimeRangeButton {
+    max-width: none;
+    width: 100%;
+  }
+}
+
+@media (max-width: 768px) {
+  .wamPageIntro { align-items: flex-start; }
+  .wamQueueStats > .euiFlexItem { flex-basis: calc(50% - 8px); }
+  .wamPageContent { border-radius: 8px; }
+
+  .wamQueryRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .wamQueryRow > .euiFlexItem,
+  .wamQueryRow .euiButton,
+  .wamQueryRow .euiPopover,
+  .wamQueryRow .euiPopover__anchor {
+    min-width: 0;
+    max-width: none;
+    width: 100%;
+  }
+
+  .wamStructuredFilters > .euiFlexItem {
+    flex-basis: 100%;
+    min-width: 0 !important;
+  }
+
+  .wamReportDatePicker,
+  .wamReportTabs .euiFlexItem,
+  .wamReportStats > .euiFlexItem,
+  .wamOutcomeStats > .euiFlexItem,
+  .wamReportCharts > .euiFlexItem {
+    flex-basis: 100%;
+    min-width: 0 !important;
+  }
+
+  .wamTimePopover {
+    max-width: calc(100vw - 48px);
+  }
+
+  .wamAlertFlyout .euiFlyoutBody__overflow {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .wamDocumentFields .euiTableHeaderCell:first-child,
+  .wamDocumentFields .euiTableRowCell:first-child {
+    width: 42%;
+  }
+
+  .wamBulkActions .euiFlexGroup,
+  .wamLifecycleHeader,
+  .wamLifecycleActions,
+  .wamLifecycleFields,
+  .wamStorageStats {
+    align-items: stretch;
+  }
+
+  .wamBulkActions .euiFlexItem,
+  .wamBulkActions .euiButton,
+  .wamLifecycleActions > .euiFlexItem,
+  .wamLifecycleActions .euiButton,
+  .wamLifecycleFields > .euiFlexItem,
+  .wamLifecycleHeader > .euiFlexItem,
+  .wamStorageStats > .euiFlexItem {
+    flex-basis: 100%;
+    min-width: 0 !important;
+    width: 100%;
+  }
+
+  .wamAutomationStats > .euiFlexItem {
+    flex-basis: calc(50% - 8px);
+    min-width: 0 !important;
+  }
+
+  .wamPredicateRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .wamPredicateRow > .euiFlexItem,
+  .wamAutomationSettings > .euiFlexGroup > .euiFlexItem,
+  .wamAutomationSettings .euiButton {
+    flex-basis: 100%;
+    min-width: 0 !important;
+    width: 100%;
+  }
+}

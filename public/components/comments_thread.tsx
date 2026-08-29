@@ -15,12 +15,17 @@ export const CommentsThread: React.FC<Props> = ({ apiService, target, onError, o
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const load = useCallback(async () => {
     try {
       setLoading(true);
       const res: any = await apiService.fetchComments(target);
       setComments(res?.comments || []);
+      setNextCursor(res?.nextCursor || null);
+      setTotal(res?.total || 0);
     } catch (e) {
       onError('Failed to load comments');
     } finally {
@@ -47,6 +52,21 @@ export const CommentsThread: React.FC<Props> = ({ apiService, target, onError, o
     }
   };
 
+  const loadMore = async () => {
+    if (!nextCursor) return;
+    try {
+      setLoadingMore(true);
+      const res = await apiService.fetchComments(target, nextCursor);
+      setComments((current) => [...current, ...(res.comments || [])]);
+      setNextCursor(res.nextCursor);
+      setTotal(res.total);
+    } catch (e) {
+      onError('Failed to load more comments');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   if (loading) return <EuiLoadingSpinner size="m" />;
 
   return (
@@ -68,6 +88,14 @@ export const CommentsThread: React.FC<Props> = ({ apiService, target, onError, o
             </EuiComment>
           ))}
         </EuiCommentList>
+      )}
+      {nextCursor && (
+        <>
+          <EuiSpacer size="s" />
+          <EuiButton size="s" onClick={loadMore} isLoading={loadingMore}>
+            Load more comments ({comments.length} of {total})
+          </EuiButton>
+        </>
       )}
       <EuiSpacer size="m" />
       <EuiTextArea

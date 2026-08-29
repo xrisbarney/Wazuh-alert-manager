@@ -1,11 +1,19 @@
 {
   "name": "wazuhAlertManager",
-  "version": "1.5.1",
+  "version": "2.0.0",
   "private": true,
   "license": "Apache-2.0",
   "scripts": {
-    "build": "yarn plugin-helpers build",
+    "build": "node scripts/generate-build-info.js && yarn plugin-helpers build",
+    "test": "../../node_modules/.bin/jest --config jest.config.js --runInBand",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:ui": "playwright test --ui",
     "plugin-helpers": "../../scripts/use_node ../../scripts/plugin_helpers",
     "osd": "../../scripts/use_node ../../scripts/osd"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.55.1",
+    "dotenv": "^17.4.2"
   }
 }

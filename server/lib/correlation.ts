@@ -1,5 +1,9 @@
 import { CorrelationEntity, CorrelationRule } from '../../common';
 
+export type RuleMatchResult =
+  | { supported: true; matched: boolean }
+  | { supported: false; matched: false; reason: 'all_mode_requires_burst' };
+
 // The OpenSearch field an alert is grouped by for a given entity type. agent is
 // the most reliable (agent.name is explicitly keyword-mapped); srcip/user come
 // from opportunistic decoder fields, which fresh installs map to keyword via the
@@ -69,17 +73,43 @@ export function buildMatchFilters(match: CorrelationRule['match']): any[] {
   return filter;
 }
 
-/** Does one already-fetched alert source satisfy a rule's match predicate? */
-export function alertMatchesRule(rule: CorrelationRule, source: any): boolean {
+/** True when any populated match section uses entity/window co-occurrence. */
+export function usesAllMatchMode(match: CorrelationRule['match']): boolean {
+  return (
+    (match.ruleIdsMode === 'all' && !!match.ruleIds?.length) ||
+    (match.ruleGroupsMode === 'all' && !!match.ruleGroups?.length) ||
+    (match.agentNamesMode === 'all' && !!match.agentNames?.length)
+  );
+}
+
+/**
+ * Evaluate the document-level portion of a rule match. `all` is window
+ * co-occurrence and is therefore supported only for burst triggers. For a burst,
+ * this deliberately performs the Any pre-filter; coverageRequirements performs
+ * the corresponding All check over the complete entity window.
+ */
+export function evaluateAlertMatch(rule: CorrelationRule, source: any): RuleMatchResult {
+  if (rule.trigger?.type !== 'burst' && usesAllMatchMode(rule.match)) {
+    return { supported: false, matched: false, reason: 'all_mode_requires_burst' };
+  }
   const m = rule.match;
-  if (m.minLevel != null && !(Number(source?.rule?.level ?? 0) >= m.minLevel)) return false;
-  if (m.ruleIds?.length && !m.ruleIds.map(String).includes(String(source?.rule?.id))) return false;
-  if (m.agentNames?.length && !m.agentNames.includes(source?.agent?.name)) return false;
+  if (m.minLevel != null && !(Number(source?.rule?.level ?? 0) >= m.minLevel)) return { supported: true, matched: false };
+  if (m.ruleIds?.length && !m.ruleIds.map(String).includes(String(source?.rule?.id))) {
+    return { supported: true, matched: false };
+  }
+  if (m.agentNames?.length && !m.agentNames.includes(source?.agent?.name)) {
+    return { supported: true, matched: false };
+  }
   if (m.ruleGroups?.length) {
     const groups: string[] = Array.isArray(source?.rule?.groups) ? source.rule.groups : [];
-    if (!m.ruleGroups.some((g) => groups.includes(g))) return false;
+    if (!m.ruleGroups.some((g) => groups.includes(g))) return { supported: true, matched: false };
   }
-  return true;
+  return { supported: true, matched: true };
+}
+
+/** Does one already-fetched alert source satisfy a supported rule predicate? */
+export function alertMatchesRule(rule: CorrelationRule, source: any): boolean {
+  return evaluateAlertMatch(rule, source).matched;
 }
 
 /**

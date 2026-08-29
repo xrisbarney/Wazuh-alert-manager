@@ -12,6 +12,7 @@ import {
   EuiHealth,
   EuiBadge,
   EuiButtonGroup,
+  EuiCallOut,
 } from '@elastic/eui';
 import { AttackGraph } from '../../common';
 import { AlertsApiService } from '../services/api';
@@ -63,7 +64,7 @@ export const AttackPathView: React.FC<Props> = ({ caseId, apiService, onError, o
       <EuiFlexGroup alignItems="center" gutterSize="m" responsive={false} wrap>
         <EuiFlexItem grow={false}>
           <EuiText size="s" color="subdued">
-            Entities and MITRE ATT&amp;CK phases derived from this case's linked alerts.
+            Entity co-occurrence and MITRE ATT&amp;CK context derived from this case's linked alerts.
           </EuiText>
         </EuiFlexItem>
         <EuiFlexItem grow={false}>
@@ -71,8 +72,8 @@ export const AttackPathView: React.FC<Props> = ({ caseId, apiService, onError, o
             legend="View"
             buttonSize="compressed"
             options={[
-              { id: 'graph', label: 'Graph' },
-              { id: 'timeline', label: 'Timeline' },
+              { id: 'graph', label: 'Entity graph' },
+              { id: 'timeline', label: 'Alert timeline' },
             ]}
             idSelected={mode}
             onChange={(id) => setMode(id as 'graph' | 'timeline')}
@@ -81,6 +82,20 @@ export const AttackPathView: React.FC<Props> = ({ caseId, apiService, onError, o
       </EuiFlexGroup>
 
       <EuiSpacer size="m" />
+
+      {(graph as any).truncated && (
+        <>
+          <EuiCallOut
+            size="s"
+            color="warning"
+            title={`Graph limited to ${(graph as any).limit?.toLocaleString() || 'the configured limit'} linked alerts`}
+          >
+            This visualization includes {(graph as any).includedAlerts?.toLocaleString() || 0} resolvable alerts.
+            Use the linked-alert table and narrower cases for complete evidence review.
+          </EuiCallOut>
+          <EuiSpacer size="m" />
+        </>
+      )}
 
       {mode === 'graph' ? (
         <>
@@ -125,7 +140,7 @@ export const AttackPathView: React.FC<Props> = ({ caseId, apiService, onError, o
       ) : (
         <>
           <EuiTitle size="xs">
-            <h3>Chronological path</h3>
+              <h3>Alert chronology</h3>
           </EuiTitle>
           <EuiSpacer size="s" />
           {graph.hops.length === 0 ? (

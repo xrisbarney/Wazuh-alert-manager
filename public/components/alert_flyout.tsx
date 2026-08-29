@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   EuiFlyout,
   EuiFlyoutHeader,
@@ -11,14 +11,16 @@ import {
   EuiSpacer,
   EuiFormRow,
   EuiCodeBlock,
-  EuiAccordion,
-  EuiPanel,
   EuiText,
   EuiButton,
   EuiFlexGroup,
   EuiFlexItem,
   EuiButtonIcon,
   EuiToolTip,
+  EuiCallOut,
+  EuiBasicTable,
+  EuiFieldSearch,
+  EuiBadge,
 } from '@elastic/eui';
 import { Alert, AiAnalysis } from '../../common';
 import { AlertsApiService } from '../services/api';
@@ -46,26 +48,28 @@ interface Props {
   onOpenCase?: (caseId: string) => void;
   onOpenAlert?: (alert: Alert) => void;
   onAnalysisGenerated?: (alertId: string, analysis: AiAnalysis) => void;
+  onAddFilter?: (field: string, value: unknown, negate: boolean) => void;
 }
 
-const renderNestedObject = (obj: any, depth = 0): React.ReactNode => {
-  if (obj === null || obj === undefined) return null;
-  if (typeof obj === 'object') {
-    return (
-      <EuiPanel paddingSize="s" hasShadow={false} style={{ margin: '5px 0' }}>
-        {Object.entries(obj).map(([key, value]) => (
-          <div key={key} style={{ marginLeft: depth > 0 ? 15 : 0 }}>
-            <EuiText size="s">
-              <strong>{key}:</strong>
-            </EuiText>
-            {typeof value === 'object' ? renderNestedObject(value, depth + 1) : <EuiText size="s" style={{ marginLeft: 10 }}>{String(value)}</EuiText>}
-          </div>
-        ))}
-      </EuiPanel>
-    );
+interface FieldRow { field: string; value: unknown; display: string; operational: boolean; }
+
+function flattenFields(value: any, operational: boolean, prefix = '', rows: FieldRow[] = []): FieldRow[] {
+  if (Array.isArray(value)) {
+    if (value.length === 0) rows.push({ field: prefix, value, display: '[]', operational });
+    for (const child of value) flattenFields(child, operational, prefix, rows);
+  } else if (value != null && typeof value === 'object') {
+    if (Object.keys(value).length === 0) rows.push({ field: prefix, value, display: '{}', operational });
+    for (const [key, child] of Object.entries(value)) flattenFields(child, operational, prefix ? `${prefix}.${key}` : key, rows);
+  } else {
+    rows.push({
+      field: prefix,
+      value,
+      display: value == null ? '—' : String(value),
+      operational,
+    });
   }
-  return <EuiText size="s">{String(obj)}</EuiText>;
-};
+  return rows;
+}
 
 export const AlertFlyout: React.FC<Props> = ({
   alert,
@@ -80,16 +84,36 @@ export const AlertFlyout: React.FC<Props> = ({
   onOpenCase,
   onOpenAlert,
   onAnalysisGenerated,
+  onAddFilter,
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [fieldSearch, setFieldSearch] = useState('');
+  const fieldRows = useMemo(() => {
+    const byField = new Map<string, FieldRow>();
+    const rows = [
+      ...flattenFields(alert._raw_source || {}, false),
+      ...flattenFields(alert._source, true),
+      ...flattenFields({ _id: alert._id, _index: alert._index }, false),
+    ];
+    // One row per path: the indexed operational projection is authoritative.
+    for (const row of rows) byField.set(row.field, row);
+    const query = fieldSearch.trim().toLowerCase();
+    const uniqueRows = Array.from(byField.values()).sort((a, b) => a.field.localeCompare(b.field));
+    return query
+      ? uniqueRows.filter((row) => row.field.toLowerCase().includes(query) || row.display.toLowerCase().includes(query))
+      : uniqueRows;
+  }, [alert, fieldSearch]);
+  const agentName = alert._source.agent?.name;
+  const agentIp = alert._source.agent?.ip;
+  const agentLabel = agentName && agentIp ? `${agentName} (${agentIp})` : agentName || agentIp || '—';
 
   return (
-    <EuiFlyout onClose={onClose} size={isExpanded ? '95vw' : '50vw'} aria-labelledby="alert-details-flyout">
+    <EuiFlyout onClose={onClose} size={isExpanded ? '95vw' : 'l'} aria-labelledby="alert-details-flyout" className="wamAlertFlyout">
       <EuiFlyoutHeader hasBorder>
         <EuiFlexGroup alignItems="center" gutterSize="s" responsive={false}>
           <EuiFlexItem>
             <EuiTitle size="m">
-              <h2>Alert Details</h2>
+              <h2 id="alert-details-flyout">Alert details</h2>
             </EuiTitle>
           </EuiFlexItem>
           <EuiFlexItem grow={false}>
@@ -106,6 +130,7 @@ export const AlertFlyout: React.FC<Props> = ({
       </EuiFlyoutHeader>
       <EuiFlyoutBody>
         <EuiTabbedContent
+          className="wamAlertFlyoutTabs"
           tabs={[
             {
               id: 'overview',
@@ -117,7 +142,7 @@ export const AlertFlyout: React.FC<Props> = ({
                   <EuiSpacer size="s" />
                   <EuiDescriptionList type="column" compressed>
                     <EuiDescriptionListTitle>Alert ID</EuiDescriptionListTitle>
-                    <EuiDescriptionListDescription>{alert._id}</EuiDescriptionListDescription>
+                    <EuiDescriptionListDescription className="wamAlertId"><code>{alert._id}</code></EuiDescriptionListDescription>
 
                     <EuiDescriptionListTitle>Timestamp</EuiDescriptionListTitle>
                     <EuiDescriptionListDescription>{formatAbsolute(alert._source['@timestamp'])}</EuiDescriptionListDescription>
@@ -129,7 +154,7 @@ export const AlertFlyout: React.FC<Props> = ({
 
                     <EuiDescriptionListTitle>Agent</EuiDescriptionListTitle>
                     <EuiDescriptionListDescription>
-                      {alert._source.agent?.name} ({alert._source.agent?.ip})
+                      {agentLabel}
                     </EuiDescriptionListDescription>
 
                     <EuiDescriptionListTitle>Rule</EuiDescriptionListTitle>
@@ -152,7 +177,7 @@ export const AlertFlyout: React.FC<Props> = ({
 
                   <EuiSpacer size="l" />
 
-                  <EuiFlexGroup gutterSize="m" alignItems="flexStart" style={isExpanded ? { maxWidth: 600 } : undefined}>
+                  <EuiFlexGroup gutterSize="m" alignItems="flexStart" wrap style={isExpanded ? { maxWidth: 600 } : undefined}>
                     <EuiFlexItem grow={false}>
                       <EuiFormRow label="Status" display="rowCompressed">
                         <StatusButtonGroup
@@ -177,7 +202,7 @@ export const AlertFlyout: React.FC<Props> = ({
                   </EuiFlexGroup>
 
                   <EuiSpacer size="m" />
-                  <EuiFlexGroup gutterSize="s" alignItems="flexEnd" style={isExpanded ? { maxWidth: 600 } : undefined}>
+                  <EuiFlexGroup gutterSize="s" alignItems="flexEnd" wrap style={isExpanded ? { maxWidth: 600 } : undefined}>
                     <EuiFlexItem>
                       <EuiText size="xs" color="subdued">
                         Case
@@ -266,21 +291,42 @@ export const AlertFlyout: React.FC<Props> = ({
             },
             {
               id: 'details',
-              name: 'Detailed Data',
+              name: 'Fields',
               content: (
                 <div>
                   <EuiSpacer size="m" />
-                  {Object.entries(alert._source).map(([key, value]) => (
-                    <EuiAccordion key={key} id={key} buttonContent={key} paddingSize="m">
-                      {typeof value === 'object' ? (
-                        renderNestedObject(value)
-                      ) : (
-                        <EuiCodeBlock language="json" fontSize="m" paddingSize="s">
-                          {JSON.stringify(value, null, 2)}
-                        </EuiCodeBlock>
-                      )}
-                    </EuiAccordion>
-                  ))}
+                  <EuiFieldSearch
+                    fullWidth
+                    compressed
+                    placeholder="Search fields or values"
+                    value={fieldSearch}
+                    onChange={(event) => setFieldSearch(event.target.value)}
+                    aria-label="Search alert fields and values"
+                  />
+                  <EuiSpacer size="s" />
+                  <EuiText size="xs" color="subdued">
+                    {fieldRows.length.toLocaleString()} matching field{fieldRows.length === 1 ? '' : 's'}. Only operational fields can be added to the alert query.
+                  </EuiText>
+                  <EuiSpacer size="xs" />
+                  <EuiBasicTable
+                    className="wamDocumentFields"
+                    tableCaption="Alert document fields"
+                    items={fieldRows}
+                    columns={[
+                      { field: 'field', name: 'Field', width: '38%', render: (value: string) => <code className="wamFieldName">{value}</code> },
+                      { field: 'display', name: 'Value', render: (value: string) => <span className="wamFieldValue">{value}</span> },
+                      { field: 'operational', name: 'Source', width: '105px', render: (value: boolean) => <EuiBadge color={value ? 'primary' : 'hollow'}>{value ? 'Operational' : 'Raw only'}</EuiBadge> },
+                      {
+                        name: 'Filter', width: '82px', align: 'right',
+                        render: (row: FieldRow) => onAddFilter && row.operational && row.value != null && typeof row.value !== 'object' ? (
+                          <>
+                            <EuiToolTip content="Filter for this value"><EuiButtonIcon iconType="plusInCircle" aria-label={`Filter for ${row.field}`} onClick={() => onAddFilter(row.field, row.value, false)} /></EuiToolTip>
+                            <EuiToolTip content="Exclude this value"><EuiButtonIcon iconType="minusInCircle" aria-label={`Exclude ${row.field}`} onClick={() => onAddFilter(row.field, row.value, true)} /></EuiToolTip>
+                          </>
+                        ) : null,
+                      },
+                    ] as any}
+                  />
                 </div>
               ),
             },
@@ -288,9 +334,24 @@ export const AlertFlyout: React.FC<Props> = ({
               id: 'raw',
               name: 'Raw JSON',
               content: (
-                <EuiCodeBlock language="json" isCopyable>
-                  {JSON.stringify(alert, null, 2)}
-                </EuiCodeBlock>
+                <>
+                  {alert._source_available === false && (
+                    <>
+                      <EuiCallOut
+                        size="s"
+                        color="warning"
+                        iconType="clock"
+                        title="Original Wazuh evidence is no longer available"
+                      >
+                        The compact operational record is retained, but its native Wazuh source document could not be retrieved.
+                      </EuiCallOut>
+                      <EuiSpacer size="s" />
+                    </>
+                  )}
+                  <EuiCodeBlock language="json" isCopyable>
+                    {JSON.stringify(alert._raw_source || alert._source, null, 2)}
+                  </EuiCodeBlock>
+                </>
               ),
             },
           ]}
