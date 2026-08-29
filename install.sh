@@ -435,7 +435,9 @@ main() {
     wazuh-alerts-* are treated as read-only and are never modified. Existing
     plugin data is preserved across upgrades.
 
-    Roll back with: sudo $0 --rollback
+    Roll back by re-running this installer with --rollback.
+    One-line form:
+      curl -fsSL $BASE_URL/latest/download/install.sh | sudo bash -s -- --rollback
 EOF
 }
 
