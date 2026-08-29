@@ -1,5 +1,10 @@
 # Wazuh Alert Manager 2.0
 
+The recommended patch level is **2.0.1**. It contains the complete v2.0 feature
+set and corrects the copy-paste rollback guidance printed by the piped one-line
+installer. Version 2.0.0 remains compatible, but new installations should use
+the latest release.
+
 Version 2.0 turns the plugin into a bounded security-operations workbench while
 keeping Wazuh's native `wazuh-alerts-*` indices read-only.
 

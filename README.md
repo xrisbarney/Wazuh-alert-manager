@@ -14,7 +14,7 @@ version-to-artifact matrix.
 
 ---
 
-## What's new in v2.0.0
+## What's new in v2.0
 
 The original plugin (comment tracking, index rollover, audit trail,
 dropdown filters, better Lucene handling) is now implemented, plus a fair
@@ -199,13 +199,13 @@ version.
 curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash
 
 # Pinned release (recommended)
-curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash -s -- --version 2.0.0
+curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash -s -- --version 2.0.1
 
 # Supply-chain-safe: download and verify the installer first
-curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.0/install.sh
-curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.0/install.sh.sha256
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.1/install.sh
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.1/install.sh.sha256
 sha256sum -c install.sh.sha256
-sudo bash install.sh --version 2.0.0
+sudo bash install.sh --version 2.0.1
 ```
 
 It also handles `--dry-run`, `--no-restart`, `--rollback`,
