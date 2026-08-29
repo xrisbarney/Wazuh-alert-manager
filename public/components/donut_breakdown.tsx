@@ -54,19 +54,19 @@ export const DonutBreakdown: React.FC<Props> = ({ segments, centerValue, centerL
   return (
     <EuiFlexGroup gutterSize="m" alignItems="center" responsive={false} wrap>
       <EuiFlexItem grow={false}>
-        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Breakdown donut chart">
+        <svg className="wamDonut" width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Breakdown donut chart">
           {total === 0 ? (
-            <circle cx={cx} cy={cy} r={(rO + rI) / 2} fill="none" stroke="#E4E7EC" strokeWidth={rO - rI} />
+            <circle className="wamDonut__empty" cx={cx} cy={cy} r={(rO + rI) / 2} fill="none" strokeWidth={rO - rI} />
           ) : nonZero.length === 1 ? (
             <circle cx={cx} cy={cy} r={(rO + rI) / 2} fill="none" stroke={nonZero[0].color} strokeWidth={rO - rI} />
           ) : (
             arcs.map((a, i) => <path key={i} d={slicePath(cx, cy, rO, rI, a.a0, a.a1)} fill={a.seg.color} />)
           )}
-          <text x={cx} y={cy - 2} textAnchor="middle" fontSize={size * 0.2} fontWeight={700} fill="#1D1E24">
+          <text className="wamDonut__value" x={cx} y={cy - 2} textAnchor="middle" fontSize={size * 0.2} fontWeight={700}>
             {centerValue != null ? centerValue : total.toLocaleString()}
           </text>
           {centerLabel && (
-            <text x={cx} y={cy + size * 0.12} textAnchor="middle" fontSize={size * 0.085} fill="#69707D">
+            <text className="wamDonut__label" x={cx} y={cy + size * 0.12} textAnchor="middle" fontSize={size * 0.085}>
               {centerLabel}
             </text>
           )}

@@ -7,13 +7,14 @@ work desk: status workflow, comments, audit history, cross-alert linking,
 case management with multi-alert bulk actions, dropdown-based filtering,
 and optional AI-assisted analysis via OpenAI, DeepSeek, Gemini or Claude.
 
-Built and tested against **Wazuh 4.14.7 / wazuh-dashboard 2.19.5**. See
-[SUPPORTED_VERSIONS.md](./SUPPORTED_VERSIONS.md) for how to retarget a
-different dashboard version.
+Release artifacts are built against official Wazuh Dashboard source for
+**Wazuh 4.12–4.14**; the full browser bench runs on **Wazuh 4.14.7 / OSD
+2.19.5**. See [SUPPORTED_VERSIONS.md](./SUPPORTED_VERSIONS.md) for the exact
+version-to-artifact matrix.
 
 ---
 
-## What's new since v1.0.1
+## What's new in v2.0.0
 
 The original plugin (comment tracking, index rollover, audit trail,
 dropdown filters, better Lucene handling) is now implemented, plus a fair
@@ -84,53 +85,91 @@ bit more:
 ## Architecture
 
 ```
-common/                 shared TypeScript types + constants (index names, statuses...)
+common/                 shared TypeScript types + constants (index names, statuses, API root)
 server/
-  config.ts             plugin config schema (sync interval, lookback, etc.)
-  plugin.ts             provisions indices + starts the background sync job on start()
+  config.ts             plugin config schema (sync + lifecycle + migration defaults)
+  plugin.ts             provisions indices, runs legacy migration, starts sync + lifecycle jobs
   lib/
-    mappings.ts          index mappings this plugin owns
-    provision.ts         idempotent "create index if missing"
-    sync_job.ts           copies wazuh-alerts-* into wazuh-alert-status on a timer
+    constants.ts          (in common/) single source of truth for index/alias names
+    mappings.ts           explicit v2 index mappings this plugin owns
+    provision.ts          idempotent "create index + alias if missing"
+    sync_job.ts           copies wazuh-alerts-* into the v2 alert store on a timer
+    sync_lock.ts          leader-lock doc so N dashboard replicas sync safely
+    lifecycle.ts          plugin-managed rollover + retention marking
+    alert_retirement.ts   case-safe carry-forward retirement, guarded restore, purge
+    activity_retirement.ts  append-only activity generation retire/purge
+    legacy_migration.ts   v1 -> v2 migration (v1 stores are read-only inputs)
+    index_namespace.ts    fail-closed write-target validation (v2 prefixes only)
+    index_resolution.ts   resolve a doc's physical index behind a read alias
+    operational_projection.ts  compact projection of a Wazuh alert
+    authorization.ts      RBAC: all_access / index_management_full_access gates
+    identity.ts           actor identity from the OpenSearch Security plugin only
     history.ts            shared painless snippet for audit-trail append
-    opensearch.ts          best-effort "who is the logged in user" lookup
-    ai_providers.ts         one function per AI provider's HTTP API
-    attack_graph.ts          entity/kill-chain/hop extraction from a case's alerts
+    opensearch.ts         best-effort "who is the logged in user" lookup
+    ai_providers.ts       one function per AI provider's HTTP API
+    egress/               AI egress allowlist projection (raw _source cannot cross)
+    attack_graph.ts       entity/kill-chain/hop extraction from a case's alerts
   routes/
-    alerts.ts             search/count/bulk-update (status/case/assignee)/get/related-alerts
-    comments.ts            comments on an alert or a case
-    cases.ts                case CRUD + linking alerts to a case
-    filters.ts              dropdown option aggregations (rule id/agent/type/assignee/level range)
-    ai.ts                    AI settings + on-demand analysis generation
-    users.ts                 real dashboard users, for the assignee picker
-    reports.ts                SLA / MTTA / MTTR metrics for a time period
-    attack_path.ts            attack graph for one case's linked alerts
+    alerts.ts             search/count/bulk-update/get/related/suggested/precedent
+    comments.ts           comments + audit on an alert or a case
+    cases.ts              case CRUD + linking alerts + attack-path
+    filters.ts            dropdown option aggregations
+    ai.ts                 AI settings + on-demand analysis generation
+    users.ts              real dashboard users, for the assignee picker
+    reports.ts            SLA / MTTA / MTTR metrics for a time period
+    rules.ts              automation (correlation) rules CRUD + preview
+    system.ts             storage health, lifecycle settings, rollover, retirement, restore, purge
 public/
   assets/logo.svg         side-nav icon
   services/api.ts         typed HTTP client for all of the above
   components/             one component per concern (filter bar, bulk actions,
                           alert/case flyouts, comments thread, AI panels,
-                          assignee/case pickers, alert multi-picker (shared by
-                          related-alerts and add-to-case), reports view,
-                          attack path view, ...)
+                          assignee/case pickers, alert multi-picker, reports,
+                          attack path view, storage/lifecycle workbench, ...)
 ```
 
 ### Data model
 
-Four indices, all auto-created on first server start:
+The plugin owns a set of **v2** indices, all auto-created (and aliased) on first
+server start. It never writes to Wazuh's native `wazuh-alerts-*` indices — those
+are read-only evidence sources.
 
 | Index | Purpose |
 |---|---|
-| `wazuh-alert-status` | One doc per alert copied from `wazuh-alerts-*`, plus `status`, `case_id`, `assigned_to`, `related_alert_ids`, `ai_analysis`, and a `history` audit trail. |
-| `wazuh-alert-manager-comments` | Comments, keyed by `alert_id` or `case_id`. |
-| `wazuh-alert-manager-cases` | Cases: title, description, severity, status, linked `alert_ids`, history. |
-| `wazuh-alert-manager-meta` | Small internal state: the sync job's watermark, and the AI provider settings doc. |
+| `wazuh-alert-status-v2-*` | Operational projection of each alert (compact, explicit fields) plus workflow state: `status`, `case_id`, `assigned_to`, `related_alert_ids`, `ai_analysis`, and a `history` audit trail. Exposed through read/write aliases and numeric rollover generations (`-000001`, `-000002`, …). |
+| `wazuh-alert-manager-v2-activity` | Comments and audit events, keyed by `alert_id` or `case_id` (read/write aliases + generations). |
+| `wazuh-alert-manager-v2-cases` | Cases: title, description, severity, status, linked `alert_ids`, history. |
+| `wazuh-alert-manager-v2-rules` | Automation (correlation) rules. |
+| `wazuh-alert-manager-v2-meta` | Internal state: sync watermark, leader lock, lifecycle settings, AI settings, retirement records. |
+| `wazuh-alert-manager-v2-migration` | Legacy v1 -> v2 migration progress/checkpoint. |
+| `wazuh-alert-manager-v2-sync-dlq` | Dead-letter queue for alerts that fail to sync. |
 
-The background sync job (`server/lib/sync_job.ts`) copies new alerts using
-a **scripted partial-update upsert**, not a full-document reindex - so a
-status change, comment, or case link you've already recorded on an alert
-is never clobbered if that alert's timestamp falls into a later sync
-window.
+Legacy v1 indices (`wazuh-alert-status`, `wazuh-alert-manager-comments`,
+`wazuh-alert-manager-cases`, `wazuh-alert-manager-meta`, `wazuh-alert-manager-rules`)
+are read-only migration inputs and are retained after migration.
+
+Write validation is fail-closed to the exact prefixes `wazuh-alert-status-v2-` and
+`wazuh-alert-manager-v2-` — an over-privileged service account cannot turn a
+programming mistake into a write against a native Wazuh index.
+
+The background sync job (`server/lib/sync_job.ts`) copies new alerts using a
+**scripted partial-update upsert**, not a full-document reindex — so a status
+change, comment, or case link you've already recorded on an alert is never
+clobbered if that alert's timestamp falls into a later sync window.
+
+### Rollover, retention, retirement, and restore
+
+`server/lib/lifecycle.ts` rolls over generations (plugin-managed, so a stock
+Wazuh install needs no cluster-wide ISM policy privileges). Retention only marks
+older generations "due" for review — it never deletes automatically. An
+administrator then retires a generation, which carries forward every
+`open`/`in_progress` alert. A closed alert is carried only while it belongs to an
+active case or has an evidence hold; closed-case evidence otherwise remains
+represented by its evidence record and archive location. Retirement atomically
+swaps the read alias and retains the write-blocked source. A guarded, idempotent restore copies only IDs
+missing from the live store back into the current writer — it never overwrites a
+newer live record. Purge is the sole permanent deletion and always requires a
+separate explicit confirmation.
 
 ### Security note on the original design
 
@@ -146,12 +185,44 @@ touches and what shape of request it accepts.
 
 ## Installation
 
+### One-line installer (recommended)
+
+`install.sh` detects the installed Wazuh Dashboard / OpenSearch Dashboards
+version, picks the matching artifact, verifies its SHA-256 (and, when
+configured, a minisign signature), backs up the current plugin, and swaps it
+in with automatic rollback on failure. It never modifies `wazuh-alerts-*`, never
+deletes plugin data on upgrade, and fails closed on an unsupported dashboard
+version.
+
+```bash
+# Latest compatible release
+curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash
+
+# Pinned release (recommended)
+curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash -s -- --version 2.0.0
+
+# Supply-chain-safe: download and verify the installer first
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.0/install.sh
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.0/install.sh.sha256
+sha256sum -c install.sh.sha256
+sudo bash install.sh --version 2.0.0
+```
+
+It also handles `--dry-run`, `--no-restart`, `--rollback`,
+`--uninstall-plugin` (retains all data), and a separately confirmed
+`--remove-data`, which prints exact manual indexer cleanup instructions instead
+of accepting indexer credentials or deleting data itself. Override
+`WAM_RELEASE_BASE_URL` only for a private release mirror. See `wiki/Installation.md` for the full reference and the release-side
+checksum/signature tooling (`scripts/make-release-artifacts.sh`).
+
+### Manual install (alternative)
+
 1. Install the plugin zip:
 
    ```bash
    sudo systemctl stop wazuh-dashboard
    sudo /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin remove wazuhAlertManager --allow-root   # if upgrading
-   sudo /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin install file:///path/to/wazuhAlertManager-1.2.0.zip --allow-root
+   sudo /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin install file:///path/to/wazuhAlertManager-2.19.5.zip --allow-root
    sudo systemctl start wazuh-dashboard
    ```
 
@@ -268,10 +339,10 @@ collection, no extra index:
    when Wazuh's MITRE mapping populated them). Entities that appear in
    multiple alerts are deduplicated and counted.
 2. **Edges**: within a single alert, every entity present is connected to
-   every other entity present (a fully-connected "star" per alert) -
-   e.g. an alert with a host, a user, and a technique produces three
-   edges. This is the raw graph data a future graph view would render;
-   today it's returned by the API but not yet drawn (see **Coming soon**).
+   every other entity present - e.g. an alert with a host, a user, and a
+   technique produces three edges. The Attack Graph view renders those
+   relationships as an interactive node-link graph and lets the analyst move,
+   focus, and inspect nodes without changing the underlying evidence.
 3. **Kill-chain phases**: alerts are grouped by MITRE tactic and sorted
    into the standard ATT&CK kill-chain order (Reconnaissance -> ... ->
    Impact), independent of raw timestamp order - so a Discovery-phase
@@ -293,7 +364,7 @@ This plugin follows the standard OpenSearch Dashboards plugin layout and
 must be built from inside a `wazuh-dashboard` checkout:
 
 ```bash
-git clone --branch 4.14.9 https://github.com/wazuh/wazuh-dashboard.git
+git clone --branch v4.14.7 https://github.com/wazuh/wazuh-dashboard.git
 cd wazuh-dashboard
 git clone <this repo> plugins/wazuhAlertManager
 yarn osd bootstrap
@@ -302,10 +373,25 @@ node scripts/set-target-version.js --osd-version 2.19.5   # already the checked-
 yarn build
 ```
 
+Each production build generates a unique artifact ID that is embedded in both
+the server plugin and browser bundle. Workbench checks the server's no-store
+`/api/wazuh_alert_manager/system/version` response and displays an update banner
+if a cached browser bundle does not match the installed server build. The IDs
+are also visible under **Settings > About**.
+
+OpenSearch Dashboards may cache a plugin bundle under an unchanged URL for up to
+one year. After upgrading the plugin, use the update banner's reload action. If
+the old interface remains, perform a hard refresh or open Workbench in a fresh
+private/incognito window before validating the deployed UI.
+
 The zip is written to `plugins/wazuhAlertManager/build/`.
 
 To target a different Wazuh/dashboard release, see
 [SUPPORTED_VERSIONS.md](./SUPPORTED_VERSIONS.md).
+
+Lifecycle administration, retention safeguards, and the way internal users,
+SSO groups, and LDAP/AD groups inherit access are documented in the
+[Lifecycle, retention, and Wazuh RBAC wiki page](./wiki/Lifecycle-Retention-and-RBAC.md).
 
 ---
 
@@ -324,7 +410,7 @@ Build a custom image:
 ```dockerfile
 FROM wazuh/wazuh-dashboard:4.14.7
 
-COPY wazuhAlertManager-1.2.0.zip /tmp/wazuhAlertManager.zip
+COPY wazuhAlertManager-2.19.5.zip /tmp/wazuhAlertManager.zip
 
 RUN /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin install \
       file:///tmp/wazuhAlertManager.zip --allow-root
@@ -415,14 +501,6 @@ GitHub-hosted runner.
 
 Roughly in priority order:
 
-- **Interactive attack graph view.** The Attack Path tab's entity/edge
-  data (`server/lib/attack_graph.ts`) is already graph-shaped and
-  returned by the API - it just isn't drawn as a graph yet, only as
-  tables/timeline. Rendering it as an actual node-link diagram needs a
-  lightweight force-layout/graph-rendering library, which EUI doesn't
-  provide. That's a new frontend dependency, which on this plugin's build
-  pipeline means a full `yarn osd bootstrap` re-run per target OSD version
-  - a real but bounded cost, deliberately deferred rather than rushed in.
 - **Cross-case path-finding.** Right now the attack graph is scoped to
   one case's already-linked alerts. The natural next step is Dijkstra/A*
   search (the same well-understood graph-search family used in general
@@ -472,13 +550,16 @@ direction is visible in the repo itself.
   necessarily "people who use this dashboard" - on clusters using SSO/LDAP
   instead of internal users, that list will be empty and assignment falls
   back to free text (still fully functional, just not autocompleted).
-- Reporting samples up to 5000 matching alerts per request (`size` query
-  param) rather than scanning unboundedly; the response's `truncated` flag
-  and `sampledAlerts`/`totalAlerts` counts tell you when a period's figures
-  are based on a sample. Narrow the time range for exact numbers on very
-  high-volume periods.
-- The SLA policy (severity level -> resolution time target) is hardcoded
-  in `server/routes/reports.ts` - if you need different thresholds, that's
+- Reporting computes MTTA, MTTR, SLA, per-analyst resolution, and leaderboard
+  figures exactly for the live, unarchived cohort. Timing and SLA are read from
+  bounded write-time fields (materialized when an alert is assigned or closed)
+  rather than a sampled document walk, and per-analyst buckets are paginated with
+  composite aggregations instead of a top-N. Alerts that predate the write-time
+  fields are materialized by a resumable background backfill; until that finishes
+  the report shows an explicit "backfill pending" notice instead of a silent
+  sample. See `wiki/Reporting.md`.
+- The SLA policy (severity level -> resolution time target) is defined in
+  `server/lib/reporting_fields.ts` - if you need different thresholds, that's
   currently a source edit + rebuild, not a UI setting.
 
 ## Disclaimer

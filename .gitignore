@@ -1,2 +1,10 @@
 /build
 /target
+/node_modules
+/package-lock.json
+/playwright-report
+/test-results
+/blob-report
+/runtime-evidence/browser
+/.playwright-profile
+/.env.e2e.local

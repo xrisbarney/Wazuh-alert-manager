@@ -8,6 +8,14 @@ import {
   EuiTab,
   EuiGlobalToastList,
   EuiGlobalToastListToast,
+  EuiFlexGroup,
+  EuiFlexItem,
+  EuiIcon,
+  EuiText,
+  EuiTitle,
+  EuiSpacer,
+  EuiCallOut,
+  EuiButtonEmpty,
 } from '@elastic/eui';
 import { CoreStart } from '../../../../src/core/public';
 import { DataPublicPluginStart } from '../../../../src/plugins/data/public';
@@ -16,6 +24,8 @@ import { AlertsView } from './alerts_view';
 import { CasesView } from './cases_view';
 import { SettingsView } from './settings_view';
 import { ReportsView } from './reports_view';
+import { PLUGIN_BUILD_ID } from '../../common';
+import { BuildInfo } from '../services/api';
 
 export type AppSection = 'workbench' | 'reporting';
 
@@ -32,10 +42,14 @@ interface AppProps {
 type WorkbenchTab = 'alerts' | 'cases' | 'settings';
 
 export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 'workbench' }) => {
-  const [activeTab, setActiveTab] = useState<WorkbenchTab>('alerts');
+  const initialParams = React.useMemo(() => new URLSearchParams(window.location.search), []);
+  const requestedTab = initialParams.get('tab');
+  const initialTab: WorkbenchTab = requestedTab === 'cases' || requestedTab === 'settings' ? requestedTab : 'alerts';
+  const [activeTab, setActiveTab] = useState<WorkbenchTab>(initialTab);
   const [toasts, setToasts] = useState<EuiGlobalToastListToast[]>([]);
-  const [jumpToCaseId, setJumpToCaseId] = useState<string | undefined>();
-  const [openAlertId, setOpenAlertId] = useState<string | undefined>();
+  const [jumpToCaseId, setJumpToCaseId] = useState<string | undefined>(initialParams.get('case') || undefined);
+  const [openAlertId, setOpenAlertId] = useState<string | undefined>(initialParams.get('alert') || undefined);
+  const [serverBuild, setServerBuild] = useState<BuildInfo | null>(null);
 
   const apiService = React.useMemo(() => new AlertsApiService(coreStart.http), [coreStart.http]);
 
@@ -48,6 +62,10 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 
     ]);
   }, [coreStart.chrome, section]);
 
+  useEffect(() => {
+    apiService.fetchBuildInfo().then(setServerBuild).catch(() => undefined);
+  }, [apiService]);
+
   const addToast = (title: string, color: 'success' | 'danger' | 'primary', text?: string) => {
     setToasts((prev) => [...prev, { id: Math.random().toString(), title, color, text }]);
   };
@@ -56,20 +74,52 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 
     setToasts((prev) => prev.filter((t) => t.id !== toast.id));
   };
 
+  const updateLocation = (tab: WorkbenchTab, values: { caseId?: string | null; alertId?: string | null } = {}) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', tab);
+    if (values.caseId) url.searchParams.set('case', values.caseId);
+    else if (values.caseId === null) url.searchParams.delete('case');
+    if (values.alertId) url.searchParams.set('alert', values.alertId);
+    else if (values.alertId === null) url.searchParams.delete('alert');
+    window.history.replaceState({}, '', url.toString());
+  };
+
+  const selectTab = (tab: WorkbenchTab) => {
+    setActiveTab(tab);
+    updateLocation(tab, { caseId: tab === 'cases' ? undefined : null, alertId: tab === 'alerts' ? undefined : null });
+  };
+
   const openCase = (caseId: string) => {
     setJumpToCaseId(caseId);
     setActiveTab('cases');
+    updateLocation('cases', { caseId, alertId: null });
   };
 
   const openAlert = (alertId: string) => {
     setOpenAlertId(alertId);
     setActiveTab('alerts');
+    updateLocation('alerts', { alertId, caseId: null });
   };
 
   return (
     <>
-      <EuiPage paddingSize="m">
+      <EuiPage paddingSize="m" className="wamApp">
         <EuiPageBody>
+          {serverBuild && serverBuild.buildId !== PLUGIN_BUILD_ID && (
+            <>
+              <EuiCallOut
+                color="warning"
+                iconType="refresh"
+                title="Update available — reload Workbench"
+              >
+                <p>The server is running build <code>{serverBuild.buildId}</code>, but this browser has <code>{PLUGIN_BUILD_ID}</code>.</p>
+                <EuiButtonEmpty size="s" iconType="refresh" onClick={() => window.location.reload()}>
+                  Reload Workbench
+                </EuiButtonEmpty>
+              </EuiCallOut>
+              <EuiSpacer size="m" />
+            </>
+          )}
           {section === 'reporting' ? (
             <EuiPageContent>
               <EuiPageContentBody>
@@ -78,19 +128,25 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 
             </EuiPageContent>
           ) : (
             <>
-              <EuiTabs>
-                <EuiTab isSelected={activeTab === 'alerts'} onClick={() => setActiveTab('alerts')}>
-                  Alerts
-                </EuiTab>
-                <EuiTab isSelected={activeTab === 'cases'} onClick={() => setActiveTab('cases')}>
-                  Cases
-                </EuiTab>
-                <EuiTab isSelected={activeTab === 'settings'} onClick={() => setActiveTab('settings')}>
-                  Settings
-                </EuiTab>
-              </EuiTabs>
+              <div className="wamWorkbenchHeader">
+                <EuiFlexGroup alignItems="center" responsive={false} gutterSize="m" className="wamPageIntro">
+                  <EuiFlexItem grow={false}>
+                    <span className="wamPageIntro__icon"><EuiIcon type="securitySignal" size="l" /></span>
+                  </EuiFlexItem>
+                  <EuiFlexItem>
+                    <EuiTitle size="s"><h1>Security operations workbench</h1></EuiTitle>
+                    <EuiText size="s" color="subdued">Triage alerts, coordinate investigations, and automate repeatable decisions.</EuiText>
+                  </EuiFlexItem>
+                </EuiFlexGroup>
+                <EuiSpacer size="m" />
+                <EuiTabs className="wamWorkbenchTabs">
+                  <EuiTab isSelected={activeTab === 'alerts'} onClick={() => selectTab('alerts')}>Alerts</EuiTab>
+                  <EuiTab isSelected={activeTab === 'cases'} onClick={() => selectTab('cases')}>Cases</EuiTab>
+                  <EuiTab isSelected={activeTab === 'settings'} onClick={() => selectTab('settings')}>Settings</EuiTab>
+                </EuiTabs>
+              </div>
 
-              <EuiPageContent>
+              <EuiPageContent className="wamPageContent">
                 <EuiPageContentBody>
                   {activeTab === 'alerts' && (
                     <AlertsView
@@ -107,7 +163,10 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 
                       onToast={addToast}
                       openCaseId={jumpToCaseId}
                       onOpenAlert={openAlert}
-                      onCaseFlyoutClosed={() => setJumpToCaseId(undefined)}
+                      onCaseFlyoutClosed={() => {
+                        setJumpToCaseId(undefined);
+                        updateLocation('cases', { caseId: null });
+                      }}
                     />
                   )}
                   {activeTab === 'settings' && <SettingsView apiService={apiService} onToast={addToast} />}
@@ -118,7 +177,7 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 
         </EuiPageBody>
       </EuiPage>
 
-      <EuiGlobalToastList toasts={toasts} dismissToast={removeToast} toastLifeTimeMs={6000} />
+      <EuiGlobalToastList className="wamGlobalToasts" toasts={toasts} dismissToast={removeToast} toastLifeTimeMs={6000} />
     </>
   );
 };

@@ -25,9 +25,13 @@ When [[AI Analysis]] is enabled, what leaves your network is tightly controlled:
 
 ## Automation & blast radius
 
-- Rules run under a **leader lock** (single writer) inside the sync tick, so there is no double-execution across replicas.
-- Automatic case creation is **de-duplicated per rule + entity** and **rate-limited per pass**, so a noisy source cannot flood you with cases.
-- **Auto-close / auto-assign** act on attacker-influenceable fields (source IP, user). Treat these like any detection content: scope the match conditions, and use **Dry run** before enabling. Prefer opening a case over silently closing when in doubt.
+- Automation administration is authorized only from the effective Wazuh/OpenSearch Security identity. Create, edit, preview, activation, rollback, deletion, queue settings, retry, and resolve require `all_access`; SSO/LDAP/OU labels are not trusted directly. See the [Wazuh user administration documentation](https://documentation.wazuh.com/current/user-manual/user-administration/index.html).
+- The durable automation queue uses a fenced worker lease and deterministic execution identities, so replicas, retries, restarts, and lease loss cannot duplicate actions.
+- Events retain the ruleset snapshot and exact rule revisions captured at ingestion. Queue resume and DLQ retry complete that ingestion-time work; they do not evaluate old alerts against current rules.
+- Entity values are normalized before comparison and identity-key construction. Missing entities do not become an attacker-controlled `unknown` aggregation bucket.
+- Case creation is deduplicated by the configured routing scope. Optimistic concurrency and deterministic keys prevent simultaneous threshold crossings from creating duplicates. Deduplication lookup errors defer/retry rather than being treated as "no case."
+- Per-run action/case caps, execution rate limits, queue backlog/deferred caps, cooldown, and quiet-period rearm bound noisy rules. Preview exposes truncation, conflicts, missing entities, and cap/rate skips before activation.
+- **Auto-close / auto-assign** act on attacker-influenceable fields. Scope Match and entity predicates carefully, preview the exact saved revision, and prefer a deduplicated case over silently closing when uncertain.
 
 ## Deliberately not included
 
@@ -35,5 +39,5 @@ When [[AI Analysis]] is enabled, what leaves your network is tightly controlled:
 
 ## Recommended hardening
 
-- Apply document-level security to `wazuh-alert-status` directly if you restrict who can see which alerts — restrictions on `wazuh-alerts-*` do **not** carry through the sync copy.
+- Apply document-level security to the `wazuh-alert-status-v2-*` operational indices if you restrict who can see which alerts. Restrictions on native `wazuh-alerts-*` indices do **not** carry through the sync copy.
 - Enable at-rest encryption for the stored AI key (see [[AI Analysis]]).

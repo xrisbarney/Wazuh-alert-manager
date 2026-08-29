@@ -6,19 +6,50 @@ Wazuh Alert Manager is an OpenSearch Dashboards **New Platform** plugin (server 
 
 ## Indices the plugin owns
 
+All indices are **v2**, auto-created and aliased on first start. Wazuh's native
+`wazuh-alerts-*` indices are read-only evidence sources and are never written to.
+
 | Index | Purpose |
 |-------|---------|
-| `wazuh-alert-status` | The synced alert + its workflow state (status, assignee, case link, history, related-alert links, AI analysis). |
-| `wazuh-alert-manager-cases` | Cases (title, severity, status, alert IDs, correlation key, history). |
-| `wazuh-alert-manager-comments` | Comment threads on alerts and cases. |
-| `wazuh-alert-manager-rules` | Automation rules. |
-| `wazuh-alert-manager-meta` | Internal metadata: the sync watermark and the leader lock. |
+| `wazuh-alert-status-v2-*` | Operational projection of each alert + its workflow state (status, assignee, case link, related-alert links, AI analysis, history). Exposed through read/write aliases and numeric rollover generations. |
+| `wazuh-alert-manager-v2-activity` | Comment threads and audit events on alerts and cases (read/write aliases + generations). |
+| `wazuh-alert-manager-v2-cases` | Cases (title, severity, status, alert IDs, correlation key, history). |
+| `wazuh-alert-manager-v2-rules` | Automation (correlation) rules. |
+| `wazuh-alert-manager-v2-meta` | Internal metadata: the sync watermark, leader lock, lifecycle settings, AI settings, retirement records. |
+| `wazuh-alert-manager-v2-migration` | Legacy v1 -> v2 migration progress and checkpoint. |
+| `wazuh-alert-manager-v2-sync-dlq` | Dead-letter queue for alerts that fail to sync. |
 
-Mappings are versioned; an idempotent migration applies additive changes on start and fails safe on incompatible ones.
+Legacy v1 indices (`wazuh-alert-status`, `wazuh-alert-manager-cases`,
+`wazuh-alert-manager-comments`, `wazuh-alert-manager-rules`,
+`wazuh-alert-manager-meta`) are read-only migration inputs and remain retained
+after migration.
+
+Mappings are versioned; an idempotent migration applies additive changes on start
+and fails safe on incompatible ones. Write validation is fail-closed to the exact
+prefixes `wazuh-alert-status-v2-` and `wazuh-alert-manager-v2-`.
+
+## Lifecycle, retirement, and restore
+
+The lifecycle is plugin-managed (see [[Lifecycle-Retention-and-RBAC]]): the stock
+dashboard service account can create plugin indices but may lack cluster-wide ISM
+policy privileges, so rollover is driven by the plugin worker rather than ISM.
+
+- **Rollover** creates a new writable generation when the current one reaches its
+  age or size threshold.
+- **Retention** marks older, non-current generations "due" for review — it never
+  deletes data automatically.
+- **Retirement** carries every `open`/`in_progress` alert plus closed alerts needed
+  by active cases or evidence holds into a compact carry index. Closed alerts in
+  closed, unheld cases become archive-only with a durable evidence stub.
+- **Restore** copies only IDs missing from the live store into the current writer,
+  never overwriting a newer live record; it is idempotent and reversible.
+- **Purge** is the only permanent deletion and always requires a separate explicit
+  confirmation.
 
 ## The sync job
 
-A background job periodically copies **new** Wazuh alerts into `wazuh-alert-status`:
+A background job periodically projects **new** Wazuh alerts into the
+`wazuh-alert-status-v2-write` alias:
 
 - It searches **sorted ascending** by `@timestamp` and advances its **watermark** only to the last alert actually copied — so a window with more matches than the batch size never silently drops the remainder.
 - The copy is **field-protective**: plugin-owned fields (status, assignee, case link, history) are never overwritten by an incoming same-named Wazuh field.
@@ -40,4 +71,4 @@ Because candidate work is scoped to the batch, evaluation cost is proportional t
 
 ## Compatibility
 
-The plugin is built per target (OSD 2.19.1 / 2.19.2 / 2.19.5 for Wazuh 4.12 / 4.13 / 4.14). The **server code is identical** across builds; only the version stamp differs. It targets the OUI/EUI generation shipped with those dashboards.
+The plugin is built per target (OSD 2.19.1 / 2.19.2 / 2.19.5 for Wazuh 4.12 / 4.13 / 4.14). The **server code is identical** across builds; only the version stamp differs. Each ZIP is compiled inside the matching official Wazuh Dashboard source tree rather than relabelled after the fact.

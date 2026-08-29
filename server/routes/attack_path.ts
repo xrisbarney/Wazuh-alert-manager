@@ -1,7 +1,10 @@
 import { schema } from '@osd/config-schema';
 import { IRouter } from '../../../../src/core/server';
-import { API_ROOT, CASES_INDEX, ALERT_STATUS_INDEX } from '../../common';
+import { API_ROOT } from '../../common';
 import { buildAttackGraph } from '../lib/attack_graph';
+import { resolveCaseAlerts } from '../lib/index_resolution';
+import { listCaseEvidenceWithLegacy } from '../lib/evidence';
+import { resolveCase } from '../lib/case_index_resolution';
 
 export function defineAttackPathRoutes(router: IRouter) {
   router.get(
@@ -14,19 +17,46 @@ export function defineAttackPathRoutes(router: IRouter) {
       const client = context.core.opensearch.client.asCurrentUser;
 
       try {
-        const caseRes: any = await client.get({ index: CASES_INDEX, id });
-        const alertIds: string[] = caseRes.body._source.alert_ids || [];
+        const caseRes = await resolveCase(client, id);
+        const relationships: any[] = [];
+        const maxGraphAlerts = 5000;
+        let truncated = false;
+        let cursor: string | undefined;
+        do {
+          const page = await listCaseEvidenceWithLegacy(
+            client,
+            id,
+            caseRes.source.alert_ids,
+            { cursor }
+          );
+          const remaining = maxGraphAlerts - relationships.length;
+          relationships.push(...page.evidence.slice(0, Math.max(0, remaining)));
+          if (page.evidence.length > remaining || (page.nextCursor && relationships.length >= maxGraphAlerts)) {
+            truncated = true;
+            cursor = undefined;
+            break;
+          }
+          cursor = page.nextCursor || undefined;
+        } while (cursor);
 
-        if (alertIds.length === 0) {
-          return response.ok({ body: { nodes: [], edges: [], killChain: [], hops: [] } });
+        if (relationships.length === 0) {
+          return response.ok({ body: {
+            nodes: [], edges: [], killChain: [], hops: [],
+            truncated, limit: maxGraphAlerts, includedAlerts: 0,
+          } });
         }
 
-        const mgetRes: any = await client.mget({ index: ALERT_STATUS_INDEX, body: { ids: alertIds } });
-        const alerts = mgetRes.body.docs
-          .filter((d: any) => d.found)
-          .map((d: any) => ({ _id: d._id, _source: d._source }));
+        const locations = await resolveCaseAlerts(client, relationships);
+        const alerts = Array.from(locations.values())
+          .filter((item) => item.source)
+          .map((item) => ({ _id: item.id, _source: item.source }));
 
-        return response.ok({ body: buildAttackGraph(alerts) });
+        return response.ok({ body: {
+          ...buildAttackGraph(alerts),
+          truncated,
+          limit: maxGraphAlerts,
+          includedAlerts: alerts.length,
+        } });
       } catch (e: any) {
         return response.customError({ statusCode: e?.meta?.statusCode || 500, body: { message: e.message } });
       }

@@ -1,23 +1,25 @@
 import { schema } from '@osd/config-schema';
 import { IRouter } from '../../../../src/core/server';
 import { API_ROOT, ALERT_STATUS_INDEX, CASES_INDEX, CASE_SEVERITIES } from '../../common';
-
-// Simple level-based SLA policy: how quickly a closed alert should have
-// been resolved, by its rule severity level. Not configurable yet - if
-// that's needed, move this into server/config.ts and thread it through.
-const SLA_POLICY = [
-  { minLevel: 12, label: 'Critical', targetMinutes: 60 },
-  { minLevel: 7, label: 'High', targetMinutes: 240 },
-  { minLevel: 4, label: 'Medium', targetMinutes: 1440 },
-  { minLevel: 0, label: 'Low', targetMinutes: 4320 },
-];
-
-function slaForLevel(level: number) {
-  return SLA_POLICY.find((tier) => level >= tier.minLevel) || SLA_POLICY[SLA_POLICY.length - 1];
-}
+import {
+  collectCompositeBuckets,
+} from '../lib/report_metrics';
+import { REPORTING_SLA_POLICY } from '../lib/reporting_fields';
 
 function average(values: number[]): number | null {
   return values.length ? values.reduce((sum, v) => sum + v, 0) / values.length : null;
+}
+
+interface AssigneeStatus {
+  open: number;
+  in_progress: number;
+  closed: number;
+}
+
+function assigneeStatusFromBuckets(buckets: any[] = []): AssigneeStatus {
+  const s: AssigneeStatus = { open: 0, in_progress: 0, closed: 0 };
+  for (const sb of buckets) if (sb.key in s) (s as any)[sb.key] = sb.doc_count;
+  return s;
 }
 
 export function defineReportRoutes(router: IRouter) {
@@ -28,33 +30,27 @@ export function defineReportRoutes(router: IRouter) {
         query: schema.object({
           from: schema.string(),
           to: schema.string(),
-          size: schema.maybe(schema.number({ min: 1, max: 5000 })),
         }),
       },
     },
     async (context, request, response) => {
-      const { from, to, size } = request.query as any;
+      const { from, to } = request.query as any;
       const client = context.core.opensearch.client.asCurrentUser;
-      const sampleSize = size || 2000;
 
       try {
+        const alertQuery = { range: { '@timestamp': { gte: from, lte: to } } };
+
+        // One exact aggregation query replaces the previous sampled document
+        // walk. Timing/SLA are read straight from the bounded write-time
+        // `reporting.*` fields, so nothing here depends on hit limits.
         const result: any = await client.search({
           index: ALERT_STATUS_INDEX,
           body: {
-            size: sampleSize,
-            // Exact totals rather than the 10k default cap, so totalAlerts and
-            // the status breakdown are truthful even on large windows.
+            size: 0,
             track_total_hits: true,
-            query: { range: { '@timestamp': { gte: from, lte: to } } },
-            _source: ['@timestamp', 'status', 'rule.level', 'history', 'assigned_to'],
-            // Status counts come from an aggregation over the FULL match, not
-            // the (possibly truncated) sample - otherwise the breakdown would
-            // not reconcile with totalAlerts. Time-based metrics below still
-            // walk the sample because they need each doc's history array.
+            query: alertQuery,
             aggs: {
               status_breakdown: { terms: { field: 'status', size: 10 } },
-              // Alert volume per day over the window, for the trend chart. Empty
-              // days are included so the line does not lie about quiet periods.
               per_day: {
                 date_histogram: {
                   field: '@timestamp',
@@ -62,23 +58,59 @@ export function defineReportRoutes(router: IRouter) {
                   min_doc_count: 0,
                   extended_bounds: { min: from, max: to },
                 },
-                // Current disposition of each day's alerts, for the stacked
-                // status-over-time chart.
+                aggs: { by_status: { terms: { field: 'status', size: 5 } } },
+              },
+              assigned: {
+                filter: { exists: { field: 'reporting.first_assigned_at' } },
+                aggs: { avg_minutes: { avg: { field: 'reporting.assign_minutes' } } },
+              },
+              resolved: {
+                filter: {
+                  bool: {
+                    filter: [
+                      { term: { status: 'closed' } },
+                      { exists: { field: 'reporting.resolve_minutes' } },
+                    ],
+                  },
+                },
                 aggs: {
-                  by_status: { terms: { field: 'status', size: 5 } },
+                  avg_minutes: { avg: { field: 'reporting.resolve_minutes' } },
+                  by_tier: {
+                    terms: { field: 'reporting.sla_tier', size: 10 },
+                    aggs: {
+                      met: { filter: { term: { 'reporting.sla_met': true } } },
+                      breached: { filter: { term: { 'reporting.sla_met': false } } },
+                    },
+                  },
+                },
+              },
+              coverage: {
+                filters: {
+                  filters: {
+                    closed_missing: {
+                      bool: {
+                        filter: [{ term: { status: 'closed' } }],
+                        must_not: [{ exists: { field: 'reporting.closed_at' } }],
+                      },
+                    },
+                    assigned_missing: {
+                      bool: {
+                        filter: [{ exists: { field: 'assigned_to' } }],
+                        must_not: [{ exists: { field: 'reporting.first_assigned_at' } }],
+                      },
+                    },
+                  },
                 },
               },
             },
           },
         });
 
-        const hits = result.body.hits.hits;
-        const totalMatched = result.body.hits.total?.value ?? hits.length;
-        const truncated = hits.length < totalMatched;
+        const totalMatched = result.body.hits.total?.value ?? 0;
 
-        const statusBreakdown = { open: 0, in_progress: 0, closed: 0 };
+        const statusBreakdown: Record<string, number> = { open: 0, in_progress: 0, closed: 0 };
         for (const b of result.body.aggregations?.status_breakdown?.buckets || []) {
-          if (b.key in statusBreakdown) (statusBreakdown as any)[b.key] = b.doc_count;
+          if (b.key in statusBreakdown) statusBreakdown[b.key] = b.doc_count;
         }
 
         const perDayBuckets = result.body.aggregations?.per_day?.buckets || [];
@@ -94,199 +126,231 @@ export function defineReportRoutes(router: IRouter) {
           return row;
         });
 
-        const resolveMinutesList: number[] = [];
-        const assignMinutesList: number[] = [];
-        const slaBuckets: Record<string, { label: string; met: number; breached: number }> = {};
-        // Per-assignee resolve times, gathered from the sample so we can report
-        // mean-time-to-resolve per analyst (labelled sample-based, like the
-        // overall figure). Keyed by assignee name.
-        const perAssigneeResolve: Record<string, number[]> = {};
+        const assignedAgg = result.body.aggregations?.assigned;
+        const assignedCount = assignedAgg?.doc_count ?? 0;
+        const meanTimeToAssignMinutes = assignedAgg?.avg_minutes?.value != null
+          ? assignedAgg.avg_minutes.value
+          : null;
 
-        for (const hit of hits) {
-          const src = hit._source;
-          const occurredAt = new Date(src['@timestamp']).getTime();
-          const history: any[] = src.history || [];
+        const resolvedAgg = result.body.aggregations?.resolved;
+        const resolvedCount = resolvedAgg?.doc_count ?? 0;
+        const meanTimeToResolveMinutes = resolvedAgg?.avg_minutes?.value != null
+          ? resolvedAgg.avg_minutes.value
+          : null;
 
-          const closeEntries = history.filter((h) => h.action === 'status_change' && h.to === 'closed');
-          if (closeEntries.length) {
-            const resolvedAt = new Date(closeEntries[closeEntries.length - 1].timestamp).getTime();
-            const resolveMinutes = (resolvedAt - occurredAt) / 60000;
-            if (resolveMinutes >= 0) {
-              resolveMinutesList.push(resolveMinutes);
-              if (src.assigned_to) {
-                (perAssigneeResolve[src.assigned_to] || (perAssigneeResolve[src.assigned_to] = [])).push(resolveMinutes);
-              }
-              const tier = slaForLevel(src.rule?.level || 0);
-              const bucket = slaBuckets[tier.label] || (slaBuckets[tier.label] = { label: tier.label, met: 0, breached: 0 });
-              if (resolveMinutes <= tier.targetMinutes) bucket.met += 1;
-              else bucket.breached += 1;
-            }
-          }
-
-          // Only explicit assignment actions. A 'bulk_update' entry's `to` is
-          // `status ?? assignedTo ?? caseId` (see alerts.ts bulk-update), so a
-          // status-only bulk change would otherwise be miscounted as an
-          // assignment and pollute mean-time-to-assign. A single-field bulk
-          // assign is already recorded as 'assignment_change', so nothing real
-          // is lost by excluding 'bulk_update' here.
-          const assignEntries = history.filter((h) => h.action === 'assignment_change' && h.to);
-          if (assignEntries.length) {
-            const assignedAt = new Date(assignEntries[0].timestamp).getTime();
-            const assignMinutes = (assignedAt - occurredAt) / 60000;
-            if (assignMinutes >= 0) assignMinutesList.push(assignMinutes);
-          }
-        }
-
-        const slaBreakdown = Object.values(slaBuckets);
+        const slaBreakdown = (resolvedAgg?.by_tier?.buckets || []).map((b: any) => ({
+          label: b.key,
+          met: b.met?.doc_count ?? 0,
+          breached: b.breached?.doc_count ?? 0,
+        }));
         const slaTracked = slaBreakdown.reduce((sum, b) => sum + b.met + b.breached, 0);
         const slaMet = slaBreakdown.reduce((sum, b) => sum + b.met, 0);
+        const slaCompliancePct = slaTracked ? (slaMet / slaTracked) * 100 : null;
 
-        // Cases opened in the same period, for the Reports tab's case
-        // section. Cases are typically far fewer than alerts, so no
-        // sampling cap here - a straight aggregation query is enough.
+        const coverageAgg = result.body.aggregations?.coverage?.buckets || {};
+        const coverage = {
+          closedMissingReporting: coverageAgg.closed_missing?.doc_count ?? 0,
+          assignedMissingReporting: coverageAgg.assigned_missing?.doc_count ?? 0,
+        };
+
+        // Per-analyst workload: complete cardinality via composite pagination on
+        // assigned_to (keyword). Fresh installs map it as keyword; installs that
+        // predate the explicit mapping expose it as text with a `.keyword`
+        // subfield, so fall back to that.
+        let analysts: any[] = [];
+        const analystStatus = new Map<string, AssigneeStatus>();
+        try {
+          const workloadBuckets = await collectCompositeBuckets(
+            client,
+            {
+              index: ALERT_STATUS_INDEX,
+              query: { bool: { must: [alertQuery], filter: [{ exists: { field: 'assigned_to' } }] } },
+              bucket: {
+                composite: { size: 1000, sources: [{ assignee: { terms: { field: 'assigned_to' } } }] },
+                aggs: { by_status: { terms: { field: 'status', size: 5 } } },
+              },
+            }
+          ).catch(() => collectCompositeBuckets(
+            client,
+            {
+              index: ALERT_STATUS_INDEX,
+              query: { bool: { must: [alertQuery], filter: [{ exists: { field: 'assigned_to' } }] } },
+              bucket: {
+                composite: { size: 1000, sources: [{ assignee: { terms: { field: 'assigned_to.keyword' } } }] },
+                aggs: { by_status: { terms: { field: 'status', size: 5 } } },
+              },
+            }
+          ));
+          for (const b of workloadBuckets) {
+            analystStatus.set(b.key.assignee, assigneeStatusFromBuckets(b.by_status?.buckets));
+          }
+        } catch (e: any) {
+          throw new Error(`Exact per-analyst workload aggregation failed: ${e.message || e}`);
+        }
+
+        // Per-analyst resolution: complete cardinality on the write-time
+        // assignee_at_close field with exact mean resolve times.
+        const analystResolve = new Map<string, { count: number; minutes: number[] }>();
+        try {
+          const resolutionBuckets = await collectCompositeBuckets(client, {
+            index: ALERT_STATUS_INDEX,
+            query: {
+              bool: {
+                must: [alertQuery],
+                filter: [
+                  { term: { status: 'closed' } },
+                  { exists: { field: 'reporting.resolve_minutes' } },
+                  { exists: { field: 'reporting.assignee_at_close' } },
+                ],
+              },
+            },
+            bucket: {
+              composite: {
+                size: 1000,
+                sources: [{ assignee: { terms: { field: 'reporting.assignee_at_close' } } }],
+              },
+              aggs: { avg_minutes: { avg: { field: 'reporting.resolve_minutes' } } },
+            },
+          });
+          for (const b of resolutionBuckets) {
+            analystResolve.set(b.key.assignee, {
+              count: b.doc_count ?? 0,
+              minutes: b.avg_minutes?.value != null ? [b.avg_minutes.value] : [],
+            });
+          }
+        } catch (e: any) {
+          throw new Error(`Exact per-analyst resolution aggregation failed: ${e.message || e}`);
+        }
+
+        analysts = Array.from(analystStatus.entries())
+          .map(([assignee, status]) => {
+            const resolve = analystResolve.get(assignee);
+            return {
+              assignee,
+              total: status.open + status.in_progress + status.closed,
+              open: status.open,
+              in_progress: status.in_progress,
+              closed: status.closed,
+              resolvedCount: resolve?.count ?? 0,
+              meanTimeToResolveMinutes: resolve?.minutes?.length ? average(resolve.minutes) : null,
+            };
+          })
+          .sort((x, y) => y.total - x.total);
+
+        // Cases opened in the same period. All calculations stay in OpenSearch;
+        // high-cardinality assignees are paged with a composite aggregation.
+        // This remains exact without materialising the case cohort in dashboard
+        // memory, even when the selected period contains millions of cases.
         const caseSeverityBreakdown = Object.fromEntries(CASE_SEVERITIES.map((s) => [s, 0])) as Record<string, number>;
         let totalCases = 0;
         let openCases = 0;
         let inProgressCases = 0;
         let closedCases = 0;
-        const caseCloseMinutesList: number[] = [];
-        // Per-assignee case stats, keyed by owner name.
-        const caseByAssignee: Record<string, { open: number; in_progress: number; closed: number; closeMinutes: number[] }> = {};
-
+        let meanCaseCloseMinutes: number | null = null;
+        let closedCaseTimingCount = 0;
+        let caseAnalysts: any[] = [];
+        const closeMinutesScript = {
+          lang: 'painless',
+          source: "(doc['closed_at'].value.toInstant().toEpochMilli() - doc['created_at'].value.toInstant().toEpochMilli()) / 60000.0",
+        };
         try {
           const caseResult: any = await client.search({
             index: CASES_INDEX,
             body: {
-              size: 2000,
-              query: { range: { created_at: { gte: from, lte: to } } },
-              _source: ['status', 'severity', 'created_at', 'closed_at', 'assigned_to'],
-            },
-          });
-          const caseHits = caseResult.body.hits.hits;
-          totalCases = caseResult.body.hits.total?.value ?? caseHits.length;
-          for (const hit of caseHits) {
-            const src = hit._source;
-            if (src.status === 'open') openCases += 1;
-            else if (src.status === 'in_progress') inProgressCases += 1;
-            else if (src.status === 'closed') closedCases += 1;
-            if (src.severity in caseSeverityBreakdown) caseSeverityBreakdown[src.severity] += 1;
-            let closeMin: number | null = null;
-            if (src.status === 'closed' && src.closed_at) {
-              const minutes = (new Date(src.closed_at).getTime() - new Date(src.created_at).getTime()) / 60000;
-              if (minutes >= 0) {
-                caseCloseMinutesList.push(minutes);
-                closeMin = minutes;
-              }
-            }
-            if (src.assigned_to) {
-              const a =
-                caseByAssignee[src.assigned_to] ||
-                (caseByAssignee[src.assigned_to] = { open: 0, in_progress: 0, closed: 0, closeMinutes: [] });
-              if (src.status === 'open') a.open += 1;
-              else if (src.status === 'in_progress') a.in_progress += 1;
-              else if (src.status === 'closed') a.closed += 1;
-              if (closeMin != null) a.closeMinutes.push(closeMin);
-            }
-          }
-        } catch (e) {
-          // non-fatal - the alert metrics above are still useful on their own
-        }
-
-        // Per-analyst ALERT workload (exact, via aggregation on assigned_to).
-        // Runs as its own query wrapped in try/catch: on installs whose
-        // assigned_to field predates the explicit keyword mapping it is text and
-        // cannot be aggregated - degrade to an empty analyst list rather than
-        // failing the whole report.
-        let analysts: any[] = [];
-        // Fresh installs map assigned_to as keyword; installs predating that
-        // explicit mapping have it as text with a `.keyword` subfield. Try the
-        // plain field first, fall back to the subfield, so per-analyst stats
-        // work on both without a reindex.
-        const runAssigneeAgg = (field: string) =>
-          client.search({
-            index: ALERT_STATUS_INDEX,
-            body: {
               size: 0,
-              query: {
-                bool: {
-                  must: [{ range: { '@timestamp': { gte: from, lte: to } } }],
-                  filter: [{ exists: { field: 'assigned_to' } }],
-                },
-              },
+              track_total_hits: true,
+              query: { range: { created_at: { gte: from, lte: to } } },
               aggs: {
-                by_assignee: {
-                  terms: { field, size: 100 },
-                  aggs: { by_status: { terms: { field: 'status', size: 5 } } },
+                by_status: { terms: { field: 'status', size: 10 } },
+                by_severity: { terms: { field: 'severity', size: 10 } },
+                closed_timing: {
+                  filter: { bool: { filter: [
+                    { term: { status: 'closed' } },
+                    { exists: { field: 'created_at' } },
+                    { exists: { field: 'closed_at' } },
+                  ] } },
+                  aggs: { average_minutes: { avg: { script: closeMinutesScript } } },
                 },
               },
             },
           });
-        try {
-          let aRes: any;
-          try {
-            aRes = await runAssigneeAgg('assigned_to');
-          } catch (inner) {
-            aRes = await runAssigneeAgg('assigned_to.keyword');
+          totalCases = caseResult?.body?.hits?.total?.value ?? 0;
+          for (const bucket of caseResult?.body?.aggregations?.by_status?.buckets || []) {
+            if (bucket.key === 'open') openCases = bucket.doc_count;
+            else if (bucket.key === 'in_progress') inProgressCases = bucket.doc_count;
+            else if (bucket.key === 'closed') closedCases = bucket.doc_count;
           }
-          analysts = (aRes.body.aggregations?.by_assignee?.buckets || []).map((b: any) => {
-            const s = { open: 0, in_progress: 0, closed: 0 };
-            for (const sb of b.by_status.buckets) if (sb.key in s) (s as any)[sb.key] = sb.doc_count;
-            const resolves = perAssigneeResolve[b.key] || [];
-            return {
-              assignee: b.key,
-              total: b.doc_count,
-              open: s.open,
-              in_progress: s.in_progress,
-              closed: s.closed,
-              resolvedCount: resolves.length,
-              meanTimeToResolveMinutes: average(resolves),
-            };
-          });
-          analysts.sort((x, y) => y.total - x.total);
-        } catch (e) {
-          // assigned_to not aggregatable on this index - leave analysts empty
-        }
+          for (const bucket of caseResult?.body?.aggregations?.by_severity?.buckets || []) {
+            if (bucket.key in caseSeverityBreakdown) caseSeverityBreakdown[bucket.key] = bucket.doc_count;
+          }
+          const timing = caseResult?.body?.aggregations?.closed_timing;
+          closedCaseTimingCount = timing?.doc_count ?? 0;
+          meanCaseCloseMinutes = timing?.average_minutes?.value ?? null;
 
-        const caseAnalysts = Object.entries(caseByAssignee)
-          .map(([assignee, v]) => ({
-            assignee,
-            open: v.open,
-            in_progress: v.in_progress,
-            closed: v.closed,
-            total: v.open + v.in_progress + v.closed,
-            meanTimeToCloseMinutes: average(v.closeMinutes),
-          }))
-          .sort((x, y) => y.total - x.total);
+          const caseAssigneeBuckets = await collectCompositeBuckets(client, {
+            index: CASES_INDEX,
+            query: { bool: { filter: [
+              { range: { created_at: { gte: from, lte: to } } },
+              { exists: { field: 'assigned_to' } },
+            ] } },
+            bucket: {
+              composite: { size: 1000, sources: [{ assignee: { terms: { field: 'assigned_to' } } }] },
+              aggs: {
+                by_status: { terms: { field: 'status', size: 5 } },
+                closed_timing: {
+                  filter: { bool: { filter: [
+                    { term: { status: 'closed' } },
+                    { exists: { field: 'created_at' } },
+                    { exists: { field: 'closed_at' } },
+                  ] } },
+                  aggs: { average_minutes: { avg: { script: closeMinutesScript } } },
+                },
+              },
+            },
+          });
+          caseAnalysts = caseAssigneeBuckets.map((bucket: any) => {
+            const status = assigneeStatusFromBuckets(bucket.by_status?.buckets);
+            return {
+              assignee: bucket.key.assignee,
+              ...status,
+              total: status.open + status.in_progress + status.closed,
+              meanTimeToCloseMinutes: bucket.closed_timing?.average_minutes?.value ?? null,
+            };
+          }).sort((x: any, y: any) => y.total - x.total);
+        } catch (e: any) {
+          throw new Error(`Exact case aggregation failed: ${e.message || e}`);
+        }
 
         return response.ok({
           body: {
             from,
             to,
             totalAlerts: totalMatched,
-            sampledAlerts: hits.length,
-            sampleLimit: sampleSize,
-            // Status counts and totalAlerts are exact (aggregation + tracked
-            // total). Time-based metrics (MTTR/MTTA/SLA) are computed over the
-            // sample only; when truncated the UI should say so.
-            truncated,
+            exact: true,
+            alertBasis: 'exact_cohort',
+            timingBasis: 'exact_cohort',
+            caseBasis: 'exact_cohort',
+            // Alerts in the cohort that predate the write-time reporting fields
+            // and have not yet been materialized by the resumable backfill.
+            coverage,
             statusBreakdown,
             alertsPerDay,
             statusPerDay,
-            resolvedCount: resolveMinutesList.length,
-            assignedCount: assignMinutesList.length,
-            meanTimeToResolveMinutes: average(resolveMinutesList),
-            meanTimeToAssignMinutes: average(assignMinutesList),
-            slaCompliancePct: slaTracked ? (slaMet / slaTracked) * 100 : null,
+            resolvedCount,
+            assignedCount,
+            meanTimeToResolveMinutes,
+            meanTimeToAssignMinutes,
+            slaCompliancePct,
             slaBreakdown,
-            slaPolicy: SLA_POLICY,
+            slaPolicy: REPORTING_SLA_POLICY,
             analysts,
             caseAnalysts,
             cases: {
               totalCases,
               statusBreakdown: { open: openCases, in_progress: inProgressCases, closed: closedCases },
               severityBreakdown: caseSeverityBreakdown,
-              meanTimeToCloseMinutes: average(caseCloseMinutesList),
-              closedCount: caseCloseMinutesList.length,
+              meanTimeToCloseMinutes: meanCaseCloseMinutes,
+              closedCount: closedCaseTimingCount,
             },
           },
         });

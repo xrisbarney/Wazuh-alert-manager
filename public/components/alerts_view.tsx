@@ -12,10 +12,14 @@ import {
   EuiText,
   EuiBadge,
   EuiToolTip,
+  EuiTitle,
+  EuiButtonIcon,
+  EuiButtonEmpty,
+  EuiLink,
 } from '@elastic/eui';
 import { Alert, AlertStatus, AlertCounts, FilterOptions } from '../../common';
 import { formatAbsolute, formatRelative } from '../design';
-import { AlertsApiService, AlertFilterParams } from '../services/api';
+import { AlertsApiService, AlertFilterParams, BulkAlertUpdateResponse } from '../services/api';
 import { FilterBar, AlertFilterState } from './filter_bar';
 import { BulkActionsBar } from './bulk_actions_bar';
 import { CreateCaseModal } from './create_case_modal';
@@ -35,6 +39,33 @@ interface Props {
   openAlertId?: string;
   onOpenAlertHandled?: () => void;
 }
+
+const isInteractiveRowTarget = (target: EventTarget | null, currentTarget: EventTarget | null) => {
+  if (!(target instanceof HTMLElement) || target === currentTarget) return false;
+  return Boolean(target.closest('button, a, input, select, textarea, label, [role="button"], [role="link"], [role="checkbox"], [role="option"]'));
+};
+
+const failedAlertIds = (result: BulkAlertUpdateResponse, requestedIds: string[]): string[] => {
+  const failed = new Set<string>();
+  for (const item of result.failed || []) if (item.alertId) failed.add(item.alertId);
+  for (const linkage of result.linkage || []) {
+    for (const id of linkage.unknownAlertIds || []) failed.add(id);
+    for (const id of linkage.retryAlertIds || []) failed.add(id);
+    for (const id of linkage.conflictedAlertIds || []) failed.add(id);
+    for (const error of linkage.errors || []) if (error.alertId) failed.add(error.alertId);
+    if (!linkage.ok) {
+      const completed = new Set([...(linkage.linkedAlertIds || []), ...(linkage.unlinkedAlertIds || [])]);
+      for (const id of requestedIds) if (!completed.has(id)) failed.add(id);
+    }
+  }
+  if (result.updated < result.requested && failed.size === 0) requestedIds.forEach((id) => failed.add(id));
+  return Array.from(failed);
+};
+
+const isPartialAlertUpdate = (result: BulkAlertUpdateResponse) =>
+  result.updated < result.requested ||
+  Boolean(result.failed?.length) ||
+  Boolean(result.linkage?.some((item) => !item.ok));
 
 export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, openAlertId, onOpenAlertHandled }) => {
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -56,6 +87,9 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
   const [showCreateCase, setShowCreateCase] = useState(false);
   const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
+  const [summaryExpanded, setSummaryExpanded] = useState(() => {
+    try { return window.localStorage.getItem('wam.alertSummary') !== 'collapsed'; } catch (e) { return true; }
+  });
   // Bumped whenever a committed query input changes that the table-driven
   // effect does not otherwise watch (filters applied, time range changed).
   // `filters` is live draft state synced on every keystroke, so the fetch
@@ -74,38 +108,50 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     q: '',
   });
   const [timeRange, setTimeRange] = useState<TimeRange>({ from: 'now-24h', to: 'now', mode: 'relative' });
+  const appliedFilters = useRef(filters);
+  const appliedTimeRange = useRef(timeRange);
+  const alertsRequestGeneration = useRef(0);
+  const countsRequestGeneration = useRef(0);
 
   const tableRef = useRef<EuiBasicTable<Alert>>(null);
 
+  const clearSelection = () => {
+    setSelectedIds([]);
+    tableRef.current?.setSelection([]);
+  };
+
   const buildFilterParams = useCallback(
     (): AlertFilterParams => ({
-      statuses: filters.statuses,
-      levelMin: filters.levelMin,
-      levelMax: filters.levelMax,
-      ruleIds: filters.ruleIds,
-      agentNames: filters.agentNames,
-      alertTypes: filters.alertTypes,
-      assignedTo: filters.assignedTo,
-      q: filters.q || undefined,
-      from: timeRange.from,
-      to: timeRange.to,
+      statuses: appliedFilters.current.statuses,
+      levelMin: appliedFilters.current.levelMin,
+      levelMax: appliedFilters.current.levelMax,
+      ruleIds: appliedFilters.current.ruleIds,
+      agentNames: appliedFilters.current.agentNames,
+      alertTypes: appliedFilters.current.alertTypes,
+      assignedTo: appliedFilters.current.assignedTo,
+      q: appliedFilters.current.q || undefined,
+      from: appliedTimeRange.current.from,
+      to: appliedTimeRange.current.to,
     }),
-    [filters, timeRange]
+    []
   );
 
   const fetchCounts = useCallback(async () => {
+    const generation = ++countsRequestGeneration.current;
     try {
       setLoadingCounts(true);
       const res: any = await apiService.fetchAlertCounts(buildFilterParams());
+      if (generation !== countsRequestGeneration.current) return;
       setCounts({ open: res.open || 0, in_progress: res.in_progress || 0, closed: res.closed || 0, total: res.total || 0 });
     } catch (e) {
       // non-fatal
     } finally {
-      setLoadingCounts(false);
+      if (generation === countsRequestGeneration.current) setLoadingCounts(false);
     }
   }, [buildFilterParams]);
 
   const fetchAlerts = useCallback(async () => {
+    const generation = ++alertsRequestGeneration.current;
     try {
       setLoading(true);
       const res: any = await apiService.fetchAlerts(buildFilterParams(), {
@@ -114,14 +160,16 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
         sortField: sortField.replace(/^_source\./, ''),
         sortDirection,
       });
+      if (generation !== alertsRequestGeneration.current) return;
       const hits: Alert[] = res?.hits?.hits || [];
       setAlerts(hits);
       setTotalAlerts(res?.hits?.total?.value || 0);
       resolveCaseTitles(hits);
     } catch (e: any) {
+      if (generation !== alertsRequestGeneration.current) return;
       onToast('Error fetching alerts', 'danger', e?.body?.message || e.message);
     } finally {
-      setLoading(false);
+      if (generation === alertsRequestGeneration.current) setLoading(false);
     }
   }, [buildFilterParams, pageIndex, pageSize, sortField, sortDirection]);
 
@@ -158,6 +206,10 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
 
   useEffect(() => {
     fetchFilterOptions();
+    return () => {
+      alertsRequestGeneration.current += 1;
+      countsRequestGeneration.current += 1;
+    };
   }, [fetchFilterOptions]);
 
   // Single fetch trigger: paging/sort (watched directly) or a committed
@@ -184,7 +236,7 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     async (alertId: string) => {
       try {
         const doc: any = await apiService.fetchAlert(alertId);
-        setSelectedAlert({ _id: alertId, _source: doc._source });
+        setSelectedAlert({ ...doc, _id: doc?._id || alertId, _source: doc._source });
       } catch (e) {
         onToast('Failed to open alert', 'danger');
       }
@@ -199,11 +251,45 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
   }, [openAlertId]);
 
   const applyFilters = () => {
+    appliedFilters.current = filters;
+    appliedTimeRange.current = timeRange;
+    clearSelection();
     setPageIndex(0);
     setQueryVersion((v) => v + 1);
   };
 
+  const toggleSummary = () => {
+    setSummaryExpanded((expanded) => {
+      const next = !expanded;
+      try { window.localStorage.setItem('wam.alertSummary', next ? 'expanded' : 'collapsed'); } catch (e) { /* optional */ }
+      return next;
+    });
+  };
+
+  const addLuceneFilter = (field: string, value: unknown, negate: boolean) => {
+    const escaped = String(value).replace(/([\\"])/g, '\\$1');
+    const literal = typeof value === 'number' || typeof value === 'boolean' ? String(value) : `"${escaped}"`;
+    const clause = `${negate ? 'NOT ' : ''}${field}:${literal}`;
+    const next = { ...filters, q: filters.q ? `(${filters.q}) AND ${clause}` : clause };
+    setFilters(next);
+    appliedFilters.current = next;
+    appliedTimeRange.current = timeRange;
+    setSelectedAlert(null);
+    clearSelection();
+    setPageIndex(0);
+    setQueryVersion((version) => version + 1);
+    onToast(negate ? `Excluded ${field}` : `Filtered by ${field}`, 'success', clause);
+  };
+
   const onTableChange = (criteria: CriteriaWithPagination<Alert>) => {
+    const sortChanged = Boolean(
+      criteria.sort &&
+      (String(criteria.sort.field) !== sortField || criteria.sort.direction !== sortDirection)
+    );
+    const pageChanged = Boolean(
+      criteria.page && (criteria.page.index !== pageIndex || criteria.page.size !== pageSize)
+    );
+    if (sortChanged || pageChanged) clearSelection();
     if (criteria.sort) {
       setSortField(String(criteria.sort.field));
       setSortDirection(criteria.sort.direction);
@@ -215,16 +301,51 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     }
   };
 
+  const updateAlerts = async (
+    ids: string[],
+    changes: { status?: AlertStatus; caseId?: string | null; assignedTo?: string | null }
+  ): Promise<BulkAlertUpdateResponse> => {
+    let result: BulkAlertUpdateResponse;
+    try {
+      result = await apiService.bulkUpdateAlerts(ids, changes);
+    } catch (error: any) {
+      // OSD versions differ on whether a structured HTTP 207 is resolved or thrown.
+      if (typeof error?.body?.requested !== 'number' || typeof error?.body?.updated !== 'number') throw error;
+      result = error.body as BulkAlertUpdateResponse;
+    }
+    await Promise.all([fetchAlerts(), fetchCounts()]);
+    if (selectedAlert && ids.includes(selectedAlert._id)) await openAlertById(selectedAlert._id);
+    return result;
+  };
+
+  const retainFailedSelection = (
+    requested: Alert[],
+    failureIds: string[],
+    result: BulkAlertUpdateResponse
+  ) => {
+    const failures = new Set(failureIds);
+    const retained = requested.filter((alert) => failures.has(alert._id));
+    const partial = isPartialAlertUpdate(result);
+    setSelectedIds(retained);
+    tableRef.current?.setSelection(retained);
+    onToast(
+      partial ? `Updated ${result.updated} of ${result.requested} alerts` : `Updated ${result.updated} alert(s)`,
+      partial ? 'danger' : 'success',
+      partial ? result.message || (failureIds.length ? `Failed alerts retained: ${failureIds.join(', ')}` : 'A related operation was incomplete.') : undefined
+    );
+  };
+
   const updateAlertStatus = async (alertId: string, newStatus: AlertStatus) => {
     try {
       setUpdating(alertId);
-      await apiService.bulkUpdateAlerts([alertId], { status: newStatus });
-      setAlerts((prev) => prev.map((a) => (a._id === alertId ? { ...a, _source: { ...a._source, status: newStatus } } : a)));
-      if (selectedAlert?._id === alertId) {
-        setSelectedAlert({ ...selectedAlert, _source: { ...selectedAlert._source, status: newStatus } });
-      }
-      fetchCounts();
-      onToast('Status updated', 'success');
+      const result = await updateAlerts([alertId], { status: newStatus });
+      const failures = failedAlertIds(result, [alertId]);
+      const partial = isPartialAlertUpdate(result);
+      onToast(
+        partial ? 'Status update incomplete' : 'Status updated',
+        partial ? 'danger' : 'success',
+        partial ? result.message || (failures.length ? `Failed alert: ${failures.join(', ')}` : 'A related operation was incomplete.') : undefined
+      );
     } catch (e: any) {
       onToast('Error updating status', 'danger', e?.body?.message || e.message);
     } finally {
@@ -235,12 +356,10 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
   const bulkSetStatus = async (status: AlertStatus) => {
     try {
       setBulkBusy(true);
-      await apiService.bulkUpdateAlerts(selectedIds.map((a) => a._id), { status });
-      onToast(`Updated ${selectedIds.length} alert(s)`, 'success');
-      setSelectedIds([]);
-      tableRef.current?.setSelection([]);
-      fetchAlerts();
-      fetchCounts();
+      const requested = selectedIds;
+      const ids = requested.map((alert) => alert._id);
+      const result = await updateAlerts(ids, { status });
+      retainFailedSelection(requested, failedAlertIds(result, ids), result);
     } catch (e: any) {
       onToast('Bulk update failed', 'danger', e?.body?.message || e.message);
     } finally {
@@ -251,14 +370,10 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
   const bulkAssign = async (assignedTo: string | null) => {
     try {
       setBulkBusy(true);
-      await apiService.bulkUpdateAlerts(selectedIds.map((a) => a._id), { assignedTo });
-      onToast(
-        assignedTo ? `Assigned ${selectedIds.length} alert(s) to ${assignedTo}` : `Unassigned ${selectedIds.length} alert(s)`,
-        'success'
-      );
-      setSelectedIds([]);
-      tableRef.current?.setSelection([]);
-      fetchAlerts();
+      const requested = selectedIds;
+      const ids = requested.map((alert) => alert._id);
+      const result = await updateAlerts(ids, { assignedTo });
+      retainFailedSelection(requested, failedAlertIds(result, ids), result);
     } catch (e: any) {
       onToast('Assignment failed', 'danger', e?.body?.message || e.message);
     } finally {
@@ -269,12 +384,14 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
   const updateAlertAssignee = async (alertId: string, assignedTo: string | null) => {
     try {
       setUpdating(alertId);
-      await apiService.bulkUpdateAlerts([alertId], { assignedTo });
-      setAlerts((prev) => prev.map((a) => (a._id === alertId ? { ...a, _source: { ...a._source, assigned_to: assignedTo } } : a)));
-      if (selectedAlert?._id === alertId) {
-        setSelectedAlert({ ...selectedAlert, _source: { ...selectedAlert._source, assigned_to: assignedTo } });
-      }
-      onToast(assignedTo ? `Assigned to ${assignedTo}` : 'Unassigned', 'success');
+      const result = await updateAlerts([alertId], { assignedTo });
+      const failures = failedAlertIds(result, [alertId]);
+      const partial = isPartialAlertUpdate(result);
+      onToast(
+        partial ? 'Assignment incomplete' : assignedTo ? `Assigned to ${assignedTo}` : 'Unassigned',
+        partial ? 'danger' : 'success',
+        partial ? result.message || (failures.length ? `Failed alert: ${failures.join(', ')}` : 'A related operation was incomplete.') : undefined
+      );
     } catch (e: any) {
       onToast('Assignment failed', 'danger', e?.body?.message || e.message);
     } finally {
@@ -285,12 +402,14 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
   const updateAlertCase = async (alertId: string, caseId: string | null) => {
     try {
       setUpdating(alertId);
-      await apiService.bulkUpdateAlerts([alertId], { caseId });
-      setAlerts((prev) => prev.map((a) => (a._id === alertId ? { ...a, _source: { ...a._source, case_id: caseId } } : a)));
-      if (selectedAlert?._id === alertId) {
-        setSelectedAlert({ ...selectedAlert, _source: { ...selectedAlert._source, case_id: caseId } });
-      }
-      onToast(caseId ? 'Linked to case' : 'Removed from case', 'success');
+      const result = await updateAlerts([alertId], { caseId });
+      const failures = failedAlertIds(result, [alertId]);
+      const partial = isPartialAlertUpdate(result);
+      onToast(
+        partial ? 'Case link update incomplete' : caseId ? 'Linked to case' : 'Removed from case',
+        partial ? 'danger' : 'success',
+        partial ? result.message || (failures.length ? `Failed alert: ${failures.join(', ')}` : 'A related operation was incomplete.') : undefined
+      );
     } catch (e: any) {
       onToast('Failed to update case link', 'danger', e?.body?.message || e.message);
     } finally {
@@ -302,12 +421,11 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     if (!caseId) return;
     try {
       setBulkBusy(true);
-      await apiService.bulkUpdateAlerts(selectedIds.map((a) => a._id), { caseId });
-      onToast(`Added ${selectedIds.length} alert(s) to case`, 'success');
-      setSelectedIds([]);
-      tableRef.current?.setSelection([]);
-      fetchAlerts();
-      onOpenCase(caseId);
+      const requested = selectedIds;
+      const ids = requested.map((alert) => alert._id);
+      const result = await updateAlerts(ids, { caseId });
+      retainFailedSelection(requested, failedAlertIds(result, ids), result);
+      if (result.updated > 0) onOpenCase(caseId);
     } catch (e: any) {
       onToast('Failed to add to case', 'danger', e?.body?.message || e.message);
     } finally {
@@ -338,15 +456,40 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
       name: 'When',
       width: '110px',
       sortable: true,
-      render: (value: string) => (
+      render: (value: string, alert: Alert) => (
         <EuiToolTip content={formatAbsolute(value)}>
-          <span>{formatRelative(value)}</span>
+          <EuiLink
+            onClick={(event) => {
+              event.stopPropagation();
+              openAlertById(alert._id);
+            }}
+          >
+            {formatRelative(value)}
+          </EuiLink>
         </EuiToolTip>
       ),
     },
-    { field: '_source', name: 'Agent', width: '150px', truncateText: true, render: (v: Alert['_source']) => v.agent?.name || '—' },
-    { field: '_source', name: 'Agent IP', width: '120px', truncateText: true, render: (v: Alert['_source']) => v.agent?.ip || '—' },
-    { field: '_source', name: 'Rule', truncateText: true, render: (v: Alert['_source']) => v.rule?.description || '—' },
+    {
+      field: '_source',
+      name: 'Agent / IP',
+      width: '190px',
+      render: (v: Alert['_source']) => (
+        <div className="wamTablePrimary">
+          <strong>{v.agent?.name || v.agent?.ip || 'Unknown agent'}</strong>
+          {v.agent?.name && v.agent?.ip && <span className="wamTableSecondary">({v.agent.ip})</span>}
+        </div>
+      ),
+    },
+    {
+      field: '_source',
+      name: 'Rule',
+      render: (v: Alert['_source']) => (
+        <div className="wamTablePrimary">
+          <strong>{v.rule?.description || 'Unknown rule'}</strong>
+          {v.rule?.id && <span className="wamTableSecondary">Rule {v.rule.id}</span>}
+        </div>
+      ),
+    },
     {
       field: '_source.rule.level',
       name: 'Severity',
@@ -378,7 +521,10 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
           <EuiBadge
             color="primary"
             iconType="folderOpen"
-            onClick={() => onOpenCase(v.case_id!)}
+            onClick={(event: any) => {
+              event.stopPropagation();
+              onOpenCase(v.case_id!);
+            }}
             onClickAriaLabel="Open linked case"
             title={caseTitles[v.case_id] || v.case_id}
           >
@@ -394,53 +540,74 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
       name: 'Actions',
       width: '70px',
       align: 'right',
-      actions: [
-        {
-          name: 'View',
-          description: 'View alert details',
-          type: 'icon',
-          icon: 'expand',
-          onClick: (alert: Alert) => setSelectedAlert(alert),
-        },
-      ],
+      render: (alert: Alert) => (
+        <EuiButtonIcon
+          iconType="expand"
+          aria-label={`Open details for ${alert._source.rule?.description || alert._id}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            openAlertById(alert._id);
+          }}
+        />
+      ),
     },
   ];
 
   return (
     <>
-      <EuiFlexGroup gutterSize="m">
-        <EuiFlexItem>
-          <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-            <EuiStat titleSize="m" title={loadingCounts ? <EuiLoadingSpinner size="m" /> : counts.open} description="Open" titleColor="primary" />
-          </EuiPanel>
+      <EuiFlexGroup alignItems="center" justifyContent="spaceBetween" gutterSize="m" wrap>
+        <EuiFlexItem grow={false}>
+          <EuiTitle size="s"><h2>Alert queue</h2></EuiTitle>
+          <EuiText size="s" color="subdued">Prioritized triage with explicit query and time-range controls.</EuiText>
         </EuiFlexItem>
-        <EuiFlexItem>
-          <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-            <EuiStat titleSize="m" title={loadingCounts ? <EuiLoadingSpinner size="m" /> : counts.in_progress} description="In progress" titleColor="accent" />
-          </EuiPanel>
-        </EuiFlexItem>
-        <EuiFlexItem>
-          <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-            <EuiStat titleSize="m" title={loadingCounts ? <EuiLoadingSpinner size="m" /> : counts.closed} description="Closed" titleColor="subdued" />
-          </EuiPanel>
-        </EuiFlexItem>
-        <EuiFlexItem>
-          <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-            <EuiStat titleSize="m" title={loadingCounts ? <EuiLoadingSpinner size="m" /> : counts.total} description="Total" titleColor="default" />
-          </EuiPanel>
+        <EuiFlexItem grow={false}>
+          <EuiFlexGroup gutterSize="s" responsive={false} alignItems="center">
+            <EuiFlexItem grow={false}>
+              <EuiButtonEmpty className="wamSummaryToggle" size="xs" iconType={summaryExpanded ? 'arrowUp' : 'arrowDown'} onClick={toggleSummary} aria-expanded={summaryExpanded}>
+                {summaryExpanded ? 'Hide summary' : 'Show summary'}
+              </EuiButtonEmpty>
+            </EuiFlexItem>
+            <EuiFlexItem grow={false}>
+              <EuiBadge color={autoRefreshEnabled ? 'success' : 'hollow'} iconType={autoRefreshEnabled ? 'refresh' : 'clock'}>
+                {autoRefreshEnabled ? 'Auto-refresh on · 5 min' : 'Auto-refresh off'}
+              </EuiBadge>
+            </EuiFlexItem>
+          </EuiFlexGroup>
         </EuiFlexItem>
       </EuiFlexGroup>
+
+      {summaryExpanded && <><EuiSpacer size="m" /><EuiFlexGroup gutterSize="s" className="wamQueueStats" wrap>
+        <EuiFlexItem>
+          <EuiPanel paddingSize="s" hasShadow={false} hasBorder>
+            <EuiStat titleSize="s" title={loadingCounts ? <EuiLoadingSpinner size="s" /> : counts.open} description="Open" titleColor="primary" />
+          </EuiPanel>
+        </EuiFlexItem>
+        <EuiFlexItem>
+          <EuiPanel paddingSize="s" hasShadow={false} hasBorder>
+            <EuiStat titleSize="s" title={loadingCounts ? <EuiLoadingSpinner size="s" /> : counts.in_progress} description="In progress" titleColor="accent" />
+          </EuiPanel>
+        </EuiFlexItem>
+        <EuiFlexItem>
+          <EuiPanel paddingSize="s" hasShadow={false} hasBorder>
+            <EuiStat titleSize="s" title={loadingCounts ? <EuiLoadingSpinner size="s" /> : counts.closed} description="Closed" titleColor="subdued" />
+          </EuiPanel>
+        </EuiFlexItem>
+        <EuiFlexItem>
+          <EuiPanel paddingSize="s" hasShadow={false} hasBorder>
+            <EuiStat titleSize="s" title={loadingCounts ? <EuiLoadingSpinner size="s" /> : counts.total} description="Total" titleColor="default" />
+          </EuiPanel>
+        </EuiFlexItem>
+      </EuiFlexGroup></>}
 
       <EuiSpacer size="m" />
 
       <FilterBar
+        key={queryVersion}
         filters={filters}
         onChange={setFilters}
         timeRange={timeRange}
         onTimeRangeChange={(tr) => {
           setTimeRange(tr);
-          setPageIndex(0);
-          setQueryVersion((v) => v + 1);
         }}
         filterOptions={filterOptions}
         onApply={applyFilters}
@@ -474,6 +641,7 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
           </EuiText>
           <EuiSpacer size="s" />
           <EuiBasicTable<Alert>
+            className="wamAlertTable"
             ref={tableRef}
             items={alerts}
             itemId="_id"
@@ -484,17 +652,10 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
             onChange={onTableChange}
             selection={{ selectable: () => true, onSelectionChange: setSelectedIds }}
             rowProps={(alert) => ({
-              onClick: (e: React.MouseEvent) => {
-                // A row click opens the detail flyout, but the selection
-                // checkbox and the actions column live inside the row - clicking
-                // those must NOT open the flyout, or multi-select is unusable.
-                const el = e.target as HTMLElement;
-                if (el.closest('.euiTableRowCellCheckbox, .euiCheckbox, input, button, a, label')) {
-                  return;
-                }
-                setSelectedAlert(alert);
+              className: `wamAlertRow wamClickableRow wamAlertRow--${alert._source.rule?.level >= 12 ? 'critical' : alert._source.rule?.level >= 7 ? 'high' : alert._source.rule?.level >= 4 ? 'medium' : 'low'}`,
+              onClick: (event: React.MouseEvent) => {
+                if (!isInteractiveRowTarget(event.target, event.currentTarget)) openAlertById(alert._id);
               },
-              style: { cursor: 'pointer' },
             })}
           />
         </>
@@ -502,6 +663,7 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
 
       {selectedAlert && (
         <AlertFlyout
+          key={selectedAlert._id}
           alert={selectedAlert}
           apiService={apiService}
           updating={updating === selectedAlert._id}
@@ -517,6 +679,7 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
             setSelectedAlert((prev) => (prev && prev._id === alertId ? { ...prev, _source: { ...prev._source, ai_analysis: analysis } } : prev));
             setAlerts((prev) => prev.map((a) => (a._id === alertId ? { ...a, _source: { ...a._source, ai_analysis: analysis } } : a)));
           }}
+          onAddFilter={addLuceneFilter}
         />
       )}
 

@@ -1,5 +1,5 @@
 import React from 'react';
-import { EuiBasicTable, EuiEmptyPrompt, EuiSpacer, EuiText, EuiCallOut, EuiBadge } from '@elastic/eui';
+import { EuiBasicTable, EuiEmptyPrompt, EuiSpacer, EuiText, EuiBadge } from '@elastic/eui';
 import { ReportMetrics } from '../../common';
 import { formatDuration } from '../design';
 
@@ -42,26 +42,13 @@ export const AnalystWorkloadTab: React.FC<{ metrics: ReportMetrics }> = ({ metri
   );
 };
 
-/** Performance: resolution throughput per analyst. Sample-based. */
+/** Performance: resolution throughput per analyst. Exact (write-time fields). */
 export const AnalystPerformanceTab: React.FC<{ metrics: ReportMetrics }> = ({ metrics }) => {
   const rows = (metrics.analysts || []).filter((a) => a.resolvedCount > 0);
   if ((metrics.analysts || []).length === 0) return emptyAnalysts;
   return (
     <>
       <EuiSpacer size="m" />
-      {metrics.truncated && (
-        <>
-          <EuiCallOut
-            size="s"
-            color="warning"
-            iconType="alert"
-            title={`Resolution times are based on a sample of ${metrics.sampledAlerts.toLocaleString()} of ${metrics.totalAlerts.toLocaleString()} alerts`}
-          >
-            Narrow the time range for exact per-analyst resolution figures.
-          </EuiCallOut>
-          <EuiSpacer size="s" />
-        </>
-      )}
       {rows.length === 0 ? (
         <EuiText size="s" color="subdued">
           No alerts have been resolved by an assigned analyst in this period.
@@ -131,7 +118,7 @@ export const LeaderboardTab: React.FC<{ metrics: ReportMetrics }> = ({ metrics }
     <>
       <EuiSpacer size="m" />
       <EuiText size="s" color="subdued">
-        Analysts ranked by alerts resolved in this period (sample-based).
+        Analysts ranked by alerts resolved in this period (exact).
       </EuiText>
       <EuiSpacer size="s" />
       <EuiBasicTable

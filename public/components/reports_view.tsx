@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   EuiFlexGroup,
   EuiFlexItem,
@@ -75,6 +75,9 @@ function slaColor(pct: number | null): string {
   return 'danger';
 }
 
+const REPORT_SCOPE =
+  'Operational metric over live, unarchived alerts and cases only. Archived alerts and cases are excluded; retired activity can make timing incomplete. This is not an immutable compliance record.';
+
 export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
   // start/end are date-math or absolute-ISO strings; the reports API feeds them
   // straight into an OpenSearch range query, which accepts both. EuiSuperDatePicker
@@ -84,49 +87,64 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<ReportMetrics | null>(null);
   const [prev, setPrev] = useState<ReportMetrics | null>(null);
+  const loadGeneration = useRef(0);
+  const onToastRef = useRef(onToast);
+  onToastRef.current = onToast;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (from: string, to: string) => {
+    const generation = ++loadGeneration.current;
+    setLoading(true);
+    setMetrics(null);
+    setPrev(null);
     try {
-      setLoading(true);
-      const res = await apiService.fetchReportMetrics(start, end);
-      setMetrics(res);
-      // Fetch the preceding equal-length window for period-over-period deltas.
-      // Non-blocking failure — deltas just don't render.
-      const pw = previousWindow(start, end);
-      if (pw) {
-        apiService
-          .fetchReportMetrics(pw.from, pw.to)
-          .then(setPrev)
-          .catch(() => setPrev(null));
-      } else {
-        setPrev(null);
-      }
+      const pw = previousWindow(from, to);
+      const [currentResult, previousResult] = await Promise.allSettled([
+        apiService.fetchReportMetrics(from, to),
+        pw ? apiService.fetchReportMetrics(pw.from, pw.to) : Promise.resolve(null),
+      ]);
+      if (generation !== loadGeneration.current) return;
+      if (currentResult.status === 'rejected') throw currentResult.reason;
+      setMetrics(currentResult.value);
+      setPrev(previousResult.status === 'fulfilled' ? previousResult.value : null);
     } catch (e: any) {
-      onToast('Failed to load report', 'danger', e?.body?.message || e.message);
+      if (generation !== loadGeneration.current) return;
+      onToastRef.current('Failed to load report', 'danger', e?.body?.message || e?.message);
     } finally {
-      setLoading(false);
+      if (generation === loadGeneration.current) setLoading(false);
     }
-  }, [start, end]);
+  }, [apiService]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    load(start, end);
+    return () => {
+      loadGeneration.current += 1;
+    };
+  }, [load, start, end]);
 
   const slaBreakdownWithTotals = (metrics?.slaBreakdown || []).map((b) => ({
     ...b,
     total: b.met + b.breached,
     compliancePct: b.met + b.breached ? (b.met / (b.met + b.breached)) * 100 : null,
   }));
+  const timingPrevious = metrics && prev ? prev : null;
+  const timingLabel = 'Exact cohort';
+  const timingPopulationLabel = 'Cohort';
+  const backfillPending =
+    (metrics?.coverage?.closedMissingReporting ?? 0) + (metrics?.coverage?.assignedMissingReporting ?? 0) > 0;
 
   return (
     <div>
-      <EuiFlexGroup alignItems="center" gutterSize="m" wrap>
-        <EuiFlexItem grow={false}>
+      <EuiFlexGroup alignItems="center" justifyContent="spaceBetween" gutterSize="m" wrap>
+        <EuiFlexItem>
           <EuiTitle size="s">
             <h2>Reporting</h2>
           </EuiTitle>
+          <EuiText size="s" color="subdued">
+            Operational outcomes for alerts that occurred in the selected cohort.{' '}
+            <EuiIconTip type="iInCircle" content={REPORT_SCOPE} aria-label="Report data scope" />
+          </EuiText>
         </EuiFlexItem>
-        <EuiFlexItem grow={false} style={{ minWidth: 340 }}>
+        <EuiFlexItem grow={false} className="wamReportDatePicker">
           <EuiSuperDatePicker
             start={start}
             end={end}
@@ -135,12 +153,14 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
               setEnd(e);
             }}
             onRefresh={({ start: s, end: e }) => {
-              setStart(s);
-              setEnd(e);
+              if (s === start && e === end) load(s, e);
+              else {
+                setStart(s);
+                setEnd(e);
+              }
             }}
             isLoading={loading}
             showUpdateButton
-            width="auto"
           />
         </EuiFlexItem>
       </EuiFlexGroup>
@@ -153,6 +173,7 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
         <EuiText color="subdued">No data.</EuiText>
       ) : (
         <EuiTabbedContent
+          className="wamReportTabs"
           size="s"
           tabs={[
             {
@@ -161,52 +182,67 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
               content: (
                 <>
                   <EuiSpacer size="m" />
-          {metrics.truncated && (
+                  <EuiCallOut
+                    title={`${metrics.totalAlerts.toLocaleString()} alerts occurred in this cohort`}
+                    color="primary"
+                    iconType="calendar"
+                    size="s"
+                  >
+                    Alert volume, current-disposition counts, timing, and SLA are all computed exactly
+                    over the live, unarchived cohort.
+                  </EuiCallOut>
+                  <EuiSpacer size="m" />
+                  {backfillPending && (
             <>
               <EuiCallOut
-                title={`Based on a sample of ${metrics.sampledAlerts.toLocaleString()} of ${metrics.totalAlerts.toLocaleString()} matching alerts`}
+                title="Some timing is unavailable for this cohort"
                 color="warning"
-                iconType="alert"
+                iconType="clock"
                 size="s"
               >
-                Narrow the time period for exact figures on very high-volume periods.
+                Resolution or assignment timing is unavailable for{' '}
+                {metrics.coverage.closedMissingReporting.toLocaleString()} closed and{' '}
+                {metrics.coverage.assignedMissingReporting.toLocaleString()} assigned alerts that predate the
+                write-time reporting fields (their activity history is no longer live). Their timing and SLA
+                figures are omitted rather than estimated.
               </EuiCallOut>
               <EuiSpacer size="m" />
             </>
           )}
 
-          <EuiFlexGroup gutterSize="m" wrap>
+          <EuiFlexGroup gutterSize="s" wrap className="wamReportStats">
             <EuiFlexItem style={{ minWidth: 160 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-                <EuiStat title={metrics.totalAlerts.toLocaleString()} description="Total alerts" />
+                <EuiStat title={metrics.totalAlerts.toLocaleString()} description="Alerts in cohort" />
                 <DeltaChip current={metrics.totalAlerts} previous={prev?.totalAlerts} higherIsBetter={false} />
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 160 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-                <EuiStat title={metrics.statusBreakdown.open} description="Open" titleColor="primary" />
+                <EuiStat title={metrics.statusBreakdown.open} description="Currently open" titleColor="primary" />
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 160 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-                <EuiStat title={metrics.statusBreakdown.in_progress} description="In progress" titleColor="accent" />
+                <EuiStat title={metrics.statusBreakdown.in_progress} description="Currently in progress" titleColor="accent" />
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 160 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-                <EuiStat title={metrics.statusBreakdown.closed} description="Closed" titleColor="subdued" />
+                <EuiStat title={metrics.statusBreakdown.closed} description="Currently closed" titleColor="subdued" />
               </EuiPanel>
             </EuiFlexItem>
           </EuiFlexGroup>
 
           <EuiSpacer size="m" />
 
-          <EuiFlexGroup gutterSize="m" wrap>
+          <EuiFlexGroup gutterSize="m" wrap className="wamReportCharts">
             <EuiFlexItem style={{ minWidth: 320 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
                 <EuiTitle size="xxs">
-                  <h4>Alert volume per day</h4>
+                  <h4>Alert cohort by day</h4>
                 </EuiTitle>
+                <EuiText size="xs" color="subdued">Alerts grouped by occurrence date</EuiText>
                 <EuiSpacer size="s" />
                 <AlertTrendChart data={metrics.alertsPerDay || []} />
               </EuiPanel>
@@ -214,10 +250,10 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
             <EuiFlexItem style={{ minWidth: 320 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
                 <EuiTitle size="xxs">
-                  <h4>Status over time</h4>
+                  <h4>Current disposition by occurrence date</h4>
                 </EuiTitle>
                 <EuiText size="xs" color="subdued">
-                  Each day's alerts by current disposition (open / in progress / closed)
+                  Current status of alerts that occurred on each day, not historical status at that time
                 </EuiText>
                 <EuiSpacer size="s" />
                 <StatusTrendChart data={metrics.statusPerDay || []} />
@@ -226,7 +262,7 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
             <EuiFlexItem style={{ minWidth: 300 }} grow={false}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
                 <EuiTitle size="xxs">
-                  <h4>Alerts by status</h4>
+                  <h4>Current cohort disposition</h4>
                 </EuiTitle>
                 <EuiSpacer size="m" />
                 <DonutBreakdown
@@ -243,7 +279,12 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
 
           <EuiSpacer size="m" />
 
-          <EuiFlexGroup gutterSize="m" wrap>
+          <EuiTitle size="xs"><h3>Response outcomes</h3></EuiTitle>
+          <EuiText size="xs" color="subdued">
+            Exact for the live, unarchived cohort. Disposition is evaluated now; reopened alerts are excluded.
+          </EuiText>
+          <EuiSpacer size="s" />
+          <EuiFlexGroup gutterSize="m" wrap className="wamOutcomeStats">
             <EuiFlexItem style={{ minWidth: 200 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
                 <EuiStat
@@ -253,7 +294,7 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
                       Mean time to assign{' '}
                       <EuiIconTip
                         type="questionInCircle"
-                        content="Average time from an alert's timestamp to its first explicit assignment. Computed over the alerts sampled in this period; bulk status changes are not counted as assignments."
+                        content={`Average time from an alert's timestamp to its first explicit assignment. ${timingLabel}; bulk status changes are not counted as assignments. ${REPORT_SCOPE}`}
                       />
                     </>
                   }
@@ -261,12 +302,12 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
                 />
                 <DeltaChip
                   current={metrics.meanTimeToAssignMinutes}
-                  previous={prev?.meanTimeToAssignMinutes}
+                  previous={timingPrevious?.meanTimeToAssignMinutes}
                   higherIsBetter={false}
                   format={(n) => formatDuration(n)}
                 />
                 <EuiText size="xs" color="subdued">
-                  Based on {metrics.assignedCount.toLocaleString()} assigned alert{metrics.assignedCount === 1 ? '' : 's'}
+                  {timingPopulationLabel}: {metrics.assignedCount.toLocaleString()} alerts with assignment history
                 </EuiText>
               </EuiPanel>
             </EuiFlexItem>
@@ -279,7 +320,7 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
                       Mean time to resolve{' '}
                       <EuiIconTip
                         type="questionInCircle"
-                        content="Average time from an alert's timestamp to when it was closed. Computed over the alerts sampled in this period."
+                        content={`Average time from an alert's timestamp to when it was closed. ${timingLabel}. ${REPORT_SCOPE}`}
                       />
                     </>
                   }
@@ -287,12 +328,12 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
                 />
                 <DeltaChip
                   current={metrics.meanTimeToResolveMinutes}
-                  previous={prev?.meanTimeToResolveMinutes}
+                  previous={timingPrevious?.meanTimeToResolveMinutes}
                   higherIsBetter={false}
                   format={(n) => formatDuration(n)}
                 />
                 <EuiText size="xs" color="subdued">
-                  Based on {metrics.resolvedCount.toLocaleString()} closed alert{metrics.resolvedCount === 1 ? '' : 's'}
+                  {timingPopulationLabel}: {metrics.resolvedCount.toLocaleString()} currently closed alerts with resolution history
                 </EuiText>
               </EuiPanel>
             </EuiFlexItem>
@@ -305,7 +346,7 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
                       SLA compliance{' '}
                       <EuiIconTip
                         type="questionInCircle"
-                        content="Share of resolved alerts that were closed within the severity-based target time (targets listed in the SLA breakdown below). Based on the sampled alerts that have a resolution time."
+                        content={`Share of resolved alerts closed within the severity-based target time. ${timingLabel}. ${REPORT_SCOPE}`}
                       />
                     </>
                   }
@@ -314,12 +355,12 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
                 />
                 <DeltaChip
                   current={metrics.slaCompliancePct}
-                  previous={prev?.slaCompliancePct}
+                  previous={timingPrevious?.slaCompliancePct}
                   higherIsBetter
                   format={(n) => `${n.toFixed(0)}%`}
                 />
                 <EuiText size="xs" color="subdued">
-                  Resolved-in-time vs. severity-based target
+                  {timingPopulationLabel}: currently closed alerts with resolution history
                 </EuiText>
               </EuiPanel>
             </EuiFlexItem>
@@ -365,10 +406,16 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
             <h3>Cases</h3>
           </EuiTitle>
           <EuiText size="xs" color="subdued">
-            Cases created in this period
+            {metrics.caseBasis === 'exact_cohort'
+              ? 'Exact cohort: cases created in this period. Status cards show their current disposition.'
+              : 'Case metrics are unavailable for this period.'}
           </EuiText>
           <EuiSpacer size="s" />
 
+          {metrics.caseBasis === 'unavailable' ? (
+            <EuiCallOut title="Case metrics could not be loaded" color="danger" iconType="alert" size="s" />
+          ) : (
+            <div>
           <EuiFlexGroup gutterSize="m" wrap>
             <EuiFlexItem style={{ minWidth: 160 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
@@ -377,26 +424,30 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 140 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-                <EuiStat title={metrics.cases.statusBreakdown.open} description="Open" titleColor="primary" />
+                <EuiStat title={metrics.cases.statusBreakdown.open} description="Currently open" titleColor="primary" />
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 140 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
                 <EuiStat
                   title={metrics.cases.statusBreakdown.in_progress ?? 0}
-                  description="In progress"
+                  description="Currently in progress"
                   titleColor="accent"
                 />
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 140 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-                <EuiStat title={metrics.cases.statusBreakdown.closed} description="Closed" titleColor="subdued" />
+                <EuiStat title={metrics.cases.statusBreakdown.closed} description="Currently closed" titleColor="subdued" />
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 200 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-                <EuiStat title={formatDuration(metrics.cases.meanTimeToCloseMinutes)} description="Mean time to close" titleSize="m" />
+                <EuiStat
+                  title={formatDuration(metrics.cases.meanTimeToCloseMinutes)}
+                  description={<>Mean time to close <EuiIconTip type="questionInCircle" content={`Average time to close for live cases created in the selected period. ${REPORT_SCOPE}`} /></>}
+                  titleSize="m"
+                />
                 <EuiText size="xs" color="subdued">
                   Based on {metrics.cases.closedCount.toLocaleString()} closed case{metrics.cases.closedCount === 1 ? '' : 's'}
                 </EuiText>
@@ -428,6 +479,8 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
                 </EuiPanel>
               </EuiFlexItem>
             </EuiFlexGroup>
+          )}
+            </div>
           )}
                 </>
               ),

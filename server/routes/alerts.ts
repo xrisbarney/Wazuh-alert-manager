@@ -1,60 +1,13 @@
 import { schema } from '@osd/config-schema';
 import { IRouter } from '../../../../src/core/server';
-import { API_ROOT, ALERT_STATUS_INDEX, CASES_INDEX, ALERT_STATUSES } from '../../common';
+import { API_ROOT, ALERT_STATUS_INDEX, ALERT_STATUSES } from '../../common';
 import { getCurrentUsername } from '../lib/opensearch';
 import { APPEND_HISTORY_SCRIPT_SOURCE, buildHistoryEntry } from '../lib/history';
-
-/**
- * Keeps a case's own `alert_ids` array in sync when alerts are linked to
- * (or unlinked from) a case from the *alert* side (bulk-update caseId) -
- * the case side (cases.ts addAlertIds/removeAlertIds) already updates the
- * case doc directly, but linking from an alert only ever touched the
- * alert's own case_id field until this, which meant the case's linked-
- * alerts list silently didn't include alerts linked that way.
- */
-async function syncCaseAlertIds(client: any, alertIds: string[], newCaseId: string | null) {
-  const mgetRes: any = await client.mget({ index: ALERT_STATUS_INDEX, body: { ids: alertIds } });
-  const oldCaseIdByAlert = new Map<string, string | null>();
-  for (const doc of mgetRes.body.docs) {
-    if (doc.found) oldCaseIdByAlert.set(doc._id, doc._source.case_id ?? null);
-  }
-
-  const idsByOldCase = new Map<string, string[]>();
-  for (const [alertId, oldCaseId] of oldCaseIdByAlert) {
-    if (oldCaseId && oldCaseId !== newCaseId) {
-      const list = idsByOldCase.get(oldCaseId) || [];
-      list.push(alertId);
-      idsByOldCase.set(oldCaseId, list);
-    }
-  }
-
-  const body: any[] = [];
-  for (const [oldCaseId, idsToRemove] of idsByOldCase) {
-    body.push({ update: { _index: CASES_INDEX, _id: oldCaseId } });
-    body.push({
-      script: {
-        lang: 'painless',
-        source: 'if (ctx._source.alert_ids != null) { ctx._source.alert_ids.removeIf(v -> params.ids.contains(v)); }',
-        params: { ids: idsToRemove },
-      },
-    });
-  }
-
-  if (newCaseId) {
-    body.push({ update: { _index: CASES_INDEX, _id: newCaseId } });
-    body.push({
-      script: {
-        lang: 'painless',
-        source:
-          'if (ctx._source.alert_ids == null) { ctx._source.alert_ids = []; } ' +
-          'for (id in params.ids) { if (!ctx._source.alert_ids.contains(id)) { ctx._source.alert_ids.add(id); } }',
-        params: { ids: alertIds },
-      },
-    });
-  }
-
-  if (body.length) await client.bulk({ body });
-}
+import { resolveAlerts } from '../lib/index_resolution';
+import { pushActivityBulk } from '../lib/activity';
+import { reconcileCaseEvidence } from '../lib/case_evidence_service';
+import { buildReportingUpdate, REPORTING_MERGE_SCRIPT } from '../lib/reporting_fields';
+import { resolveCase } from '../lib/case_index_resolution';
 
 const filterQuerySchema = schema.object({
   statuses: schema.maybe(schema.string()), // csv
@@ -214,45 +167,126 @@ export function defineAlertRoutes(router: IRouter) {
       const user = await getCurrentUsername(context, request);
       const client = context.core.opensearch.client.asCurrentUser;
 
-      const fields: Record<string, any> = { updated_at: new Date().toISOString(), updated_by: user };
-      if (status != null) fields.status = status;
-      if (caseId !== undefined) fields.case_id = caseId;
-      if (assignedTo !== undefined) fields.assigned_to = assignedTo;
-
-      const changedFields = [
-        status != null && 'status_change',
-        caseId !== undefined && 'case_link',
-        assignedTo !== undefined && 'assignment_change',
-      ].filter(Boolean);
-      const action = changedFields.length > 1 ? 'bulk_update' : (changedFields[0] as string);
-      const entry = buildHistoryEntry({ user, action, to: status ?? assignedTo ?? caseId ?? null });
-
-      const body: any[] = [];
-      for (const id of ids) {
-        body.push({ update: { _index: ALERT_STATUS_INDEX, _id: id } });
-        body.push({
-          script: {
-            lang: 'painless',
-            source: APPEND_HISTORY_SCRIPT_SOURCE,
-            params: { entry, fields },
-          },
-        });
-      }
-
       try {
-        if (caseId !== undefined) {
-          await syncCaseAlertIds(client, ids, caseId);
+        const uniqueIds = Array.from(new Set((ids as string[]).filter(Boolean)));
+        if (uniqueIds.length !== ids.length) {
+          return response.badRequest({ body: { message: 'Alert IDs must be unique.' } });
+        }
+        if (typeof caseId === 'string' && !caseId.trim()) {
+          return response.badRequest({ body: { message: 'Target case ID cannot be empty.' } });
+        }
+        const locations = await resolveAlerts(client, uniqueIds, true);
+        const missing = uniqueIds.filter((id) => !locations.has(id));
+        if (missing.length) {
+          return response.badRequest({ body: { message: 'Every alert must exist in managed storage.', missing } });
+        }
+        if (caseId) {
+          try {
+            await resolveCase(client, caseId);
+          } catch (e: any) {
+            if ((e?.meta?.statusCode || e?.statusCode) === 404) {
+              return response.badRequest({ body: { message: `Target case ${caseId} was not found.` } });
+            }
+            throw e;
+          }
         }
 
-        const result: any = await client.bulk({ body });
-        const failed = (result.body.items || []).filter((i: any) => i.update?.error);
-        if (failed.length) {
-          return response.customError({
-            statusCode: 207,
-            body: { message: `${failed.length}/${ids.length} updates failed`, failed },
+        const successful = new Set(uniqueIds);
+        const linkageResults: any[] = [];
+        if (caseId !== undefined) {
+          if (caseId) {
+            const linkage = await reconcileCaseEvidence(client, {
+              caseId,
+              linkAlertIds: uniqueIds,
+              actor: user,
+              action: 'case_link',
+            });
+            linkageResults.push(linkage);
+            const linked = new Set(linkage.linkedAlertIds);
+            for (const id of uniqueIds) if (!linked.has(id)) successful.delete(id);
+          } else {
+            const byCase = new Map<string, string[]>();
+            for (const id of uniqueIds) {
+              const oldCaseId = locations.get(id)?.source?.case_id;
+              if (!oldCaseId) continue;
+              const group = byCase.get(oldCaseId) || [];
+              group.push(id);
+              byCase.set(oldCaseId, group);
+            }
+            for (const [oldCaseId, alertIds] of byCase) {
+              const linkage = await reconcileCaseEvidence(client, {
+                caseId: oldCaseId,
+                unlinkAlertIds: alertIds,
+                actor: user,
+                action: 'case_unlink',
+              });
+              linkageResults.push(linkage);
+              const unlinked = new Set(linkage.unlinkedAlertIds);
+              for (const id of alertIds) if (!unlinked.has(id)) successful.delete(id);
+            }
+          }
+        }
+
+        const fields: Record<string, any> = { updated_at: new Date().toISOString(), updated_by: user };
+        if (status != null) fields.status = status;
+        if (assignedTo !== undefined) fields.assigned_to = assignedTo;
+        const changedFields = [
+          status != null && 'status_change',
+          caseId !== undefined && 'case_link',
+          assignedTo !== undefined && 'assignment_change',
+        ].filter(Boolean);
+        const action = changedFields.length > 1 ? 'bulk_update' : (changedFields[0] as string);
+        const entry = buildHistoryEntry({ user, action, to: status ?? assignedTo ?? caseId ?? null });
+        const body: any[] = [];
+        const owners: string[] = [];
+        if (status != null || assignedTo !== undefined) {
+          const now = new Date().toISOString();
+          const scriptSource = APPEND_HISTORY_SCRIPT_SOURCE + '\n' + REPORTING_MERGE_SCRIPT;
+          for (const id of uniqueIds) {
+            const location = locations.get(id)!;
+            const reporting = buildReportingUpdate(location.source, { status, assignedTo }, now);
+            body.push({ update: { _index: location.index, _id: id } });
+            body.push({
+              script: {
+                lang: 'painless',
+                source: scriptSource,
+                params: { entry, fields, reporting },
+              },
+            });
+            owners.push(id);
+            pushActivityBulk(body, { targetType: 'alert', targetId: id, user, action, to: entry.to });
+            owners.push(id);
+          }
+        }
+        const failed: any[] = [];
+        if (body.length) {
+          const result: any = await client.bulk({ body });
+          const items = result?.body?.items;
+          if (!Array.isArray(items) || items.length !== owners.length) {
+            throw new Error(`Bulk response contained ${Array.isArray(items) ? items.length : 0} item(s) for ${owners.length} operation(s)`);
+          }
+          items.forEach((item: any, index: number) => {
+            const detail = item?.update || item?.index;
+            const itemStatus = Number(detail?.status || 0);
+            if (!detail || detail.error || itemStatus < 200 || itemStatus >= 300) {
+              successful.delete(owners[index]);
+              failed.push({ alertId: owners[index], operation: item });
+            }
           });
         }
-        return response.ok({ body: { updated: ids.length } });
+        if (failed.length || linkageResults.some((item) => !item.ok)) {
+          return response.customError({
+            statusCode: 207,
+            body: {
+              message: `${uniqueIds.length - successful.size}/${uniqueIds.length} alert updates were incomplete`,
+              requested: uniqueIds.length,
+              updated: successful.size,
+              failed,
+              linkage: linkageResults,
+            },
+          });
+        }
+        return response.ok({ body: { requested: uniqueIds.length, updated: successful.size } });
       } catch (e: any) {
         return response.customError({
           statusCode: e?.meta?.statusCode || 500,
@@ -271,8 +305,31 @@ export function defineAlertRoutes(router: IRouter) {
       const { id } = request.params as any;
       try {
         const client = context.core.opensearch.client.asCurrentUser;
-        const result: any = await client.get({ index: ALERT_STATUS_INDEX, id });
-        return response.ok({ body: result.body });
+        const locations = await resolveAlerts(client, [id], true);
+        const found = locations.get(id);
+        if (!found) return response.notFound({ body: { message: 'Alert not found' } });
+        let rawSource: any = null;
+        const sourceIndex = found.source?.source_index;
+        const sourceId = found.source?.source_id;
+        if (found.source?.source_resolved && sourceIndex?.startsWith('wazuh-alerts-') && sourceId) {
+          try {
+            const raw: any = await client.get({ index: sourceIndex, id: sourceId });
+            rawSource = raw.body?._source || null;
+          } catch (e) {
+            // Native retention may have expired. The compact operational
+            // projection remains available and is explicitly marked below.
+          }
+        }
+        return response.ok({
+          body: {
+            _index: found.index,
+            _id: id,
+            found: true,
+            _source: found.source,
+            _raw_source: rawSource,
+            _source_available: Boolean(rawSource),
+          },
+        });
       } catch (e: any) {
         return response.customError({
           statusCode: e?.meta?.statusCode || 500,
@@ -294,8 +351,9 @@ export function defineAlertRoutes(router: IRouter) {
       const { id } = request.params as any;
       try {
         const client = context.core.opensearch.client.asCurrentUser;
-        const alertRes: any = await client.get({ index: ALERT_STATUS_INDEX, id });
-        const src = alertRes.body._source;
+        const locations = await resolveAlerts(client, [id], true);
+        const src = locations.get(id)?.source;
+        if (!src) return response.notFound({ body: { message: 'Alert not found' } });
         const ruleId = src.rule?.id != null ? String(src.rule.id) : null;
         const agentName = src.agent?.name || null;
         if (!ruleId) {
@@ -344,13 +402,16 @@ export function defineAlertRoutes(router: IRouter) {
       const { id } = request.params as any;
       try {
         const client = context.core.opensearch.client.asCurrentUser;
-        const alertRes: any = await client.get({ index: ALERT_STATUS_INDEX, id });
-        const relatedIds: string[] = alertRes.body._source.related_alert_ids || [];
+        const locations = await resolveAlerts(client, [id], true);
+        const relatedIds: string[] = locations.get(id)?.source?.related_alert_ids || [];
         if (relatedIds.length === 0) {
           return response.ok({ body: { alerts: [] } });
         }
-        const mgetRes: any = await client.mget({ index: ALERT_STATUS_INDEX, body: { ids: relatedIds } });
-        const alerts = mgetRes.body.docs.filter((d: any) => d.found).map((d: any) => ({ _id: d._id, _source: d._source }));
+        const relatedLocations = await resolveAlerts(client, relatedIds, true);
+        const alerts = relatedIds
+          .map((rid) => relatedLocations.get(rid))
+          .filter(Boolean)
+          .map((d: any) => ({ _id: d.id, _source: d.source }));
         return response.ok({ body: { alerts } });
       } catch (e: any) {
         return response.customError({ statusCode: e?.meta?.statusCode || 500, body: { message: e.message } });
@@ -371,8 +432,9 @@ export function defineAlertRoutes(router: IRouter) {
       const { id } = request.params as any;
       try {
         const client = context.core.opensearch.client.asCurrentUser;
-        const alertRes: any = await client.get({ index: ALERT_STATUS_INDEX, id });
-        const src = alertRes.body._source || {};
+        const locations = await resolveAlerts(client, [id], true);
+        const src = locations.get(id)?.source || {};
+        if (!locations.has(id)) return response.notFound({ body: { message: 'Alert not found' } });
         const already: string[] = src.related_alert_ids || [];
 
         const isPlaceholder = (v: any) => {
@@ -472,20 +534,55 @@ export function defineAlertRoutes(router: IRouter) {
         to: relatedIds.join(', '),
       });
 
-      const body: any[] = [
-        { update: { _index: ALERT_STATUS_INDEX, _id: id } },
-        { script: { lang: 'painless', source: scriptSource, params: { ids: relatedIds } } },
-        { update: { _index: ALERT_STATUS_INDEX, _id: id } },
-        { script: { lang: 'painless', source: APPEND_HISTORY_SCRIPT_SOURCE, params: { entry, fields: null } } },
-      ];
-      for (const relatedId of relatedIds) {
-        body.push({ update: { _index: ALERT_STATUS_INDEX, _id: relatedId } });
-        body.push({ script: { lang: 'painless', source: scriptSource, params: { ids: [id] } } });
-      }
-
       try {
-        await client.bulk({ body });
-        return response.ok({ body: { updated: true } });
+        if (new Set([id, ...relatedIds]).size !== relatedIds.length + 1) {
+          return response.badRequest({
+            body: { message: 'Related alert IDs must be unique and cannot include the source alert.' },
+          });
+        }
+        const locations = await resolveAlerts(client, [id, ...relatedIds]);
+        const sourceIndex = locations.get(id)?.index;
+        if (!sourceIndex) return response.notFound({ body: { message: 'Alert not found' } });
+        const missing = relatedIds.filter((relatedId: string) => !locations.has(relatedId));
+        if (missing.length) {
+          return response.badRequest({ body: { message: 'Every related alert must exist in managed storage.', missing } });
+        }
+        const body: any[] = [
+          { update: { _index: sourceIndex, _id: id } },
+          { script: { lang: 'painless', source: scriptSource, params: { ids: relatedIds } } },
+          { update: { _index: sourceIndex, _id: id } },
+          {
+            script: {
+              lang: 'painless',
+              source: APPEND_HISTORY_SCRIPT_SOURCE,
+              params: { entry, fields: null },
+            },
+          },
+        ];
+        for (const relatedId of relatedIds) {
+          const targetIndex = locations.get(relatedId)!.index;
+          body.push({ update: { _index: targetIndex, _id: relatedId } });
+          body.push({ script: { lang: 'painless', source: scriptSource, params: { ids: [id] } } });
+        }
+
+        const result: any = await client.bulk({ body });
+        const items = result?.body?.items;
+        const expectedItems = relatedIds.length + 2;
+        if (!Array.isArray(items) || items.length !== expectedItems) {
+          throw new Error(`Bulk response contained ${Array.isArray(items) ? items.length : 0} item(s) for ${expectedItems} operation(s)`);
+        }
+        const failed = items.filter((item: any) => {
+          const detail = item?.update;
+          const itemStatus = Number(detail?.status || 0);
+          return !detail || detail.error || itemStatus < 200 || itemStatus >= 300;
+        });
+        if (failed.length) {
+          return response.customError({
+            statusCode: 207,
+            body: { message: `${failed.length}/${expectedItems} relationship updates failed`, updated: false, failed },
+          });
+        }
+        return response.ok({ body: { updated: true, alertsUpdated: relatedIds.length + 1 } });
       } catch (e: any) {
         return response.customError({ statusCode: e?.meta?.statusCode || 500, body: { message: e.message } });
       }

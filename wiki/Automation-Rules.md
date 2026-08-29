@@ -1,103 +1,229 @@
 # Automation Rules
 
-Automation rules act on alerts **as they arrive**. A rule has three parts:
+Automation rules act on alerts when they are first ingested into the Workbench operational store. Manage them under **Workbench -> Settings -> Automation rules**.
 
-1. **Match** — which alerts it applies to.
-2. **Trigger** — *when* it fires.
-3. **Actions** — *what* it does.
+![Automation rule administration and durable queue status](images/automation-rules.png)
 
-Manage rules under **Workbench → Settings → Automation rules**.
+Rules are evaluated in this order:
 
----
+1. **Match** selects the Wazuh alerts in scope.
+2. **Trigger** applies entity predicates and decides when to fire.
+3. **Actions** update Workbench status, assignment, or a deduplicated case.
 
-## 1. Match conditions
+Rule editing, preview, activation, rollback, deletion, queue settings, and dead-letter mutations require the effective Wazuh/OpenSearch Security `all_access` role. The UI is read-only otherwise. SSO, LDAP, or organizational-unit names are not authorization inputs by themselves; configure the mapped Wazuh user roles as described in the [Wazuh user administration documentation](https://documentation.wazuh.com/current/user-manual/user-administration/index.html).
 
-All specified conditions must hold (logical **AND**). Leave a field blank to skip it.
+## Match Scope
+
+All populated Match fields are combined with **AND**. Agent/host scope belongs here and is not repeated as a separate trigger filter.
 
 | Condition | Meaning |
 |-----------|---------|
-| **Rule groups** | Wazuh rule groups (e.g. `authentication_failed`, `pam`). |
-| **Rule IDs** | Specific Wazuh rule IDs (e.g. `5710`, `5716`). |
-| **Agents** | Restrict to specific agents/hosts. |
-| **Min level** | Minimum Wazuh rule level. |
+| Rule groups | Wazuh rule groups, such as `authentication_failed` or `pam`. |
+| Rule IDs | Specific Wazuh rule IDs, such as `5710` or `5716`. |
+| Agents | The agents/hosts in scope. |
+| Minimum level | The minimum Wazuh rule level. |
 
-### Any-of vs All-of
+Within Rule groups, Rule IDs, and Agents, **Any of** accepts any listed value. For burst rules, **All of** requires every listed value to occur for the same resolved correlation key within the window. Per-alert rules use **Any of** because one immediate alert has no cross-alert co-occurrence window.
 
-Rule groups, Rule IDs, and Agents each have an **Any of / All of** toggle:
+A match definition with no restrictions matches every alert and requires an explicit safety acknowledgment. Changing Match clears that acknowledgment.
 
-- **Any of** (default) — a matching alert has *any* listed value. This is **volume**.
-- **All of** — the grouping entity must have seen **every** listed value within the window. This is **co-occurrence**.
+## Trigger Entity Expression
 
-> **Example.** `Rule IDs = 5510, 5516`, mode **All of**, grouped by host → the rule only fires when **both** 5510 **and** 5516 have occurred on the same host in the window. With **Any of**, either one contributes to the count.
+![Immediate trigger entity expression using the Is present operator](images/automation-trigger-entities.png)
 
-Co-occurrence is evaluated exactly (via aggregation), across sync intervals, so `5510` in one tick and `5516` in the next still count as long as they fall inside the window.
+The Trigger page supports a constrained expression with no free-form query syntax:
 
----
+- predicates inside a group are joined with **AND**;
+- groups are joined with **OR**;
+- a rule may contain at most five groups and five predicates in total;
+- each predicate uses an entity, `Equals` or `Is present`, and a value when required;
+- duplicate predicates and blank or invalid values are rejected before save.
 
-## 2. Trigger
+Example:
 
-| Trigger | Fires… | Actions apply to… |
-|---------|--------|-------------------|
-| **Every matching alert** (per-alert) | on each matching alert at ingest | that alert |
-| **A burst on one entity** | once **≥ threshold** matching alerts land on one entity within the **window** | the alerts in that burst |
+```text
+(Source IP equals 10.20.30.40 AND Destination port equals 22)
+OR
+(Source user equals administrator AND Process equals sshd)
+```
 
-**Burst** settings:
+Supported entities are Agent, Source/Destination IP, Source/Destination port, Source/Destination user, and Process. Agent can be part of a correlation identity, but agent scope still belongs on Match.
 
-- **Group alerts by** — the entity that ties a burst together: Agent (host), Source IP, Destination IP, Source user, Destination user, or Process.
-- **Threshold** — how many alerts are needed.
-- **Window (minutes)** — the sliding window they must fall within.
+Preview and live execution use the same normalization and expression evaluator. IP addresses are canonicalized, ports are validated as integers from 0 through 65535, and user/process values are lowercased. A missing field does not form an `unknown` bucket; that group does not match. If one alert satisfies multiple OR groups, actions run once and all matching-group provenance is retained.
 
-> For an **All-of** rule that only needs "one of each", set the threshold to the number of required values (minimum 2). The threshold is a volume floor; coverage is checked separately.
+The operator/value behavior is deliberately explicit:
 
----
+| Definition | Result |
+|------------|--------|
+| `Equals` with a valid value | Matches only that normalized value. |
+| `Equals` with a blank or invalid value | Rejected; the rule cannot be saved or enabled. A blank value never becomes a wildcard. |
+| `Is present` | Requires the field but no configured value. The actual value observed on the alert becomes the correlation and case-deduplication identity. |
+| No entity groups | Every alert that passes Match qualifies. With one-case-per-rule routing, matching alerts share the active rule case. |
 
-## 3. Actions
+For example, `Source IP is present` does not put all source addresses into an
+anonymous bucket. With **Separate by entity group**, `10.0.0.5` and `10.0.0.8`
+have different identities and therefore different active cases. For a compound
+group such as `Source IP is present AND Destination port is present`, the
+identity is the normalized tuple, for example `10.0.0.5 + 22`.
 
-Pick **at least one**. Any action works with either trigger (except *Create case*, which requires a burst).
+## Trigger Modes
+
+### Every Matching Alert
+
+Each newly ingested alert that passes Match and the entity expression fires immediately. There is no threshold, correlation window, cooldown, or quiet-period setting.
+
+All shipped actions are available, including **Create or update a deduplicated case**. The case identity is based on the rule and normalized matched entity-group values. A later alert with the same identity extends the active case rather than creating a duplicate. Closed or archived cases are not silently reopened; a later match creates a new case.
+
+Consequently, an immediate rule using `Source IP is present` and **Separate by
+entity group** maintains one active case per source IP. Each later qualifying
+alert for that address is linked to the active case. Closing the case completes
+that incident; the next qualifying alert creates a new deterministic case
+generation for the same address.
+
+### Correlated Burst
+
+Threshold and sliding window are shared settings, but apply independently to each resolved OR group/key. Each group maintains independent counters, cooldown, rearm state, and provenance. An alert contributing to multiple groups does not receive the same non-case action twice.
+
+Cooldown suppresses repeated firings for the same key. Rearm requires the configured quiet period, preventing a sustained burst from firing repeatedly. An existing active deduplicated case may continue to receive matching evidence according to the runtime policy.
+
+For `Source IP is present`, a threshold of five means five qualifying alerts for
+the **same** normalized source IP inside the sliding window—not five alerts with
+five arbitrary addresses. When the threshold fires, all qualifying alerts in
+that IP's burst window are linked to its case. A later eligible burst for the
+same IP extends that active case with new evidence; after the case is closed, a
+later burst starts a new case generation. Cooldown, rearm, evidence ownership,
+and configured safety caps still govern what can be processed in each run.
+
+When case creation is enabled, routing controls the deduplication scope:
+
+| Routing | Behavior |
+|---------|----------|
+| **Separate by entity group** | Default and recommended. Keeps one active case per rule, group, and normalized entity tuple. |
+| **Consolidate overlapping bursts** | Combines groups only when their triggering alert sets overlap in the same correlation window. |
+| **One active case per rule** | Advanced. All bursts update one rule case and may mix unrelated activity or create a very large case. |
+
+Every routing mode is deterministic and replay-safe. Repeated durable execution cannot duplicate an action or case, and case history records the contributing correlation provenance.
+
+## Actions and Safety
+
+Choose at least one action:
 
 | Action | Effect |
 |--------|--------|
-| **Set status** | Move matching alerts to **Open / In progress / Closed**. Setting **Closed** is your **auto-close** for routine noise. |
-| **Assign to** | Route matching alerts (and any case opened) to an analyst. This is your **auto-assign**. Leave blank for no assignment. |
-| **Open a case** *(burst only)* | Escalate the burst into a case at the chosen **severity**. |
+| Set status | Sets matching Workbench alerts to Open, In progress, or Closed. |
+| Assign to | Assigns matching alerts and a created case to an analyst. |
+| Create or update a deduplicated case | Creates a case or extends the active case for the effective deduplication scope. |
 
-### How create-case behaves
+Status and assignment preconditions can limit changes to expected workflow state. Rule priority and sort order determine evaluation order; **Stop processing** prevents lower-priority rules from acting after this rule. Per-run action/case caps and an execution rate limit bound impact. Conflicts and cap/rate skips are visible in preview and runtime counters.
 
-- Cases are **de-duplicated per rule + entity**: while a case for that rule and entity is still open, new matching alerts **extend it** rather than spawning duplicates.
-- Case creation is **rate-limited** per evaluation pass, so a noisy source can't flood you.
-- If **Assign to** is set, the created case is assigned to that analyst too.
-- Every automated action is recorded in the alert/case **history** with a `rule:<id>` provenance entry.
+## Preview and Activation
 
----
+New rules are always saved as disabled drafts. Activation is an explicit workflow:
 
-## Dry run
+1. Save the disabled draft.
+2. Preview that exact saved revision over the historical 24-hour interval.
+3. Review totals, truncation, missing entities, conflicts, skips, rate caps, representative alerts, and case-routing effects.
+4. Select **Enable after save**, then save.
 
-Every rule has a **Dry run (last 24h)** button that shows what it *would* have done, before you enable it:
+Preview is historical and read-only. It uses the same normalized planner, sliding-window evaluation, preconditions, deduplication, routing, conflict behavior, and safety caps as live execution. It never changes historical alerts or cases and never enqueues replay work. Editing a previewed definition makes the approval stale; save and preview the new exact revision again.
 
-- **Per-alert** trigger → "*N matching alerts would be acted on*".
-- **Burst** trigger → matching alerts, which entities would fire, and how many would open a case.
+Rollback creates a new revision from an earlier snapshot and preserves revision history. The restored definition must be reviewed and previewed before activation.
 
-Dry run is read-only and never writes anything.
+## Forward-Only Semantics
 
-> The dry run is approximate — it counts matches over the lookback rather than a strict sliding window. Live evaluation uses the exact window you configured.
+Creating, editing, or enabling a rule does not scan or mutate alerts already ingested by the plugin. There is no replay or backfill control.
 
----
+A genuinely new late-arriving Wazuh alert is evaluated even when its event timestamp is old because it is new to plugin ingestion. Durable queue work that completes after pause, outage, or restart is delayed completion of the original ingestion-time event, not retroactive evaluation. It uses the ruleset snapshot and rule revisions captured when the event was admitted.
 
 ## Worked examples
 
-**Auto-close a known-noisy rule**
-Match `Rule IDs = 5502` → Trigger *Every matching alert* → Action *Set status = Closed*.
+### Immediate SSH case with deduplication
 
-**Brute-force escalation**
-Match `Rule groups = authentication_failed` → Trigger *Burst*, group by **Source IP**, threshold **10**, window **5 min** → Action *Open a High case* + *Assign to* an on-call analyst.
+```text
+Match
+  Rule group: authentication_failed
+  Minimum level: 5
 
-**Co-occurrence case**
-Match `Rule IDs = 5510, 5516` (**All of**) → Trigger *Burst*, group by **Agent**, threshold **2**, window **30 min** → Action *Open a Critical case*.
+Trigger: Every matching alert
+  Source IP equals 10.20.30.40
+  AND Destination port equals 22
 
----
+Actions
+  Set status: In progress
+  Create/update case: High
+```
 
-## Safety & evaluation
+The first newly ingested matching alert creates one case. A second matching
+alert an hour later extends that case while it is Open or In progress. It does
+not create one case per alert. If the earlier case is Closed or archived, the
+new alert creates a new active case; automation never silently reopens finished
+work.
 
-- Rules are evaluated inside the background sync tick under a **leader lock**, so there is a single writer and no double-creation across replicas.
-- Candidate work is bounded by each tick's batch, not the whole index.
-- See [[Architecture]] for how evaluation fits into the sync job, and [[Security Model]] for why entity fields are treated carefully.
+### One burst rule for two independent entity groups
+
+```text
+Match
+  Rule IDs: 5710, 5716 (Any of)
+
+Trigger: Correlated burst
+  (Source IP equals 203.0.113.88)
+  OR
+  (Source IP equals 203.0.113.89)
+  Threshold: 5
+  Window: 10 minutes
+  Routing: Separate by entity group
+```
+
+Five `.88` alerts create/update the `.88` case. Five `.89` alerts create/update
+a separate `.89` case. Counters, cooldown, rearm, and provenance are independent
+for the two groups, so unrelated attackers are not merged merely because they
+matched one rule.
+
+### Boolean identity with overlapping consolidation
+
+```text
+(Source IP equals 10.20.30.40 AND Destination port equals 22)
+OR
+(Source user equals administrator AND Process equals sshd)
+```
+
+With **Separate by entity group**, each branch has its own case identity. With
+**Consolidate overlapping bursts**, branches consolidate only when their firing
+alert sets overlap inside the same window. **One active case per rule** ignores
+that separation and should be reserved for intentionally broad campaigns.
+
+### Choosing values safely
+
+- Put host/agent scope on Match; do not repeat it merely because Agent is also
+  available as a correlation entity.
+- Use `Is present` when existence matters regardless of value.
+- Remember that `Is present` still separates identities by each observed value;
+  it is not a single wildcard bucket under Separate by entity group.
+- Prefer Separate by entity group unless analysts explicitly want campaign-wide
+  consolidation.
+- Start with conservative action/case caps and inspect preview conflicts and
+  missing-entity counts before activation.
+- Preview answers “what would this definition have done?” It never makes the
+  rule retroactive.
+
+## Queue and Dead Letters
+
+The runtime panel distinguishes two independent states:
+
+- disabling a rule prevents that rule from receiving newly admitted work;
+- pausing automation stops queue processing while preserving enabled rule definitions and durable queued events.
+
+Administrators can pause/resume processing and set active-backlog and deferred-event caps. Queue admission closes when those bounds are reached. The dead-letter list is cursor-paginated. **Retry** safely returns a recoverable event to the durable queue using its captured ruleset snapshot; **Resolve** removes a dead letter without replaying it. Both operations are idempotent and require `all_access`.
+
+See [[Troubleshooting]] for queue and rule diagnostics and [[Security Model]] for authorization and blast-radius controls.
+
+## Operational checklist
+
+1. Confirm Background sync is current and its DLQ is understood.
+2. Save the rule as a disabled draft.
+3. Preview the exact saved revision and examine truncation, conflicts, and caps.
+4. Activate it during a monitored change window.
+5. Watch queue lag, retries, DLQ, cases created, and rule counters.
+6. Pause processing—not rule definitions—if queued work must be preserved while
+   investigating an operational problem.
+7. Disable the rule to stop admission of new work for that rule.

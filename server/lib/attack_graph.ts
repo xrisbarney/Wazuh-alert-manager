@@ -105,11 +105,18 @@ export function buildAttackGraph(alerts: Array<{ _id: string; _source: any }>): 
     // .srcuser off a string is safely undefined, and asArray tolerates scalars.
     const data = src.data && typeof src.data === 'object' ? src.data : {};
     const hostId = src.agent?.name ? `host:${src.agent.name}` : null;
-    const userNames: string[] = [...asArray<string>(data.srcuser), ...asArray<string>(data.dstuser)].filter(Boolean);
+    const userNames: string[] = Array.from(
+      new Set([...asArray<string>(data.srcuser), ...asArray<string>(data.dstuser)].filter(Boolean))
+    );
     const userIds = userNames.map((u) => `user:${u}`);
-    const techniqueIds: string[] = asArray<string>(src.rule?.mitre?.id);
-    const techniqueLabels: string[] = asArray<string>(src.rule?.mitre?.technique);
-    const tactics: string[] = asArray<string>(src.rule?.mitre?.tactic);
+    const rawTechniqueIds: string[] = asArray<string>(src.rule?.mitre?.id);
+    const rawTechniqueLabels: string[] = asArray<string>(src.rule?.mitre?.technique);
+    const techniques = Array.from(
+      new Map(rawTechniqueIds.filter(Boolean).map((id, i) => [id, rawTechniqueLabels[i] || id])).entries()
+    );
+    const techniqueIds = techniques.map(([id]) => id);
+    const techniqueLabels = techniques.map(([, label]) => label);
+    const tactics: string[] = Array.from(new Set(asArray<string>(src.rule?.mitre?.tactic).filter(Boolean)));
 
     if (hostId) touch(hostId, 'host', src.agent.name);
     userIds.forEach((id, i) => touch(id, 'user', userNames[i]));
