@@ -35,6 +35,17 @@ describe('automation case routing planner', () => {
     expect(routes.every((route) => route.matchingKeys.length === 1)).toBe(true);
   });
 
+  test('separate_by_group coalesces alerts with the same observed identity into one hot-case route', () => {
+    const routes = planAutomationCaseRoutes([
+      trigger('separate_by_group', 'a', ['1', '2']),
+      trigger('separate_by_group', 'a', ['2', '3']),
+      trigger('separate_by_group', 'b', ['9']),
+    ]);
+
+    expect(routes).toHaveLength(2);
+    expect(routes.map((route) => route.alertIds)).toEqual(expect.arrayContaining([['1', '2', '3'], ['9']]));
+  });
+
   test('consolidate_overlapping merges only connected alert sets', () => {
     const routes = planAutomationCaseRoutes([
       trigger('consolidate_overlapping', 'a', ['1', '2']),
@@ -149,9 +160,10 @@ describe('automation case routing writes', () => {
     const result = await applyAutomationCaseRoutes(client, [route], 1, 10);
     expect(result.caseIds).toEqual(['canonical']);
     expect(client.update).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'duplicate', if_seq_no: expect.any(Number), if_primary_term: 1, refresh: 'wait_for',
+      id: 'duplicate', if_seq_no: expect.any(Number), if_primary_term: 1, refresh: false,
     }));
     expect(reconcileCaseEvidence).toHaveBeenCalledWith(client, expect.objectContaining({
+      waitForRefresh: false,
       caseId: 'canonical', linkAlertIds: ['b-old', 'bridge'], allowMove: true, fence: expect.any(Function),
     }));
     expect((reconcileCaseEvidence as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(client.update.mock.invocationCallOrder[0]);
@@ -211,12 +223,55 @@ describe('automation case routing writes', () => {
     expect(client.create).toHaveBeenCalledTimes(2);
   });
 
-  test('rolls back a newly created case when no requested evidence links', async () => {
+  test('refreshes the owned case family when a winning deterministic create is not yet searchable', async () => {
+    const route = planAutomationCaseRoutes([trigger('one_per_rule', 'a', ['1'])])[0];
+    const client: any = routingClient();
+    client.create.mockRejectedValue(Object.assign(new Error('conflict'), { meta: { statusCode: 409 } }));
+    client.indices = { refresh: jest.fn(async () => ({})) };
+    client.search
+      .mockResolvedValueOnce({ body: { hits: { total: { value: 0 }, hits: [] } } })
+      .mockResolvedValueOnce({ body: { hits: { total: { value: 0 }, hits: [] } } })
+      .mockImplementation(async ({ body }: any) => {
+        const id = String(body.query.ids.values[0]);
+        return { body: { hits: { total: { value: 1 }, hits: [{
+          _id: id, _index: 'wazuh-alert-manager-v2-cases-000001', _seq_no: 1, _primary_term: 1,
+          _source: { status: 'open', severity: 'medium', correlation_key: route.correlationKey },
+        }] } } };
+      });
+
+    const result = await applyAutomationCaseRoutes(client, [route], 1, 10);
+
+    expect(result).toEqual(expect.objectContaining({ created: 0, extended: 1 }));
+    expect(result.caseIds[0]).toMatch(/^auto-/);
+    expect(client.indices.refresh).toHaveBeenCalledWith({ index: 'wazuh-alert-manager-v2-cases-read' });
+  });
+
+  test('uses an atomic conflict-retrying merge for hot-case provenance and compatibility IDs', async () => {
+    const route = planAutomationCaseRoutes([trigger('separate_by_group', 'a', ['1'])])[0];
+    const client = routingClient([{
+      _id: 'active', _seq_no: 4, _primary_term: 1,
+      _source: { status: 'open', correlation_key: route.correlationKey, severity: 'medium' },
+    }]);
+    await expect(applyAutomationCaseRoutes(client, [route], 1, 10)).resolves.toEqual(
+      expect.objectContaining({ extended: 1, linked: 1 })
+    );
+    expect(client.update).toHaveBeenCalledTimes(1);
+    expect(client.search.mock.calls.filter(([request]: any[]) => request.body?.query?.ids)).toHaveLength(3);
+    expect(client.update).toHaveBeenCalledWith(expect.objectContaining({
+      index: 'wazuh-alert-manager-v2-cases-000001', id: 'active', retry_on_conflict: 50,
+      body: { script: expect.objectContaining({
+        source: expect.stringContaining('ctx._source.alert_ids = compatibilityList'),
+        params: expect.objectContaining({ linked: ['1'], compatibility_limit: 1000, history_limit: 200 }),
+      }) },
+    }));
+  });
+
+  test('keeps a deterministic case claim for durable retry when no requested evidence links', async () => {
     (reconcileCaseEvidence as jest.Mock).mockResolvedValue({ ...linked([]), requested: 1 });
     const client = routingClient();
     const route = planAutomationCaseRoutes([trigger('one_per_rule', 'a', ['1'])])[0];
     await expect(applyAutomationCaseRoutes(client, [route], 1, 10)).rejects.toThrow('linked 0 of 1');
-    expect(client.delete).toHaveBeenCalledWith(expect.objectContaining({ if_seq_no: expect.any(Number), if_primary_term: 1 }));
+    expect(client.delete).not.toHaveBeenCalled();
   });
 
   test('creates a new generation when the prior generation is closed', async () => {

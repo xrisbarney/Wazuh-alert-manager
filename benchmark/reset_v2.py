@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Delete only verified Wazuh Alert Manager v2 benchmark data."""
+"""Delete only verified Wazuh Alert Manager benchmark and optional legacy data."""
 
 import argparse
 import base64
@@ -13,8 +13,15 @@ import urllib.request
 USER = os.environ.get("WAM_USER", "admin")
 PASSWORD = os.environ.get("WAM_PW", "")
 BASE = os.environ.get("WAM_INDEXER", "https://localhost:9200").rstrip("/")
-SOURCE = os.environ.get("WAM_BENCH_SOURCE_INDEX", "wazuh-alerts-4.x-paperbench-v201")
+SOURCE = os.environ.get("WAM_BENCH_SOURCE_INDEX", "wazuh-alerts-4.x-wam-benchmark")
 ALLOWED_PREFIXES = ("wazuh-alert-status-v2-", "wazuh-alert-manager-v2-")
+LEGACY_V1_INDICES = {
+    "wazuh-alert-status",
+    "wazuh-alert-manager-comments",
+    "wazuh-alert-manager-cases",
+    "wazuh-alert-manager-rules",
+    "wazuh-alert-manager-meta",
+}
 
 
 def request(path, method="GET"):
@@ -37,6 +44,11 @@ def request(path, method="GET"):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--yes", action="store_true", help="confirm the destructive reset")
+    parser.add_argument(
+        "--include-legacy-v1",
+        action="store_true",
+        help="also delete the five exact legacy v1 plugin indices",
+    )
     args = parser.parse_args()
     if not args.yes or not PASSWORD:
         parser.error("Set WAM_PW and pass --yes")
@@ -46,8 +58,14 @@ def main():
     targets = [name for name in names if name.startswith(ALLOWED_PREFIXES)]
     if SOURCE in names:
         targets.append(SOURCE)
+    if args.include_legacy_v1:
+        targets.extend(sorted(LEGACY_V1_INDICES.intersection(names)))
     for target in targets:
-        if not (target == SOURCE or target.startswith(ALLOWED_PREFIXES)):
+        if not (
+            target == SOURCE
+            or target.startswith(ALLOWED_PREFIXES)
+            or (args.include_legacy_v1 and target in LEGACY_V1_INDICES)
+        ):
             raise RuntimeError(f"Refusing unowned target: {target}")
         if "*" in target or target in ("wazuh-alerts-*", "wazuh-alerts-4.x-*"):
             raise RuntimeError(f"Refusing wildcard/native target: {target}")

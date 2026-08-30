@@ -169,7 +169,7 @@ export async function closeCaseAndLinkedAlerts(
               lang: 'painless',
               source:
                 "if (ctx._source.status != 'closed') { ctx._source.status = 'closed'; ctx._source.updated_at = params.now; " +
-                'ctx._source.updated_by = params.actor; if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(params.entry); ' +
+                'ctx._source.updated_by = params.actor; if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(params.entry); while (ctx._source.history.size() > 1000) { ctx._source.history.remove(0); } ' +
                 REPORTING_MERGE_SCRIPT + ' }',
               params: {
                 now,
@@ -240,7 +240,7 @@ export async function closeCaseAndLinkedAlerts(
             lang: 'painless',
             source:
               "if (ctx._source.status != 'closed') { ctx._source.status = 'closed'; ctx._source.closed_at = params.now; " +
-              'ctx._source.updated_at = params.now; ctx._source.updated_by = params.actor; if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(params.entry); }',
+              'ctx._source.updated_at = params.now; ctx._source.updated_by = params.actor; if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(params.entry); while (ctx._source.history.size() > 1000) { ctx._source.history.remove(0); } }',
             params: { now, actor: input.actor, entry },
           },
         },
@@ -437,7 +437,10 @@ export function defineCaseRoutes(router: IRouter) {
         const caseRes = await resolveCase(client, id);
         const caseDoc = { id: caseRes.id, ...caseRes.source };
 
-        const evidencePage = await listCaseEvidenceWithLegacy(client, id, caseDoc.alert_ids);
+        // Case details render one bounded evidence page. Further pages are
+        // resolved by the dedicated evidence endpoint, keeping large cases
+        // responsive without loading every relationship into the browser.
+        const evidencePage = await listCaseEvidenceWithLegacy(client, id, caseDoc.alert_ids, { size: 25 });
         const locations = await resolveCaseAlerts(client, evidencePage.evidence);
         const alerts = evidencePage.evidence.map((item: any) => {
           const resolved = locations.get(item.alert_id);
@@ -529,6 +532,7 @@ export function defineCaseRoutes(router: IRouter) {
         status: 'open',
         assigned_to: assignedTo ?? null,
         alert_ids: [],
+        evidence_count: 0,
         created_by: user,
         created_at: now,
         updated_by: user,

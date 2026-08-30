@@ -1,0 +1,112 @@
+{
+  "automation": {
+    "admissionOpen": true,
+    "deferred": 0,
+    "dlq": 0,
+    "fencing": {
+      "generation": null,
+      "holderId": null,
+      "leaseExpiresAt": null,
+      "maxQueueGeneration": null
+    },
+    "lag": 0,
+    "maxBacklog": 10000,
+    "maxDeferred": 50000,
+    "oldestAgeSeconds": null,
+    "oldestEvent": null,
+    "paused": false,
+    "retries": 0,
+    "states": {}
+  },
+  "counts": {
+    "activity": 0,
+    "alerts": 0,
+    "archivedEvidence": 0,
+    "cases": 0,
+    "dlq": 0,
+    "evidence": 0,
+    "heldEvidence": 0,
+    "legacyAlerts": null,
+    "purgedEvidence": 0
+  },
+  "generations": {
+    "activity": [
+      {
+        "ageDays": 0,
+        "index": "wazuh-alert-manager-v2-activity-000001",
+        "isWriteIndex": true,
+        "retentionEligible": false,
+        "total": 0
+      }
+    ],
+    "alerts": [
+      {
+        "active": 0,
+        "ageDays": 0,
+        "createdAt": "2026-08-30T14:31:26.621Z",
+        "index": "wazuh-alert-status-v2-000001",
+        "isWriteIndex": true,
+        "retentionEligible": false,
+        "total": 0
+      }
+    ],
+    "archivedActivity": [],
+    "archivedAlerts": [],
+    "archivedCases": [],
+    "archivedEvidenceRelationships": [],
+    "cases": [
+      {
+        "ageDays": 0,
+        "index": "wazuh-alert-manager-v2-cases-000001",
+        "isWriteIndex": true,
+        "retentionEligible": false,
+        "total": 0
+      }
+    ],
+    "evidence": [
+      {
+        "index": "wazuh-alert-manager-v2-evidence-000001",
+        "isWriteIndex": true,
+        "total": 0
+      }
+    ]
+  },
+  "lifecycle": {
+    "activity": {
+      "generations": [
+        "wazuh-alert-manager-v2-activity-000001"
+      ],
+      "mode": "plugin_managed",
+      "readAlias": "wazuh-alert-manager-v2-activity-read",
+      "writeAlias": "wazuh-alert-manager-v2-activity-write"
+    },
+    "alerts": {
+      "generations": [
+        "wazuh-alert-status-v2-000001"
+      ],
+      "mode": "plugin_managed",
+      "readAlias": "wazuh-alert-status-v2-read",
+      "writeAlias": "wazuh-alert-status-v2-write"
+    },
+    "cases": {
+      "generations": [
+        "wazuh-alert-manager-v2-cases-000001"
+      ],
+      "mode": "plugin_managed",
+      "readAlias": "wazuh-alert-manager-v2-cases-read",
+      "writeAlias": "wazuh-alert-manager-v2-cases-write"
+    },
+    "evidence": {
+      "generations": [
+        "wazuh-alert-manager-v2-evidence-000001"
+      ],
+      "mode": "plugin_managed",
+      "readAlias": "wazuh-alert-manager-v2-evidence-read",
+      "writeAlias": "wazuh-alert-manager-v2-evidence-write"
+    }
+  },
+  "migration": null,
+  "namespace": "wazuh-alert-status-v2-* / wazuh-alert-manager-v2-*",
+  "sourcePattern": "wazuh-alerts-* (read only)",
+  "sync": null
+}

@@ -1,0 +1,12 @@
+{
+  "collected_at_utc": "2026-08-30T14:36:40Z",
+  "platform": "Linux-6.8.0-86-generic-x86_64-with-glibc2.39",
+  "python": "3.12.3",
+  "cpu_count": 6,
+  "cpu": "CPU(s):                               6\nOn-line CPU(s) list:                  0-5\nModel name:                           Intel(R) Core(TM) i7-8665U CPU @ 1.90GHz\nThread(s) per core:                   1\nCore(s) per socket:                   6\nSocket(s):                            1\nNUMA node0 CPU(s):                    0-5",
+  "memory": "total        used        free      shared  buff/cache   available\nMem:     10425556992  3085672448  5997248512     1093632  1632641024  7339884544\nSwap:     3116363776           0  3116363776",
+  "disk": "Filesystem                          1B-blocks        Used   Available Use% Mounted on\n/dev/mapper/ubuntu--vg-ubuntu--lv 65334538240 35200237568 27122196480  57% /",
+  "wazuh_dashboard_package": "wazuh-dashboard\t4.14.7-1",
+  "wazuh_indexer_package": "wazuh-indexer\t4.14.7-1",
+  "plugin_manifest": "unavailable: Command '['sh', '-c', \"sed -n '1,40p' /usr/share/wazuh-dashboard/plugins/wazuhAlertManager/opensearch_dashboards.json\"]' returned non-zero exit status 2."
+}

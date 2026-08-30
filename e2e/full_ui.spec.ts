@@ -6,11 +6,14 @@ const API = '/api/wazuh_alert_manager';
 
 function emitAutomationFixtures() {
   const vagrantDir = process.env.WAM_E2E_VAGRANT_DIR || path.resolve(process.cwd(), '..', '..', 'wazuh414-vagrant');
-  const basePort = 40000 + (Date.now() % 10000);
-  const addresses = ['203.0.113.77', '203.0.113.77', '203.0.113.88', '203.0.113.88', '203.0.113.88', '203.0.113.89', '203.0.113.89', '203.0.113.89'];
-  const remote = addresses.map((address, offset) =>
-    `logger -p authpriv.notice -t sshd 'Failed password for invalid user wam-e2e from ${address} port ${basePort + offset} ssh2'`
-  ).join(' && ');
+  const remote = [
+    'cd /home/vagrant/wazuh-alert-manager-src',
+    'set -a',
+    '. ./.env.e2e.local',
+    'set +a',
+    'export WAM_USER="$WAM_E2E_USERNAME" WAM_PW="$WAM_E2E_PASSWORD"',
+    'python3 e2e/seed_alerts.py',
+  ].join(' && ');
   execFileSync('vagrant', ['ssh', '-c', remote], { cwd: vagrantDir, stdio: 'pipe', timeout: 120_000 });
 }
 
@@ -124,8 +127,9 @@ async function previewAndEnable(page: Page, name: string) {
   // Re-enter from the persisted list, matching the documented draft -> reopen
   // activation workflow and avoiding any transient post-save animation state.
   await page.reload();
-  await expect(page.getByRole('button', { name: `Edit ${name}` })).toBeVisible({ timeout: 60_000 });
-  await page.getByRole('button', { name: `Edit ${name}` }).evaluate((button: HTMLElement) => button.click());
+  const editButton = page.getByRole('button', { name: `Edit ${name}` });
+  await expect(editButton).toBeEnabled({ timeout: 60_000 });
+  await editButton.click();
   const flyout = page.locator('.wamRuleFlyout');
   await expect(flyout.getByRole('tab', { name: '6. Preview' })).toBeVisible({ timeout: 60_000 });
   await flyout.getByRole('tab', { name: '6. Preview' }).click();
@@ -148,7 +152,9 @@ test.describe('full workbench UI bench', () => {
     const rule = rules.rules.find((item: any) => item.name === name);
     test.skip(!rule, 'Run the automation matrix once to leave its retry fixture.');
     console.log(`WAM_RULE_PROBE=${JSON.stringify({ id: rule.id, revision: rule.revision, trigger: rule.trigger, actions: rule.actions })}`);
-    await page.getByRole('button', { name: `Edit ${name}` }).evaluate((button: HTMLElement) => button.click());
+    const editButton = page.getByRole('button', { name: `Edit ${name}` });
+    await expect(editButton).toBeEnabled({ timeout: 60_000 });
+    await editButton.click();
     await expect(page.locator('.wamRuleFlyout')).toBeVisible({ timeout: 30_000 });
   });
 
@@ -211,9 +217,9 @@ test.describe('full workbench UI bench', () => {
     await page.getByRole('tab', { name: 'Cases' }).click();
     await page.getByPlaceholder('Search by title/description').fill(title);
     await page.getByRole('button', { name: 'Refresh' }).click();
-    const caseLink = page.getByRole('link', { name: title, exact: true });
-    await expect(caseLink).toBeVisible({ timeout: 60_000 });
-    await caseLink.click();
+    const caseControl = page.getByRole('button', { name: title, exact: true });
+    await expect(caseControl).toBeVisible({ timeout: 60_000 });
+    await caseControl.click();
     await expect(page.locator('.wamCaseFlyout').getByText(title, { exact: true })).toBeVisible({ timeout: 60_000 });
 
     const closed: any = await api(page, 'POST', `${API}/cases/${encodeURIComponent(created.id)}/close`, { excludeAlertIds: [] });
@@ -336,7 +342,7 @@ test.describe('full workbench UI bench', () => {
     await page.getByPlaceholder('Search by title/description').fill('E2E burst entity rule');
     await page.getByRole('button', { name: 'Refresh' }).click();
     await expect(page.getByText('E2E burst entity rule: automated incident', { exact: true })).toHaveCount(2, { timeout: 60_000 });
-    await page.getByRole('link', { name: 'E2E burst entity rule: automated incident', exact: true }).first().click();
+    await page.getByRole('button', { name: 'E2E burst entity rule: automated incident', exact: true }).first().click();
     await expect(page.locator('.wamCaseFlyout').getByRole('tab', { name: /Linked Alerts/ })).toBeVisible({ timeout: 60_000 });
 
     // Disable/delete fixtures after observing their effects; existing cases remain

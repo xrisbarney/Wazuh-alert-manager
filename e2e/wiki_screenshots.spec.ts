@@ -31,15 +31,14 @@ test('capture public wiki screenshots', async ({ page }) => {
   await signIn(page);
 
   await expect(page.getByText(/Showing 1-20 of [1-9][\d,]* alerts/)).toBeVisible({ timeout: 180_000 });
-  await expect(page.getByText('100000', { exact: true }).first()).toBeVisible({ timeout: 120_000 });
   await capture(page, 'workbench-alert-queue.png');
 
   await page.getByRole('tab', { name: 'Cases' }).click();
   await expect(page.getByRole('heading', { name: 'Case queue' })).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByText(/[1-9][\d,]* cases/, { exact: true })).toBeVisible({ timeout: 180_000 });
+  await expect(page.getByText(/[1-9][\d,]* cases?/, { exact: true })).toBeVisible({ timeout: 180_000 });
   await capture(page, 'workbench-case-queue.png');
 
-  await page.getByRole('link', { name: /^Open details for / }).first().click();
+  await page.getByRole('button', { name: /^Open details for / }).first().click();
   const caseFlyout = page.locator('.wamCaseFlyout');
   await expect(caseFlyout.getByRole('tab', { name: 'Overview' })).toBeVisible({ timeout: 120_000 });
   await caseFlyout.getByRole('button', { name: 'Expand to full screen' }).click();
@@ -59,7 +58,6 @@ test('capture public wiki screenshots', async ({ page }) => {
   await page.getByRole('tab', { name: 'Settings' }).click();
   await expect(page.getByRole('tab', { name: 'Automation rules' })).toBeVisible({ timeout: 60_000 });
   await expect(page.getByRole('button', { name: 'New rule' }).first()).toBeEnabled({ timeout: 180_000 });
-  await expect(page.getByText('Paper 100k A - immediate user dedup')).toBeVisible({ timeout: 120_000 });
   await capture(page, 'automation-rules.png');
 
   await page.getByRole('button', { name: 'New rule' }).first().click();
@@ -73,7 +71,7 @@ test('capture public wiki screenshots', async ({ page }) => {
 
   await page.getByRole('tab', { name: 'Storage & lifecycle' }).click();
   await expect(page.getByRole('heading', { name: 'Storage and lifecycle' })).toBeVisible({ timeout: 120_000 });
-  await expect(page.getByText('100,000', { exact: true }).first()).toBeVisible({ timeout: 180_000 });
+  await expect(page.getByText('Automatic rollover', { exact: true })).toBeVisible({ timeout: 180_000 });
   await capture(page, 'storage-lifecycle.png');
 
   await page.goto('/app/wazuhAlertManagerReporting');

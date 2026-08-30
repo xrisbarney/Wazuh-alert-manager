@@ -60,6 +60,8 @@ export interface ReconcileCaseEvidenceInput {
   compatibilityLimit?: number;
   /** Automation uses false so existing analyst/closed-case evidence is never reassigned. */
   allowMove?: boolean;
+  /** Automation can avoid redundant refresh barriers; evidence is still refreshed before authoritative reads. */
+  waitForRefresh?: boolean;
   fence?: () => Promise<void>;
 }
 
@@ -83,13 +85,14 @@ async function runBulkStage(
   client: any,
   stage: CaseEvidenceStageName,
   operations: Array<{ id: string; alertId?: string; caseId?: string; action: any; payload?: any }>,
-  errors: CaseEvidenceStageError[]
+  errors: CaseEvidenceStageError[],
+  waitForRefresh = true
 ): Promise<Set<string>> {
   if (!operations.length) return new Set();
   let response: any;
   try {
     response = await client.bulk({
-      refresh: 'wait_for',
+      refresh: waitForRefresh ? 'wait_for' : false,
       body: operations.flatMap((operation) =>
         operation.payload === undefined ? [operation.action] : [operation.action, operation.payload]
       ),
@@ -181,25 +184,34 @@ async function rebuildCompatibilityMetadata(
   client: any,
   caseId: string,
   alertIds: string[],
+  evidenceCount: number,
   now: string,
   actor: string,
-  fence?: () => Promise<void>
+  fence?: () => Promise<void>,
+  waitForRefresh = true
 ): Promise<void> {
+  let current = await resolveCase(client, caseId);
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const current = await resolveCase(client, caseId);
     try {
       await fence?.();
       await client.update({
         index: current.index,
         id: caseId,
-        refresh: 'wait_for',
+        refresh: waitForRefresh ? 'wait_for' : false,
         if_seq_no: current.seqNo,
         if_primary_term: current.primaryTerm,
-        body: { doc: { alert_ids: alertIds, updated_at: now, updated_by: actor } },
+        body: { doc: { alert_ids: alertIds, evidence_count: evidenceCount, updated_at: now, updated_by: actor } },
       });
       return;
     } catch (error: any) {
       if ((error?.meta?.statusCode || error?.statusCode) !== 409 || attempt === 2) throw error;
+      const fresh: any = await client.get({ index: current.index, id: caseId });
+      current = {
+        ...current,
+        source: fresh?.body?._source || {},
+        seqNo: fresh?.body?._seq_no,
+        primaryTerm: fresh?.body?._primary_term,
+      };
     }
   }
 }
@@ -365,7 +377,7 @@ export async function reconcileCaseEvidence(
             'if (ctx._source.case_id != params.expected_case_id) { throw new IllegalStateException("Alert case ownership changed concurrently"); } ' +
             'if (params.allow_move == false && ctx._source.case_id != null && ctx._source.case_id != params.case_id) { throw new IllegalStateException("Alert evidence is already owned by another active case"); } ' +
             'if (ctx._source.case_id != params.case_id) { ' +
-            'if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(params.entry); ' +
+            'if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(params.entry); while (ctx._source.history.size() > 1000) { ctx._source.history.remove(0); } ' +
             'ctx._source.case_id = params.case_id; ctx._source.updated_at = params.now; ctx._source.updated_by = params.actor; }',
           params: {
             case_id: input.caseId,
@@ -382,7 +394,9 @@ export async function reconcileCaseEvidence(
     };
   });
   if (assignmentOperations.length) await checkFence();
-  const assigned = await runBulkStage(client, 'assign_alerts', assignmentOperations, errors);
+  const assigned = await runBulkStage(
+    client, 'assign_alerts', assignmentOperations, errors, input.waitForRefresh !== false
+  );
   stages.push(stageResult('assign_alerts', assignmentOperations.length, assigned.size));
 
   const evidenceOperations = validLinks.filter((id) => assigned.has(id)).map((id) => {
@@ -434,7 +448,9 @@ export async function reconcileCaseEvidence(
     };
   });
   if (evidenceOperations.length) await checkFence();
-  const evidenced = await runBulkStage(client, 'write_evidence', evidenceOperations, errors);
+  // The compatibility projection below searches evidence, so this is the one
+  // automation refresh barrier that cannot be removed without weakening reads.
+  const evidenced = await runBulkStage(client, 'write_evidence', evidenceOperations, errors, true);
   stages.push(stageResult('write_evidence', evidenceOperations.length, evidenced.size));
   const failedEvidence = validLinks.filter((id) => assigned.has(id) && !evidenced.has(id));
   if (failedEvidence.length) await checkFence();
@@ -463,7 +479,8 @@ export async function reconcileCaseEvidence(
         },
       };
     }),
-    errors
+    errors,
+    input.waitForRefresh !== false
   );
   stages.push(stageResult('rollback_assignments', failedEvidence.length, rolledBack.size));
   result.linkedAlertIds = validLinks.filter((id) => evidenced.has(id));
@@ -500,7 +517,7 @@ export async function reconcileCaseEvidence(
             source:
               'if (ctx._source.case_id == params.case_id) { ctx._source.case_id = null; ' +
               'ctx._source.updated_at = params.now; ctx._source.updated_by = params.actor; ' +
-              'if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(params.entry); }',
+              'if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(params.entry); while (ctx._source.history.size() > 1000) { ctx._source.history.remove(0); } }',
             params: {
               case_id: input.caseId,
               now,
@@ -512,7 +529,9 @@ export async function reconcileCaseEvidence(
       };
     });
   if (unlinkOperations.length) await checkFence();
-  const unlinked = await runBulkStage(client, 'unlink_alerts', unlinkOperations, errors);
+  const unlinked = await runBulkStage(
+    client, 'unlink_alerts', unlinkOperations, errors, input.waitForRefresh !== false
+  );
   stages.push(stageResult('unlink_alerts', unlinkOperations.length, unlinked.size));
 
   // Evidence remains authoritative until the operational assignment has been
@@ -540,7 +559,8 @@ export async function reconcileCaseEvidence(
         };
       })(),
     })),
-    errors
+    errors,
+    input.waitForRefresh !== false
   );
   stages.push(stageResult('remove_evidence', removals.length, removedEvidence.size));
   result.unlinkedAlertIds = unlinks.filter((id) => unlinked.has(id) && removedEvidence.has(id));
@@ -553,26 +573,37 @@ export async function reconcileCaseEvidence(
 
   const compatibilityLimit = Math.max(0, Math.min(input.compatibilityLimit ?? DEFAULT_COMPATIBILITY_LIMIT, 1000));
   let metadataSucceeded = 0;
-  for (const caseId of Array.from(affectedCases).sort()) {
+  // Automation owns a separate, atomic compatibility merge in
+  // updateActiveCase. Rebuilding the projection here would introduce a second
+  // writer for the same hot case and turn harmless projection conflicts into
+  // retries of already-durable evidence. Interactive link/move/unlink paths
+  // still rebuild the bounded legacy projection exactly.
+  const metadataCases = input.waitForRefresh === false ? [] : Array.from(affectedCases).sort();
+  for (const caseId of metadataCases) {
     try {
       const evidence: any = await client.search({
         index: EVIDENCE_READ_ALIAS,
         body: {
           size: compatibilityLimit,
+          track_total_hits: true,
           _source: ['alert_id'],
           sort: [{ alert_id: { order: 'asc' } }],
           query: { term: { case_id: caseId } },
         },
       });
       const alertIds = (evidence?.body?.hits?.hits || []).map((hit: any) => hit._source?.alert_id).filter(Boolean);
-      await rebuildCompatibilityMetadata(client, caseId, alertIds, now, input.actor, checkFence);
+      const rawTotal = evidence?.body?.hits?.total;
+      const evidenceCount = Number(typeof rawTotal === 'number' ? rawTotal : rawTotal?.value ?? alertIds.length);
+      await rebuildCompatibilityMetadata(
+        client, caseId, alertIds, evidenceCount, now, input.actor, checkFence, input.waitForRefresh !== false
+      );
       metadataSucceeded += 1;
     } catch (error: any) {
       if (fenceErrors.has(error)) throw error;
       errors.push({ stage: 'sync_case_metadata', caseId, message: errorMessage(error), statusCode: error?.meta?.statusCode });
     }
   }
-  stages.push(stageResult('sync_case_metadata', affectedCases.size, metadataSucceeded));
+  stages.push(stageResult('sync_case_metadata', metadataCases.length, metadataSucceeded));
 
   result.retryAlertIds = uniqueIds(errors.map((error) => error.alertId || ''));
   result.retryCaseIds = uniqueIds(errors.map((error) => error.caseId || ''));

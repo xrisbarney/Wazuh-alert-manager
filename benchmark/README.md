@@ -1,19 +1,36 @@
-# Wazuh Alert Manager v2.0.1 volume benchmark
+# Wazuh Alert Manager v2.0.2 volume benchmark
 
 This reproducibility kit evaluates the real Wazuh Alert Manager pipeline at
 **100,000 synthetic alerts**: native-format source index, bounded v2 projection,
 durable automation queue, lifecycle actions, deduplicated cases, and evidence
 links. It measures exact outcomes; it does not sample.
 
-## Recorded v2.0.1 result
+## Recorded v2.0.2 result
 
-The clean 30 August 2026 run did **not** pass the automation drain gate.
-Injection completed at 2,974.1 alerts/s and projection reached all 100,000
-documents after 589.028 seconds, but only 1,376 of 100,000 durable admissions
-were complete after the 1,800-second deadline. The v2.0.1 worker's global,
-single-event execution is the limiting stage. Do not present this as positive
-100k automation capacity or extrapolate the earlier small run. Sanitized raw
-facts are in [`evidence/v2.0.1-100k`](evidence/v2.0.1-100k/).
+Three clean 30 August 2026 trials passed every exact ground-truth and queue
+drain gate on the Wazuh 4.14 single-node test VM. One trial deliberately
+restarted Wazuh Dashboard with 9,232 durable admissions active; leased work was
+recovered and the final result still contained no retry, deferred or failed
+entries and no duplicate actions.
+
+| Trial | Injection | End-to-end | Queue high-water | Result |
+|---|---:|---:|---:|---|
+| 26 | 5,270.4/s | 246.181 s | 11,988 | Pass |
+| 27 | 5,573.3/s | 219.596 s | 11,276 | Pass |
+| 28, restart | 5,001.6/s | 238.081 s | 11,264 | Pass |
+
+The median end-to-end time was **238.081 s** (range 219.596–246.181 s). Every
+trial ended with 100,000 projected alerts, 42 deduplicated cases, 5,300 exact
+evidence links, 5,000 closed alerts, 2,500 assigned/in-progress alerts, zero
+false actions across 87,200 controls, and a fully empty durable queue. Case
+documents remained bounded; the largest alert-ID preview was 600 while the
+evidence family retained exact relationship counts.
+
+Sanitized evidence is in
+[`evidence/v2.0.2-100k`](evidence/v2.0.2-100k/). The earlier v2.0.1 negative
+result remains in [`evidence/v2.0.1-100k`](evidence/v2.0.1-100k/) and must not
+be rewritten as a pass. These are single-node synthetic reproducibility
+results, not a universal production-capacity guarantee.
 
 ## Corpus and ground truth
 
@@ -35,7 +52,7 @@ forward-only: the benchmark injects the corpus only after activation.
 ## Safety boundary
 
 The kit uses only the synthetic source index
-`wazuh-alerts-4.x-paperbench-v201`. Despite its Wazuh-compatible name, it is
+`wazuh-alerts-4.x-wam-benchmark`. Despite its Wazuh-compatible name, it is
 benchmark-owned. The reset script accepts only:
 
 - exact `wazuh-alert-status-v2-*` plugin indices;
@@ -43,16 +60,17 @@ benchmark-owned. The reset script accepts only:
 - the exact synthetic source index above.
 
 It refuses wildcards outside those prefixes and never deletes normal
-`wazuh-alerts-*` indices. Legacy v1 indices are left untouched; disable v1
-migration in the benchmark dashboard configuration so they cannot contaminate
-the clean v2 run.
+`wazuh-alerts-*` indices. Legacy v1 indices are left untouched by default. In a
+disposable laboratory, `--include-legacy-v1` additionally deletes only the five
+hard-coded v1 plugin indices. Disable v1 migration in the benchmark dashboard
+configuration so an ordinary v2-only run cannot be contaminated.
 
 ## Clean benchmark configuration
 
 Add these non-secret settings to `/etc/wazuh-dashboard/opensearch_dashboards.yml`:
 
 ```yaml
-wazuh_alert_manager.sync.sourceIndexPattern: "wazuh-alerts-4.x-paperbench-v201"
+wazuh_alert_manager.sync.sourceIndexPattern: "wazuh-alerts-4.x-wam-benchmark"
 wazuh_alert_manager.sync.intervalSeconds: 15
 wazuh_alert_manager.sync.initialLookbackMinutes: 60
 wazuh_alert_manager.sync.batchSize: 10000
@@ -73,7 +91,7 @@ environment or an ignored secret file:
 ```bash
 export WAM_USER=admin
 export WAM_PW='<development credential>'
-python3 benchmark/reset_v2.py --yes
+python3 benchmark/reset_v2.py --yes --include-legacy-v1  # disposable lab only
 sudo systemctl restart wazuh-dashboard
 bash benchmark/run_reliability.sh
 ```
@@ -83,7 +101,7 @@ containing rule IDs, injection timing, exact outcome comparison, queue high
 water mark, before/after storage, environment metadata, wall clock, and
 SHA-256 checksums.
 
-For a publication result, perform one warm-up and at least three clean measured
+For a formal result, perform one warm-up and at least three clean measured
 trials. Report each trial, median, range, environment, queue settings, sync
 interval, and whether the benchmark shared the node with the indexer/dashboard.
 Do not generalise a single-node synthetic result to production capacity.

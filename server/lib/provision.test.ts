@@ -357,7 +357,7 @@ describe('mapping upgrades', () => {
 
   test('fails startup when a required mapped field is absent', async () => {
     const client: any = {
-      get: jest.fn().mockResolvedValue({ body: { _source: { version: 11 } } }),
+      get: jest.fn().mockResolvedValue({ body: { _source: { version: 12 } } }),
       index: jest.fn(),
       indices: {
         exists: jest.fn().mockResolvedValue({ body: true }),
@@ -372,7 +372,7 @@ describe('mapping upgrades', () => {
 
   test('fails startup when an existing generation allows dynamic fields', async () => {
     const client: any = {
-      get: jest.fn().mockResolvedValue({ body: { _source: { version: 11 } } }),
+      get: jest.fn().mockResolvedValue({ body: { _source: { version: 12 } } }),
       index: jest.fn(),
       indices: {
         exists: jest.fn().mockResolvedValue({ body: true }),

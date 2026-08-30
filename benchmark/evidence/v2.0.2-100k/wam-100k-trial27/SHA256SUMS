@@ -1,0 +1,11 @@
+aeadba2f18a53ab1436671f1b80411a2760fed1602becae169c96405863956c3  /home/vagrant/wazuh-alert-manager-src/benchmark/results/wam-100k-trial27/environment.json
+6289aeaa23424ccf430a8e5b582335cec5e71b1b801bc9c81dbe34a2cc0f340a  /home/vagrant/wazuh-alert-manager-src/benchmark/results/wam-100k-trial27/injection.json
+3f103bd464ca4251315d68a7e82d7c226b494d4ef5aa1610c00c0ebbe011b0b2  /home/vagrant/wazuh-alert-manager-src/benchmark/results/wam-100k-trial27/plugin-health.json
+57ff1559c7f0f567c0976ff5bd1b064ab82c309c2917fee494551388b2aadfb1  /home/vagrant/wazuh-alert-manager-src/benchmark/results/wam-100k-trial27/queue-settings.json
+0043c8fc82b8fbcdf3729c402a0a0202f0c0c1b05bc33d521855c6c293bff4d8  /home/vagrant/wazuh-alert-manager-src/benchmark/results/wam-100k-trial27/result.json
+f0d18d7f2a40272951899b6c4d8a56752ce76a389ff0665364b2f0e034aad4ec  /home/vagrant/wazuh-alert-manager-src/benchmark/results/wam-100k-trial27/rule-ids.json
+06c7f26874c3bf5b231279b963d2b4a234c30e20547a70432c3a1b90b7f4e9a7  /home/vagrant/wazuh-alert-manager-src/benchmark/results/wam-100k-trial27/storage-after.json
+daddf8efd2e1b3d5c96aac224eb10d3c936e11304e8dfc0e6a33092d746d644d  /home/vagrant/wazuh-alert-manager-src/benchmark/results/wam-100k-trial27/storage-before.json
+19ff2d32a7f0e318c68559dc5fb6b9e5978436d208544a15886714e5a3311dab  /home/vagrant/wazuh-alert-manager-src/benchmark/results/wam-100k-trial27/sync-disabled.json
+6c40bfa46573965002baf8ef97e9cfc57cb1034e6543614f5f8246181310de63  /home/vagrant/wazuh-alert-manager-src/benchmark/results/wam-100k-trial27/sync-enabled.json
+a3091e9e46cc61ae58f89eaec77b3e6f605ea81829ac912202a08450b65ace2e  /home/vagrant/wazuh-alert-manager-src/benchmark/results/wam-100k-trial27/wall-clock.json

@@ -136,13 +136,15 @@ are read-only evidence sources.
 
 | Index | Purpose |
 |---|---|
-| `wazuh-alert-status-v2-*` | Operational projection of each alert (compact, explicit fields) plus workflow state: `status`, `case_id`, `assigned_to`, `related_alert_ids`, `ai_analysis`, and a `history` audit trail. Exposed through read/write aliases and numeric rollover generations (`-000001`, `-000002`, …). |
-| `wazuh-alert-manager-v2-activity` | Comments and audit events, keyed by `alert_id` or `case_id` (read/write aliases + generations). |
-| `wazuh-alert-manager-v2-cases` | Cases: title, description, severity, status, linked `alert_ids`, history. |
-| `wazuh-alert-manager-v2-rules` | Automation (correlation) rules. |
+| `wazuh-alert-status-v2-{read,write}` | Aliases over numbered alert generations. Each document is a bounded operational projection plus workflow state. |
+| `wazuh-alert-manager-v2-activity-{read,write}` | Aliases over numbered comment/audit generations, keyed by `alert_id` or `case_id`. |
+| `wazuh-alert-manager-v2-cases-{read,write}` | Aliases over numbered case generations. Cases keep an exact `evidence_count` and bounded alert-ID/history previews. |
+| `wazuh-alert-manager-v2-evidence-{read,write}` | Aliases over the authoritative, paginated case-alert relationship family, including provenance, holds, lifecycle state, compact snapshots and trusted archive locations. |
+| `wazuh-alert-manager-v2-rules` | Automation rule definitions and revisions. |
 | `wazuh-alert-manager-v2-meta` | Internal state: sync watermark, leader lock, lifecycle settings, AI settings, retirement records. |
 | `wazuh-alert-manager-v2-migration` | Legacy v1 -> v2 migration progress/checkpoint. |
 | `wazuh-alert-manager-v2-sync-dlq` | Dead-letter queue for alerts that fail to sync. |
+| `wazuh-alert-manager-v2-automation-{queue,executions,dlq}` | Durable ingestion-time work, idempotent execution records and recoverable failures. |
 
 Legacy v1 indices (`wazuh-alert-status`, `wazuh-alert-manager-comments`,
 `wazuh-alert-manager-cases`, `wazuh-alert-manager-meta`, `wazuh-alert-manager-rules`)
@@ -199,13 +201,13 @@ version.
 curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash
 
 # Pinned release (recommended)
-curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash -s -- --version 2.0.1
+curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash -s -- --version 2.0.2
 
 # Supply-chain-safe: download and verify the installer first
-curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.1/install.sh
-curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.1/install.sh.sha256
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.2/install.sh
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.2/install.sh.sha256
 sha256sum -c install.sh.sha256
-sudo bash install.sh --version 2.0.1
+sudo bash install.sh --version 2.0.2
 ```
 
 It also handles `--dry-run`, `--no-restart`, `--rollback`,
@@ -437,8 +439,8 @@ docker-compose/K8s deployment.
   than the one that saved it.
 - **Stateless/ephemeral pods are fine.** This plugin keeps no meaningful
   state on local disk - everything it reads and writes lives in
-  OpenSearch indices (`wazuh-alert-status`, `wazuh-alert-manager-meta`,
-  etc.). No PVC is needed for this plugin specifically, and dashboard
+  plugin-owned v2 OpenSearch indices (`wazuh-alert-status-v2-*` and
+  `wazuh-alert-manager-v2-*`). No PVC is needed for this plugin specifically, and dashboard
   pods can be scaled, replaced, or rescheduled freely.
 - **Multi-replica sync is automatic.** The background sync job uses a
   leader-lock document in the plugin's meta index, so it's safe to scale

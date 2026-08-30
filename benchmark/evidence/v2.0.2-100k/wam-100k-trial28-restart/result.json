@@ -1,0 +1,66 @@
+{"elapsed_seconds": 0.0, "synced": 0, "queue": {"active": 0, "reportedLag": 0, "deferred": 0, "failed": 0, "pending": 0, "claimed": 0, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 16.22, "synced": 10000, "queue": {"active": 4812, "reportedLag": 4812, "deferred": 0, "failed": 0, "pending": 4812, "claimed": 0, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 33.778, "synced": 20000, "queue": {"active": 9232, "reportedLag": 9232, "deferred": 0, "failed": 0, "pending": 7964, "claimed": 1268, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 53.262, "transient_error": "GET /system/automation/queue failed (503): Wazuh dashboard server is not ready yet"}
+{"elapsed_seconds": 68.594, "synced": 30000, "queue": {"active": 11264, "reportedLag": 11264, "deferred": 0, "failed": 0, "pending": 9508, "claimed": 1756, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 87.783, "synced": 54412, "queue": {"active": 10776, "reportedLag": 10776, "deferred": 0, "failed": 0, "pending": 9252, "claimed": 1524, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 107.147, "synced": 70000, "queue": {"active": 10520, "reportedLag": 10520, "deferred": 0, "failed": 0, "pending": 8996, "claimed": 1524, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 126.187, "synced": 94103, "queue": {"active": 10264, "reportedLag": 10264, "deferred": 0, "failed": 0, "pending": 8740, "claimed": 1524, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 144.846, "synced": 100000, "queue": {"active": 9752, "reportedLag": 9752, "deferred": 0, "failed": 0, "pending": 8484, "claimed": 1268, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 161.614, "synced": 100000, "queue": {"active": 9496, "reportedLag": 9496, "deferred": 0, "failed": 0, "pending": 8228, "claimed": 1268, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 178.977, "synced": 100000, "queue": {"active": 7716, "reportedLag": 7716, "deferred": 0, "failed": 0, "pending": 6996, "claimed": 720, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 197.765, "synced": 100000, "queue": {"active": 6436, "reportedLag": 6436, "deferred": 0, "failed": 0, "pending": 5460, "claimed": 976, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 218.474, "synced": 100000, "queue": {"active": 2680, "reportedLag": 2680, "deferred": 0, "failed": 0, "pending": 2281, "claimed": 399, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 238.081, "synced": 100000, "queue": {"active": 0, "reportedLag": 0, "deferred": 0, "failed": 0, "pending": 0, "claimed": 0, "retry": 0, "admissionOpen": true}}
+{
+  "actual": {
+    "assigned_in_progress": 2500,
+    "boolean_group_cases": 2,
+    "boolean_group_linked": 1200,
+    "burst_srcip_cases": 10,
+    "burst_srcip_linked": 2000,
+    "closed_alerts": 5000,
+    "cooccurrence_cases": 10,
+    "cooccurrence_linked": 600,
+    "false_actions_on_controls": 0,
+    "immediate_agent_cases": 10,
+    "immediate_agent_linked": 500,
+    "immediate_user_cases": 10,
+    "immediate_user_linked": 1000,
+    "total_synced": 100000
+  },
+  "end_to_end_seconds": 238.081,
+  "expected": {
+    "assigned_in_progress": 2500,
+    "boolean_group_cases": 2,
+    "boolean_group_linked": 1200,
+    "burst_srcip_cases": 10,
+    "burst_srcip_linked": 2000,
+    "closed_alerts": 5000,
+    "cooccurrence_cases": 10,
+    "cooccurrence_linked": 600,
+    "false_actions_on_controls": 0,
+    "immediate_agent_cases": 10,
+    "immediate_agent_linked": 500,
+    "immediate_user_cases": 10,
+    "immediate_user_linked": 1000,
+    "total_synced": 100000
+  },
+  "mismatches": {},
+  "passed": true,
+  "queue_final": {
+    "active": 0,
+    "admissionOpen": true,
+    "claimed": 0,
+    "deferred": 0,
+    "failed": 0,
+    "pending": 0,
+    "reportedLag": 0,
+    "retry": 0
+  },
+  "queue_high_water": {
+    "active": 11264,
+    "deferred": 0,
+    "failed": 0
+  }
+}

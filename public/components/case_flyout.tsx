@@ -81,6 +81,9 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
   const [evidenceNextCursor, setEvidenceNextCursor] = useState<string | null>(null);
   const [evidenceTotal, setEvidenceTotal] = useState(0);
   const [loadingMoreEvidence, setLoadingMoreEvidence] = useState(false);
+  const [evidencePageIndex, setEvidencePageIndex] = useState(0);
+  const [evidencePages, setEvidencePages] = useState<Array<Array<Alert & { _evidence?: any }>>>([]);
+  const [evidencePageCursors, setEvidencePageCursors] = useState<Array<string | null>>([null]);
 
   const load = useCallback(async () => {
     try {
@@ -107,6 +110,9 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
         }
       }
       setAlerts(expanded);
+      setEvidencePages([expanded]);
+      setEvidencePageCursors([null, res.evidence?.nextCursor || null]);
+      setEvidencePageIndex(0);
       setEvidenceNextCursor(res.evidence?.nextCursor || null);
       setEvidenceTotal(res.evidence?.total || expanded.length);
       setCanManageLifecycle(Boolean(capabilities?.canManageLifecycle));
@@ -119,22 +125,36 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
     }
   }, [caseId]);
 
-  const loadMoreEvidence = async () => {
-    if (!evidenceNextCursor) return;
+  const changeEvidencePage = async (nextPageIndex: number) => {
+    if (nextPageIndex < 0) return;
+    if (evidencePages[nextPageIndex]) {
+      setAlerts(evidencePages[nextPageIndex]);
+      setEvidencePageIndex(nextPageIndex);
+      setEvidenceNextCursor(evidencePageCursors[nextPageIndex + 1] || null);
+      return;
+    }
+    const cursor = evidencePageCursors[nextPageIndex];
+    if (!cursor) return;
     try {
       setLoadingMoreEvidence(true);
-      const page = await apiService.fetchCaseEvidence(caseId, evidenceNextCursor);
-      setAlerts((current) => {
-        const known = new Set(current.map((item) => item._id));
-        const additional = page.evidence
-          .filter((item: any) => !known.has(item.alert_id))
-          .map((item: any) => ({
-            _id: item.alert_id,
-            _source: item.snapshot || {},
-            _evidence: item,
-          } as Alert & { _evidence?: any }));
-        return [...current, ...additional];
+      const page = await apiService.fetchCaseEvidence(caseId, cursor, 25);
+      const byAlert = new Map(page.evidence.map((item: any) => [item.alert_id, item]));
+      const pageAlerts = (page.alerts || page.evidence.map((item: any) => ({
+        _id: item.alert_id,
+        _source: item.snapshot || {},
+      }))).map((item: Alert) => ({ ...item, _evidence: byAlert.get(item._id) }));
+      setEvidencePages((current) => {
+        const updated = [...current];
+        updated[nextPageIndex] = pageAlerts;
+        return updated;
       });
+      setEvidencePageCursors((current) => {
+        const updated = [...current];
+        updated[nextPageIndex + 1] = page.nextCursor;
+        return updated;
+      });
+      setAlerts(pageAlerts);
+      setEvidencePageIndex(nextPageIndex);
       setEvidenceNextCursor(page.nextCursor);
       setEvidenceTotal((current) => Math.max(current, page.total));
     } catch (e) {
@@ -434,12 +454,38 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
                       },
                     ]}
                   />
-                  {evidenceNextCursor && (
+                  {evidenceTotal > 25 && (
                     <>
                       <EuiSpacer size="s" />
-                      <EuiButton size="s" onClick={loadMoreEvidence} isLoading={loadingMoreEvidence}>
-                        Load more linked alerts ({alerts.length} of {evidenceTotal})
-                      </EuiButton>
+                      <EuiFlexGroup alignItems="center" justifyContent="spaceBetween" gutterSize="s" responsive={false}>
+                        <EuiFlexItem grow={false}>
+                          <EuiButtonEmpty
+                            size="s"
+                            iconType="arrowLeft"
+                            isDisabled={evidencePageIndex === 0 || loadingMoreEvidence}
+                            onClick={() => changeEvidencePage(evidencePageIndex - 1)}
+                          >
+                            Previous
+                          </EuiButtonEmpty>
+                        </EuiFlexItem>
+                        <EuiFlexItem grow={false}>
+                          <EuiText size="s" color="subdued">
+                            Page {evidencePageIndex + 1} · showing {evidencePageIndex * 25 + 1}–{Math.min((evidencePageIndex + 1) * 25, evidenceTotal)} of {evidenceTotal}
+                          </EuiText>
+                        </EuiFlexItem>
+                        <EuiFlexItem grow={false}>
+                          <EuiButtonEmpty
+                            size="s"
+                            iconType="arrowRight"
+                            iconSide="right"
+                            isLoading={loadingMoreEvidence}
+                            isDisabled={!evidenceNextCursor}
+                            onClick={() => changeEvidencePage(evidencePageIndex + 1)}
+                          >
+                            Next
+                          </EuiButtonEmpty>
+                        </EuiFlexItem>
+                      </EuiFlexGroup>
                     </>
                   )}
                   <EuiSpacer size="l" />

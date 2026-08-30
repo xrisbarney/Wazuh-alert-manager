@@ -42,18 +42,23 @@ export class WazuhAlertManagerPlugin
     return {};
   }
 
-  public start(core: CoreStart) {
+  public async start(core: CoreStart) {
     this.logger.debug('wazuhAlertManager: Started');
 
     const client = core.opensearch.client.asInternalUser;
 
     this.stopped = false;
-    this.initializationPromise = this.initializerContext.config
+    const readinessPromise = this.initializerContext.config
       .create<AlertManagerConfigType>()
       .pipe(take(1))
       .toPromise()
       .then(async (config) => {
         await ensureIndices(client, this.logger);
+        return config;
+      });
+
+    this.initializationPromise = readinessPromise
+      .then(async (config) => {
         if (this.stopped) return;
         await migrateCaseAliases(client, this.logger);
         if (this.stopped) return;
@@ -112,6 +117,12 @@ export class WazuhAlertManagerPlugin
         this.logger.error(`wazuhAlertManager: failed to provision indices: ${e.message}`);
       });
 
+    // OpenSearch Dashboards may advertise HTTP readiness as soon as plugin
+    // start returns. Hold that boundary until the plugin-owned aliases and
+    // mappings exist so a first page load cannot race provisioning. Lengthy,
+    // resumable migrations and worker startup continue through the tracked
+    // initialization promise above.
+    await readinessPromise.catch(() => undefined);
     return {};
   }
 

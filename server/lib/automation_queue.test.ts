@@ -2,13 +2,17 @@ import { createHash } from 'crypto';
 import {
   automationEventId,
   automationExecutionId,
+  automationAdmissionLane,
+  automationWorkerLeaseId,
   automationQueueHealth,
+  activateAutomationEvents,
   enqueueAutomationEvents,
   reconcileAutomationAdmissions,
   ensureAutomationSettings,
   retryAutomationDlqEvent,
   retryDelayMs,
   runAutomationWorkerOnce,
+  runAutomationWorkerBatchOnce,
   chunkBulkPairs,
 } from './automation_queue';
 import {
@@ -97,14 +101,85 @@ function workerClient(hit = queueHit(), executionSource?: any) {
       return { body: { _seq_no: next._seq_no, _primary_term: next._primary_term } };
     }),
     delete: jest.fn(async ({ index, id }: any) => { docs.delete(`${index}/${id}`); }),
+    mget: jest.fn(async ({ index, body }: any) => ({ body: { docs: (body.docs || body.ids.map((id: string) => ({ _index: index, _id: id }))).map((item: any) => {
+      const key = `${item._index}/${item._id}`;
+      const doc = docs.get(key);
+      return doc
+        ? { _index: item._index, _id: item._id, found: true, ...doc, _source: { ...doc._source } }
+        : { _index: item._index, _id: item._id, found: false };
+    }) } })),
     indices: { refresh: jest.fn(async () => undefined) },
-    bulk: jest.fn(async () => ({ body: { errors: false, items: [{ index: { status: 201 } }] } })),
+    bulk: jest.fn(async ({ body }: any) => {
+      const items: any[] = [];
+      for (let offset = 0; offset < body.length; offset += 2) {
+        const action = body[offset];
+        const payload = body[offset + 1];
+        const kind = Object.keys(action)[0];
+        const metadata = action[kind];
+        const key = `${metadata._index}/${metadata._id}`;
+        const current = docs.get(key);
+        if (kind === 'create' && current) {
+          items.push({ create: { status: 409, error: { type: 'version_conflict_engine_exception' } } });
+          continue;
+        }
+        if (kind === 'create' || kind === 'index') {
+          docs.set(key, { _seq_no: seq++, _primary_term: 1, _source: { ...payload } });
+          items.push({ [kind]: { status: 201, result: 'created' } });
+          continue;
+        }
+        if (kind === 'update') {
+          const source = { ...(current?._source || {}) };
+          if (payload.doc) Object.assign(source, payload.doc);
+          if (payload.script) {
+            const params = payload.script.params;
+            const owned = source.state === params.state && source.holder_id === params.holder &&
+              source.fencing_generation === params.generation && source.lease_token === params.token;
+            if (!owned) {
+              items.push({ update: { status: 200, result: 'noop' } });
+              continue;
+            }
+            Object.assign(source, params.doc);
+          }
+          docs.set(key, { _seq_no: seq++, _primary_term: current?._primary_term || 1, _source: source });
+          items.push({ update: { status: 200, result: 'updated' } });
+        }
+      }
+      return { body: { errors: items.some((item) => (Object.values(item)[0] as any)?.error), items } };
+    }),
   };
   client.docs = docs;
   return client;
 }
 
 describe('durable automation queue', () => {
+  test('retries idempotent staged activation on bounded OCC conflicts', async () => {
+    const client: any = {
+      bulk: jest.fn().mockResolvedValue({
+        body: { errors: false, items: [{ update: { status: 200, result: 'updated' } }] },
+      }),
+    };
+
+    await expect(activateAutomationEvents(client, [{ alert_uid: 'a' }])).resolves.toBe(1);
+
+    expect(client.bulk.mock.calls[0][0].body[0]).toEqual({
+      update: { _index: AUTOMATION_QUEUE_INDEX, _id: 'a', retry_on_conflict: 3 },
+    });
+  });
+
+  test('keeps alerts matching the same rule on one worker lane', () => {
+    const snapshot: any = {
+      id: 'snapshot', revisions: [], rules: [{
+        id: 'rule-a', enabled: true, revision: 1, name: 'A', priority: 1, sortOrder: 0,
+        processingMode: 'continue', match: { agentNames: ['agent-a'], agentNamesMode: 'any' },
+        trigger: { type: 'per_alert', entityExpression: { version: 1, groups: [] } },
+        actions: { createCase: false, setStatus: 'closed' }, preconditions: {}, safety: {},
+      }],
+    };
+
+    expect(automationAdmissionLane(snapshot, { alert_uid: 'one', agent: { name: 'agent-a' } }))
+      .toBe(automationAdmissionLane(snapshot, { alert_uid: 'two', agent: { name: 'agent-a' } }));
+  });
+
   test('treats a conflicting settings create as successful convergence', async () => {
     const client: any = {
       search: jest.fn().mockResolvedValue({ body: { hits: { total: { value: 0 } } } }),
@@ -116,9 +191,9 @@ describe('durable automation queue', () => {
 
   test('uses stable event/execution ids and validates every enqueue bulk item', async () => {
     const events = [
-      { alert_uid: 'a' },
-      { alert_uid: 'b' },
-      { alert_uid: 'c' },
+      { alert_uid: 'a', rule: { id: '5502' } },
+      { alert_uid: 'b', rule: { id: '5502' } },
+      { alert_uid: 'c', rule: { id: '5502' } },
     ];
     const client: any = {
       get: jest.fn().mockRejectedValue(notFound()),
@@ -128,23 +203,9 @@ describe('durable automation queue', () => {
           name: 'original', enabled: true, revision: 3, match: { ruleIds: ['5502'] },
           trigger: { type: 'per_alert' }, actions: { createCase: false, setStatus: 'closed' },
         } }] } } }),
-      mget: jest.fn(async ({ body }: any) => ({ body: { docs: body.ids.map((id: string) => ({
-        _id: id,
-        found: true,
-        _source: {
-          admission_reason: 'first_ingestion',
-          payload: { alert_uid: id.replace('automation-admission:', '') },
-          ruleset_snapshot: 'captured-snapshot',
-          rule_revisions: [{ id: 'rule-1', revision: 3 }],
-          admission_cutoff: '2026-08-28T00:00:01.000Z',
-        },
-      })) } })),
       create: jest.fn().mockResolvedValue({ body: { result: 'created' } }),
       bulk: jest
         .fn()
-        .mockResolvedValueOnce({ body: { errors: false, items: [
-          { create: { status: 201 } }, { create: { status: 201 } }, { create: { status: 201 } },
-        ] } })
         .mockResolvedValueOnce({
           body: {
             errors: true,
@@ -155,9 +216,7 @@ describe('durable automation queue', () => {
             ],
           },
         })
-        .mockResolvedValueOnce({ body: { errors: false, items: [{ update: { status: 200 } }, { update: { status: 200 } }] } })
-        .mockResolvedValueOnce({ body: { errors: false, items: [{ index: { status: 201 } }] } })
-        .mockResolvedValueOnce({ body: { errors: false, items: [{ update: { status: 200 } }] } }),
+        .mockResolvedValueOnce({ body: { errors: false, items: [{ index: { status: 201 } }] } }),
     };
 
     await expect(enqueueAutomationEvents(client, events)).resolves.toEqual({
@@ -165,6 +224,7 @@ describe('durable automation queue', () => {
       deferred: 0,
       duplicates: 1,
       failed: 1,
+      candidateAlertUids: ['a', 'b', 'c'],
     });
     expect(automationEventId('a')).toBe('a');
     expect(automationExecutionId('a', 'snapshot')).toBe('event:a:rules:snapshot');
@@ -175,12 +235,35 @@ describe('durable automation queue', () => {
       body: expect.objectContaining({ document_type: 'ruleset_snapshot', rules_snapshot: expect.any(Array) }),
     }));
     expect(client.bulk.mock.calls[0][0].body[1].rules_snapshot).toBeUndefined();
-    expect(client.bulk.mock.calls[3][0].body[0].index._index).toBe(AUTOMATION_DLQ_INDEX);
-    expect(client.bulk.mock.calls[3][0].body[1].alert_uid).toBe('c');
-    const queued = client.bulk.mock.calls[1][0].body[1];
+    expect(client.bulk.mock.calls[1][0].body[0].index._index).toBe(AUTOMATION_DLQ_INDEX);
+    expect(client.bulk.mock.calls[1][0].body[1].alert_uid).toBe('c');
+    const queued = client.bulk.mock.calls[0][0].body[1];
     expect(queued.rules_snapshot).toBeUndefined();
+    expect(queued.event_timestamp).toEqual(expect.any(String));
     expect(queued.rule_revisions).toEqual([{ id: 'rule-1', revision: 3 }]);
-    expect(queued.admission_cutoff).toBe('2026-08-28T00:00:01.000Z');
+    expect(queued.admission_cutoff).toEqual(expect.any(String));
+    expect(Number.isFinite(Date.parse(queued.admission_cutoff))).toBe(true);
+  });
+
+  test('does not create queue writes for alerts outside the immutable ruleset', async () => {
+    const client: any = {
+      search: jest.fn().mockResolvedValue({ body: { hits: { total: { value: 1 }, hits: [{
+        _id: 'rule-1',
+        _source: {
+          name: 'candidate only', enabled: true, revision: 1, match: { ruleIds: ['5502'] },
+          trigger: { type: 'per_alert' }, actions: { createCase: false, setStatus: 'closed' },
+        },
+      }] } } }),
+      create: jest.fn(),
+      bulk: jest.fn(),
+    };
+
+    await expect(enqueueAutomationEvents(client, [{ alert_uid: 'control', rule: { id: '9999' } }]))
+      .resolves.toEqual({
+        enqueued: 0, deferred: 0, duplicates: 0, failed: 0, candidateAlertUids: [],
+      });
+    expect(client.create).not.toHaveBeenCalled();
+    expect(client.bulk).not.toHaveBeenCalled();
   });
 
   test('acknowledges the queue only after evaluation and execution completion', async () => {
@@ -321,6 +404,12 @@ describe('durable automation queue', () => {
     await runAutomationWorkerOnce(client, logger, 'worker-1', 120, jest.fn(async () => success));
 
     const query = client.search.mock.calls[0][0].body.query;
+    expect(client.search.mock.calls[0][0].body.sort).toEqual([
+      { available_at: 'asc' },
+      { event_timestamp: { order: 'asc', missing: '_last', unmapped_type: 'date' } },
+      { enqueued_at: 'asc' },
+      { event_id: 'asc' },
+    ]);
     expect(query.bool.should).toContainEqual({
       bool: { must: [{ term: { state: 'claimed' } }, { range: { lease_expires_at: { lte: expect.any(String) } } }] },
     });
@@ -437,6 +526,47 @@ describe('durable automation queue', () => {
     await expect(runAutomationWorkerOnce(client, logger, 'worker-2', 120, jest.fn(async () => success))).resolves.toBe(true);
     const lease = client.docs.get(`${AUTOMATION_EXECUTIONS_INDEX}/automation-worker-lease`)._source;
     expect(lease.fencing_generation).toBe(8);
+  });
+
+  test('uses independent bounded cluster-wide leases for concurrent worker lanes', async () => {
+    const client: any = workerClient();
+    const laneLease = automationWorkerLeaseId(1);
+
+    await expect(runAutomationWorkerOnce(
+      client,
+      logger,
+      'worker-lane-1',
+      120,
+      jest.fn(async () => success),
+      laneLease
+    )).resolves.toBe(true);
+
+    expect(laneLease).toBe(`${AUTOMATION_WORKER_LEASE_ID}:1`);
+    expect(client.docs.get(`${AUTOMATION_EXECUTIONS_INDEX}/${laneLease}`)._source.holder_id)
+      .toBe('worker-lane-1');
+    expect(() => automationWorkerLeaseId(8)).toThrow(/between 0 and 7/);
+  });
+
+  test('claims, evaluates, and acknowledges a durable batch under one lane fence', async () => {
+    const client: any = workerClient();
+    const evaluator = jest.fn(async () => success);
+
+    await expect(runAutomationWorkerBatchOnce(client, logger, 'batch-worker', 0, 120, 64, evaluator))
+      .resolves.toBe(true);
+
+    expect(evaluator).toHaveBeenCalledWith(
+      client,
+      [{ _id: 'alert-1', _source: expect.objectContaining({ alert_uid: 'alert-1' }) }],
+      logger,
+      undefined,
+      expect.objectContaining({ id: snapshotId, admission_cutoff: '2026-08-28T00:00:01.000Z' }),
+      expect.objectContaining({ assertOwned: expect.any(Function) })
+    );
+    expect(client.docs.get(`${AUTOMATION_QUEUE_INDEX}/alert-1`)._source.state).toBe('completed');
+    expect(client.docs.get(
+      `${AUTOMATION_EXECUTIONS_INDEX}/${automationExecutionId('alert-1', snapshotId)}`
+    )._source.state).toBe('completed');
+    expect(client.mget.mock.calls[0][0]).not.toHaveProperty('seq_no_primary_term');
   });
 
   test('manual DLQ retry resets attempts and is idempotent after resolution', async () => {

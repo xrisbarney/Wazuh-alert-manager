@@ -12,6 +12,21 @@ const SEVERITY_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, crit
 
 const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
 
+async function resolveAutomationCase(client: any, caseId: string) {
+  try {
+    return await resolveCase(client, caseId);
+  } catch (error: any) {
+    if ((error?.statusCode || error?.meta?.statusCode) !== 404 || typeof client.indices?.refresh !== 'function') {
+      throw error;
+    }
+    // A newly created case can briefly trail its write acknowledgement on a
+    // multi-index read alias. Refresh only the plugin-owned case family once;
+    // never broaden this recovery path to native Wazuh indexes.
+    await client.indices.refresh({ index: CASES_INDEX });
+    return resolveCase(client, caseId);
+  }
+}
+
 export interface AutomationCaseTrigger {
   ruleId: string;
   ruleName: string;
@@ -112,7 +127,17 @@ export function planAutomationCaseRoutes(input: readonly AutomationCaseTrigger[]
       continue;
     }
     if (tasks[0].routing === 'separate_by_group') {
-      output.push(...tasks.map((task) => routeFor([task])));
+      // "Separate" means one case per distinct group/entity identity, not one
+      // case route per matching alert. Coalesce identical identities so a
+      // worker batch performs one evidence mutation against each hot case.
+      const byMatchingKey = new Map<string, AutomationCaseTrigger[]>();
+      for (const task of tasks) {
+        const key = automationMatchingKey(task.ruleId, task.group);
+        const matching = byMatchingKey.get(key) || [];
+        matching.push(task);
+        byMatchingKey.set(key, matching);
+      }
+      output.push(...Array.from(byMatchingKey.keys()).sort().map((key) => routeFor(byMatchingKey.get(key)!)));
       continue;
     }
     const remaining = new Set(tasks.map((_, index) => index));
@@ -204,7 +229,7 @@ async function findOrCreateCase(
       throw new Error('Case consolidation requires OCC metadata for every duplicate case');
     }
     const adoptedAlertIds = await findEvidenceAlertIdsForCases(client, duplicates.map((hit: any) => String(hit._id)));
-    const current = await resolveCase(client, String(canonical._id));
+    const current = await resolveAutomationCase(client, String(canonical._id));
     if (ACTIVE_CASE_STATUSES.has(current.source?.status)) {
       return { id: String(canonical._id), created: false, adoptedAlertIds, duplicates };
     }
@@ -234,6 +259,7 @@ async function findOrCreateCase(
           status: 'open',
           assigned_to: route.assignedTo,
           alert_ids: [],
+          evidence_count: 0,
           correlation_key: route.correlationKey,
           correlation_keys: route.matchingKeys,
           correlation_routing: route.routing,
@@ -249,7 +275,10 @@ async function findOrCreateCase(
       return { id, created: true, adoptedAlertIds: [], duplicates: [] };
     } catch (error: any) {
       if (error?.meta?.statusCode !== 409) throw error;
-      const existing = await resolveCase(client, id);
+      // A conflicting deterministic create can be acknowledged before the
+      // winning document is searchable through the read alias. Refresh only
+      // the plugin-owned case family and resolve the winning claim.
+      const existing = await resolveAutomationCase(client, id);
       if (ACTIVE_CASE_STATUSES.has(existing.source?.status)) {
         return { id, created: false, adoptedAlertIds: [], duplicates: [] };
       }
@@ -314,7 +343,7 @@ async function closeDuplicateCases(
     await client.update({
       index: current.index,
       id: duplicate._id,
-      refresh: 'wait_for',
+      refresh: false,
       if_seq_no: current.seqNo,
       if_primary_term: current.primaryTerm,
       body: {
@@ -333,59 +362,54 @@ function remainderRoute(route: AutomationCaseRoute, alertIds = route.alertIds): 
   return { ...route, alertIds: [...alertIds].sort() };
 }
 
-async function rollbackEmptyCase(client: any, caseId: string, fence: AutomationCaseRouteFence): Promise<void> {
-  const current = await resolveCase(client, caseId);
-  if (!ACTIVE_CASE_STATUSES.has(current.source?.status)) return;
-  await fence();
-  await client.delete({
-    index: current.index,
-    id: caseId,
-    refresh: 'wait_for',
-    if_seq_no: current.seqNo,
-    if_primary_term: current.primaryTerm,
-  });
-}
-
 async function updateActiveCase(
   client: any,
   caseId: string,
   route: AutomationCaseRoute,
   linkedAlertIds: string[],
+  newlyLinked: number,
   conflicts: string[],
   now: string,
   action: string,
   fence: AutomationCaseRouteFence
 ): Promise<void> {
-  const current = await resolveCase(client, caseId);
+  const entry = buildHistoryEntry({ user: ACTOR, action, to: caseId });
+  entry.timestamp = now;
+  const current = await resolveAutomationCase(client, caseId);
   if (!ACTIVE_CASE_STATUSES.has(current.source?.status)) {
     throw new Error(`Active case ${caseId} closed during automation extension`);
   }
-  const entry = buildHistoryEntry({ user: ACTOR, action, to: caseId });
-  entry.timestamp = now;
   await fence();
+  // This script is additive and validates terminal state inside the write.
+  // Let OpenSearch retry it atomically instead of coordinating stale external
+  // sequence numbers across many ingestion batches targeting one hot case.
   await client.update({
     index: current.index,
     id: caseId,
-    refresh: 'wait_for',
-    if_seq_no: current.seqNo,
-    if_primary_term: current.primaryTerm,
+    refresh: false,
+    retry_on_conflict: 50,
     body: {
       script: {
         lang: 'painless',
         source:
           'if (ctx._source.status != "open" && ctx._source.status != "in_progress") { throw new IllegalStateException("case is terminal"); } ' +
           'def keys = new HashSet(); if (ctx._source.correlation_keys != null) { keys.addAll(ctx._source.correlation_keys); } keys.addAll(params.keys); def keyList = new ArrayList(keys); Collections.sort(keyList); ctx._source.correlation_keys = keyList; ' +
-          'def old = ctx._source.correlation_provenance; def linked = new HashSet(); def conflicts = new HashSet(); def provenanceKeys = new HashSet(); ' +
+          'def old = ctx._source.correlation_provenance; def compatibility = new HashSet(); if (ctx._source.alert_ids != null) { compatibility.addAll(ctx._source.alert_ids); } compatibility.addAll(params.linked); def compatibilityList = new ArrayList(compatibility); Collections.sort(compatibilityList); if (compatibilityList.size() > params.compatibility_limit) { compatibilityList = new ArrayList(compatibilityList.subList(0, params.compatibility_limit)); } ctx._source.alert_ids = compatibilityList; ' +
+          'def evidenceCount = ctx._source.evidence_count; if (evidenceCount == null) { evidenceCount = old != null && old.linked_count != null ? old.linked_count : compatibility.size() - params.newly_linked; } ctx._source.evidence_count = evidenceCount + params.newly_linked; ' +
+          'def linked = new HashSet(); def conflicts = new HashSet(); def provenanceKeys = new HashSet(); ' +
           'if (old != null && old.linked_alert_ids != null) { linked.addAll(old.linked_alert_ids); } if (old != null && old.evidence_conflicts != null) { conflicts.addAll(old.evidence_conflicts); } ' +
           'if (old != null && old.matching_keys != null) { provenanceKeys.addAll(old.matching_keys); } provenanceKeys.addAll(params.keys); linked.addAll(params.linked); conflicts.addAll(params.conflicts); ' +
-          'def provenanceKeyList = new ArrayList(provenanceKeys); def linkedList = new ArrayList(linked); def conflictList = new ArrayList(conflicts); Collections.sort(provenanceKeyList); Collections.sort(linkedList); Collections.sort(conflictList); ' +
-          'params.provenance.matching_keys = provenanceKeyList; params.provenance.linked_alert_ids = linkedList; params.provenance.linked_count = linked.size(); params.provenance.evidence_conflicts = conflictList; ' +
+          'def provenanceKeyList = new ArrayList(provenanceKeys); def linkedList = new ArrayList(linked); def conflictList = new ArrayList(conflicts); Collections.sort(provenanceKeyList); Collections.sort(linkedList); Collections.sort(conflictList); if (linkedList.size() > params.compatibility_limit) { linkedList = new ArrayList(linkedList.subList(0, params.compatibility_limit)); } if (conflictList.size() > params.compatibility_limit) { conflictList = new ArrayList(conflictList.subList(0, params.compatibility_limit)); } ' +
+          'def priorLinkedCount = old != null && old.linked_count != null ? old.linked_count : linked.size() - params.newly_linked; params.provenance.matching_keys = provenanceKeyList; params.provenance.linked_alert_ids = linkedList; params.provenance.linked_count = priorLinkedCount + params.newly_linked; params.provenance.evidence_conflicts = conflictList; ' +
           'ctx._source.correlation_provenance = params.provenance; if (params.ranks[params.severity] > params.ranks[ctx._source.severity]) { ctx._source.severity = params.severity; } ' +
-          'if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(params.entry); ctx._source.updated_at = params.now; ctx._source.updated_by = params.actor;',
+          'if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(params.entry); while (ctx._source.history.size() > params.history_limit) { ctx._source.history.remove(0); } ctx._source.updated_at = params.now; ctx._source.updated_by = params.actor;',
         params: {
           keys: route.matchingKeys,
           linked: linkedAlertIds,
+          newly_linked: newlyLinked,
           conflicts,
+          compatibility_limit: 1000,
+          history_limit: 200,
           provenance: provenance(route, [], []),
           ranks: SEVERITY_RANK,
           severity: route.severity,
@@ -442,7 +466,7 @@ export async function applyAutomationCaseRoutes(
     }
     // Recheck immediately before each extension. A terminal case is never passed
     // to evidence reconciliation and therefore can never be reopened implicitly.
-    const beforeLink = await resolveCase(client, found.id);
+    const beforeLink = await resolveAutomationCase(client, found.id);
     if (!ACTIVE_CASE_STATUSES.has(beforeLink.source?.status)) {
       result.remainder.push(remainderRoute(route, requested));
       continue;
@@ -454,14 +478,17 @@ export async function applyAutomationCaseRoutes(
       action: 'auto_case_link',
       timestamp: now,
       allowMove: found.duplicates.length > 0,
+      waitForRefresh: false,
       fence,
     });
     if (!linkage.ok) {
-      if (found.created && linkage.linked === 0) await rollbackEmptyCase(client, found.id, fence);
       throw new Error(linkage.errors.map((error) => error.message).join('; ') || 'Evidence linkage was incomplete');
     }
     if (requested.length && linkage.linked === 0) {
-      if (found.created) await rollbackEmptyCase(client, found.id, fence);
+      // Never compensate by deleting the deterministic case claim here. Case
+      // and evidence live in different index families, so another worker may
+      // already have observed the claim and linked evidence to it. The durable
+      // queue retry is the only concurrency-safe compensation.
       throw new Error(`Evidence linkage deterministically linked 0 of ${requested.length} requested alert(s)`);
     }
     const linkedIds = new Set(linkage.linkedAlertIds);
@@ -486,7 +513,10 @@ export async function applyAutomationCaseRoutes(
     result.conflicts.push(...linkage.conflictedAlertIds);
     result.caseIds.push(found.id);
     const action = found.created ? 'case_auto_created_evidence' : 'case_auto_extended';
-    await updateActiveCase(client, found.id, route, linkage.linkedAlertIds, linkage.conflictedAlertIds, now, action, fence);
+    await updateActiveCase(
+      client, found.id, route, linkage.linkedAlertIds, linkage.newlyLinked,
+      linkage.conflictedAlertIds, now, action, fence
+    );
     await fence();
     await appendActivityOnce(client, `case-route:${digest(`${found.id}|${action}|${route.correlationKey}|${requested.join('\u0000')}`)}`, {
       targetType: 'case', targetId: found.id, user: ACTOR, action,

@@ -1,0 +1,13 @@
+{
+  "wazuh-alert-manager-v2-*": {
+    "bytes": 36117,
+    "documents": 6
+  },
+  "wazuh-alert-status-v2-*": {
+    "bytes": 208,
+    "documents": 0
+  },
+  "wazuh-alerts-4.x-wam-benchmark": {
+    "error": "GET /wazuh-alerts-4.x-wam-benchmark/_stats/store,docs failed (404): {\"error\":{\"root_cause\":[{\"type\":\"index_not_found_exception\",\"reason\":\"no such index [wazuh-alerts-4.x-wam-benchmark]\",\"index\":\"wazuh-alerts-4.x-wam-benchmark\",\"resource.id\":\"wazuh-alerts-4.x-wam-benchmark\",\"resource.type\":\"index_or_alias\",\"index_uuid\":\"_na_\"}],\"type\":\"index_not_found_exception\",\"reason\":\"no such index [wazuh-alerts-4.x-wam-benchmark]\",\"index\":\"wazuh-alerts-4.x-wam-benchmark\",\"resource.id\":\"wazuh-alerts-4.x-wam-benchmark\",\"resource.type\":\"index_or_alias\",\"index_uuid\":\"_na_\"},\"status\":404}"
+  }
+}

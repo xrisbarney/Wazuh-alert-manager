@@ -3,6 +3,7 @@ import { ALERTS_WRITE_ALIAS, META_INDEX, SYNC_DLQ_INDEX } from '../../common';
 import { AlertManagerConfigType } from '../config';
 import { acquireOrRenewLock, releaseLock, generateHolderId } from './sync_lock';
 import {
+  activateAutomationEvents,
   enqueueAutomationEvents,
   reconcileAutomationAdmissions,
   recordAutomationEnqueueFailure,
@@ -344,16 +345,19 @@ export async function runSyncOnce(
     return;
   }
 
-  // Admission records and queue documents form the durable per-alert outbox.
-  // Write them before the operational upsert so a crash can never leave a
-  // newly inserted alert in the gap between storage and automation admission.
+  // Staged queue documents form the durable per-alert outbox. Write them
+  // before the operational upsert so a crash can never leave a newly inserted
+  // alert in the gap between storage and automation admission.
   // Existing operational documents are overlap/upgrade replay and are not
   // admitted; a genuinely new late alert is admitted regardless of timestamp.
   const automationEvents = projected.filter((doc) =>
     !existingLocations.has(doc.alert_uid) && !archivedStates.has(doc.alert_uid)
   );
+  let activatableAutomationEvents: typeof automationEvents = [];
   try {
     const enqueueResult = await enqueueAutomationEvents(client, automationEvents);
+    const candidateIds = new Set<string>(enqueueResult.candidateAlertUids || automationEvents.map((event) => event.alert_uid));
+    activatableAutomationEvents = automationEvents.filter((event) => candidateIds.has(event.alert_uid));
     if (enqueueResult.failed) {
       logger.error(
         `wazuh-alert-manager sync: ${enqueueResult.failed}/${automationEvents.length} automation queue items failed and were recorded in the automation DLQ`
@@ -434,9 +438,48 @@ export async function runSyncOnce(
   }
 
   try {
-    const bulkRes: any = body.length ? await client.bulk({ body }) : { body: { errors: false, items: [] } };
-    const bulkItems: any[] = bulkRes?.body?.items || [];
-    if (bulkRes?.body?.errors) {
+    // Publish the whole sync batch once. Automation workers can then resolve
+    // every queued document without forcing an expensive index refresh for
+    // each individual alert.
+    const operationChunks: any[][] = [];
+    const docsPerChunk = 1000;
+    for (let offset = 0; offset < body.length; offset += docsPerChunk * 2) {
+      operationChunks.push(body.slice(offset, offset + docsPerChunk * 2));
+    }
+    const chunkResults: any[] = new Array(operationChunks.length);
+    let chunkCursor = 0;
+    const bulkWorkers = Array.from(
+      { length: Math.min(2, operationChunks.length) },
+      async () => {
+        while (chunkCursor < operationChunks.length) {
+          const position = chunkCursor++;
+          const chunk = operationChunks[position];
+          const last = position === operationChunks.length - 1;
+          chunkResults[position] = await client.bulk({
+            body: chunk,
+            // Tests and older clients without an indices namespace still
+            // receive the original visibility guarantee. Production performs
+            // one explicit refresh after both bounded request lanes finish.
+            ...(!client.indices?.refresh && last ? { refresh: 'wait_for' } : {}),
+          });
+        }
+      }
+    );
+    await Promise.all(bulkWorkers);
+    const bulkItems: any[] = [];
+    let bulkErrors = false;
+    for (const response of chunkResults) {
+      bulkErrors = bulkErrors || response?.body?.errors === true;
+      bulkItems.push(...(response?.body?.items || []));
+    }
+    if (body.length && client.indices?.refresh) {
+      await client.indices.refresh({
+        index: Array.from(new Set(body
+          .filter((item: any) => item.update?._index)
+          .map((item: any) => item.update._index))),
+      });
+    }
+    if (bulkErrors || bulkItems.length !== writableProjected.length) {
       const failed = bulkItems
         .map((item: any, position: number) => ({ item, position }))
         .filter((x: any) => x.item.update?.error);
@@ -446,7 +489,7 @@ export async function runSyncOnce(
         logger.error(`wazuh-alert-manager sync: failed to record DLQ items: ${dlqError.message}`);
       }
       logger.error(
-        `wazuh-alert-manager sync: ${failed.length}/${hits.length} bulk updates failed. First error: ${JSON.stringify(
+        `wazuh-alert-manager sync: ${failed.length || 'incomplete response'}/${hits.length} bulk updates failed. First error: ${JSON.stringify(
           failed[0]?.item?.update?.error
         )}`
       );
@@ -457,6 +500,15 @@ export async function runSyncOnce(
   } catch (e: any) {
     logger.error(`wazuh-alert-manager sync: bulk upsert failed: ${e.message}`);
     return; // don't advance the watermark if the write failed entirely
+  }
+
+  try {
+    await activateAutomationEvents(client, activatableAutomationEvents);
+  } catch (e: any) {
+    // Keep the cursor in place. Staged records are also recovered by the
+    // automation admission reconciler, so a crash here cannot create a gap.
+    logger.error(`wazuh-alert-manager sync: automation activation failed: ${e.message}`);
+    return;
   }
 
   // Re-validate again before committing the watermark - the bulk upsert
@@ -495,6 +547,7 @@ export async function runSyncOnce(
     `wazuh-alert-manager sync: copied ${hits.length} alerts (${windowFrom} - ${windowTo}); ` +
       (batchFull ? 'window cursor checkpointed' : `watermark now ${windowTo}`)
   );
+  return batchFull;
 }
 
 export function startSyncJob(client: any, config: AlertManagerConfigType, logger: Logger): () => void {
@@ -508,13 +561,14 @@ export function startSyncJob(client: any, config: AlertManagerConfigType, logger
   let timer: ReturnType<typeof setTimeout> | null = null;
   let nextIntervalSeconds = config.sync.intervalSeconds;
 
-  const schedule = () => {
-    if (!stopped) timer = setTimeout(tick, nextIntervalSeconds * 1000);
+  const schedule = (delayMs = nextIntervalSeconds * 1000) => {
+    if (!stopped) timer = setTimeout(tick, delayMs);
   };
 
   const tick = async () => {
     if (stopped || running) return;
     running = true;
+    let continueWindowImmediately = false;
     const runtime = await loadSyncSettings(client, config);
     nextIntervalSeconds = runtime.intervalSeconds;
     const ttlSeconds = Math.max(runtime.intervalSeconds * 3, 120);
@@ -542,12 +596,17 @@ export function startSyncJob(client: any, config: AlertManagerConfigType, logger
           return;
         }
         holdingLock = true;
-        return runSyncOnce(client, config, logger, holderId, ttlSeconds);
+        return runSyncOnce(client, config, logger, holderId, ttlSeconds)
+          .then((batchFull) => { continueWindowImmediately = batchFull === true; });
       })
       .catch((e) => logger.error(`wazuh-alert-manager sync: unexpected error: ${e.message}`))
       .finally(() => {
         running = false;
-        schedule();
+        // A full batch means a persisted PIT cursor still has unread alerts in
+        // the same frozen window. Continue immediately instead of idling for a
+        // normal polling interval; interval pacing resumes after the window is
+        // drained or on any failure.
+        schedule(continueWindowImmediately ? 0 : nextIntervalSeconds * 1000);
       });
   };
 
