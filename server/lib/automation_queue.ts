@@ -2,7 +2,6 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { Logger } from '../../../../src/core/server';
 import {
-  ALERT_STATUS_INDEX,
   AUTOMATION_ADMISSION_RECONCILE_BATCH,
   AUTOMATION_BULK_MAX_ACTIONS,
   AUTOMATION_BULK_MAX_BYTES,
@@ -20,12 +19,23 @@ import {
 } from '../../common';
 import { assertManagedWriteTarget } from './index_namespace';
 import { evaluateCorrelationRules } from './correlation_eval';
+import { evaluateAlertMatch } from './correlation';
+import { evaluateEntityExpression } from './entity_expression';
+import { normalizeAutomationRules } from './automation_planner';
+import { resolveAlerts } from './index_resolution';
 
 const MAX_ATTEMPTS = 8;
 const BASE_BACKOFF_MS = 5000;
 const MAX_BACKOFF_MS = 5 * 60 * 1000;
 const DEFAULT_LEASE_SECONDS = 120;
 const DEFAULT_POLL_MS = 5000;
+const DEFAULT_WORKER_CONCURRENCY = 8;
+// Amortize fixed rule-window and case-route costs across a bounded cohort.
+// 256 projections remain well below the evaluator's 4,096-link safety limit
+// while avoiding dozens of repeated reconciliation cycles at high volume.
+const DEFAULT_WORKER_BATCH_SIZE = 256;
+const ADMISSION_RECONCILE_INTERVAL_MS = 5000;
+const SNAPSHOT_CACHE_SIZE = 32;
 
 export interface AutomationEvent {
   alert_uid: string;
@@ -49,6 +59,7 @@ interface AutomationAdmission {
   snapshotId: string;
   revisions: Array<{ id: string; revision: number }>;
   admissionCutoff?: string;
+  workerLane?: number;
 }
 
 interface Fence {
@@ -114,12 +125,27 @@ export function chunkBulkPairs(body: any[]): any[][] {
 }
 
 async function executeBulkPairs(client: any, body: any[]): Promise<any[]> {
+  const chunks = chunkBulkPairs(body);
+  const results: any[][] = new Array(chunks.length);
+  // A 10k sync batch contains many bounded bulk requests. Sending a small
+  // number concurrently removes network round-trip serialization while still
+  // applying backpressure to OpenSearch and preserving item order for callers.
+  const concurrency = Math.min(4, chunks.length);
+  let cursor = 0;
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (cursor < chunks.length) {
+      const position = cursor++;
+      const chunk = chunks[position];
+      const result: any = await client.bulk({ body: chunk });
+      const chunkItems = result?.body?.items || [];
+      if (chunkItems.length !== chunk.length / 2) throw new Error('automation bulk returned an incomplete item list');
+      results[position] = chunkItems;
+    }
+  });
+  await Promise.all(workers);
   const items: any[] = [];
-  for (const chunk of chunkBulkPairs(body)) {
-    const result: any = await client.bulk({ body: chunk });
-    const chunkItems = result?.body?.items || [];
-    if (chunkItems.length !== chunk.length / 2) throw new Error('automation bulk returned an incomplete item list');
-    items.push(...chunkItems);
+  for (const result of results) {
+    items.push(...result);
   }
   return items;
 }
@@ -130,6 +156,30 @@ export function automationEventId(alertUid: string): string {
 
 export function automationExecutionId(eventId: string, rulesetSnapshot = 'rules-v1'): string {
   return `event:${eventId}:rules:${rulesetSnapshot}`;
+}
+
+export function automationWorkerLane(eventId: string): number {
+  const prefix = crypto.createHash('sha256').update(eventId).digest().readUInt32BE(0);
+  return prefix % DEFAULT_WORKER_CONCURRENCY;
+}
+
+export function automationAdmissionLane(snapshot: AutomationRulesetSnapshot, event: AutomationEvent): number {
+  const matchingRuleIds = candidateRuleIds(normalizeAutomationRules(snapshot.rules as any[]), event);
+  // Shared rate-limit and trigger documents are rule-scoped. Rule-affine
+  // sharding removes avoidable OCC contention while non-candidates retain the
+  // full lane fan-out needed for high-volume negative traffic.
+  return automationWorkerLane(matchingRuleIds.length ? matchingRuleIds.join('|') : automationEventId(event.alert_uid));
+}
+
+function candidateRuleIds(rules: ReturnType<typeof normalizeAutomationRules>, event: AutomationEvent): string[] {
+  return rules
+    .filter((rule) => {
+      if (!rule.enabled || !evaluateAlertMatch(rule, event).matched) return false;
+      const expression = rule.trigger.entityExpression;
+      return !expression?.groups?.length || evaluateEntityExpression(expression, event).matched;
+    })
+    .map((rule) => rule.id)
+    .sort();
 }
 
 export function retryDelayMs(attempts: number): number {
@@ -281,6 +331,11 @@ function snapshotDocumentId(snapshotId: string) {
   return `${AUTOMATION_RULESET_SNAPSHOT_PREFIX}${snapshotId}`;
 }
 
+// Ruleset snapshots are content-addressed and immutable. Cache them per
+// OpenSearch client so high-volume workers do not reload and re-hash the same
+// definition for every queued alert.
+const rulesetSnapshotCaches = new WeakMap<object, Map<string, Promise<AutomationRulesetSnapshot>>>();
+
 async function persistRulesetSnapshot(client: any, snapshot: AutomationRulesetSnapshot): Promise<void> {
   try {
     await client.create({
@@ -302,19 +357,40 @@ async function persistRulesetSnapshot(client: any, snapshot: AutomationRulesetSn
 
 async function loadRulesetSnapshot(client: any, snapshotId: string): Promise<AutomationRulesetSnapshot> {
   if (!snapshotId) throw new Error('automation event has no ruleset snapshot reference');
-  const result: any = await client.get({
-    index: AUTOMATION_EXECUTIONS_INDEX,
-    id: snapshotDocumentId(snapshotId),
-  });
-  const source = result?.body?._source || {};
-  const rules = source.rules_snapshot;
-  if (source.document_type !== 'ruleset_snapshot' || source.snapshot_sha256 !== snapshotId || !Array.isArray(rules)) {
-    throw new Error(`automation ruleset snapshot ${snapshotId} is missing or invalid`);
+  let cache = rulesetSnapshotCaches.get(client);
+  if (!cache) {
+    cache = new Map();
+    rulesetSnapshotCaches.set(client, cache);
   }
-  const serialized = JSON.stringify(canonicalize(rules));
-  const actual = crypto.createHash('sha256').update(serialized).digest('hex');
-  if (actual !== snapshotId) throw new Error(`automation ruleset snapshot ${snapshotId} failed integrity validation`);
-  return { id: snapshotId, rules, revisions: source.rule_revisions || [] };
+  const cached = cache.get(snapshotId);
+  if (cached) return cached;
+  const pending = (async () => {
+    const result: any = await client.get({
+      index: AUTOMATION_EXECUTIONS_INDEX,
+      id: snapshotDocumentId(snapshotId),
+    });
+    const source = result?.body?._source || {};
+    const rules = source.rules_snapshot;
+    if (source.document_type !== 'ruleset_snapshot' || source.snapshot_sha256 !== snapshotId || !Array.isArray(rules)) {
+      throw new Error(`automation ruleset snapshot ${snapshotId} is missing or invalid`);
+    }
+    const serialized = JSON.stringify(canonicalize(rules));
+    const actual = crypto.createHash('sha256').update(serialized).digest('hex');
+    if (actual !== snapshotId) throw new Error(`automation ruleset snapshot ${snapshotId} failed integrity validation`);
+    return { id: snapshotId, rules, revisions: source.rule_revisions || [] };
+  })();
+  cache.set(snapshotId, pending);
+  while (cache.size > SNAPSHOT_CACHE_SIZE) {
+    const oldest = cache.keys().next().value;
+    if (!oldest) break;
+    cache.delete(oldest);
+  }
+  try {
+    return await pending;
+  } catch (error) {
+    cache.delete(snapshotId);
+    throw error;
+  }
 }
 
 async function writeDlq(
@@ -359,6 +435,10 @@ async function writeDlq(
 
 export async function recordAutomationEnqueueFailure(client: any, events: AutomationEvent[], error: any) {
   const admissions = await loadAdmissions(client, events.map((event) => automationEventId(event.alert_uid)));
+  if (!admissions.length) {
+    await writeDlq(client, events, 'enqueue', error);
+    return;
+  }
   for (const admission of admissions) {
     await writeDlq(client, [admission.event], 'enqueue', error, 0, admission.snapshotId, admission.revisions, admission.admissionCutoff);
     await finishAdmissions(client, [admission], 'admission_dlq');
@@ -370,7 +450,7 @@ async function queueCounts(client: any): Promise<{ active: number; deferred: num
     index: AUTOMATION_QUEUE_INDEX,
     body: {
       size: 0,
-      query: { terms: { state: ['pending', 'claimed', 'retry', 'deferred'] } },
+      query: { terms: { state: ['staged', 'pending', 'claimed', 'retry', 'deferred'] } },
       aggs: { states: { terms: { field: 'state', size: 10 } } },
     },
   });
@@ -378,7 +458,7 @@ async function queueCounts(client: any): Promise<{ active: number; deferred: num
     (result?.body?.aggregations?.states?.buckets || []).map((bucket: any) => [bucket.key, bucket.doc_count])
   );
   return {
-    active: Number(states.pending || 0) + Number(states.claimed || 0) + Number(states.retry || 0),
+    active: Number(states.staged || 0) + Number(states.pending || 0) + Number(states.claimed || 0) + Number(states.retry || 0),
     deferred: Number(states.deferred || 0),
   };
 }
@@ -392,11 +472,13 @@ async function createAdmissions(client: any, events: AutomationEvent[], snapshot
   const body: any[] = [];
   for (const event of events) {
     const eventId = automationEventId(event.alert_uid);
+    const workerLane = automationAdmissionLane(snapshot, event);
     body.push({ create: { _index: assertManagedWriteTarget(AUTOMATION_EXECUTIONS_INDEX), _id: admissionId(eventId) } });
     body.push({
       execution_id: admissionId(eventId), event_id: eventId, alert_uid: event.alert_uid,
       state: 'admission_pending', admission_reason: 'first_ingestion', ruleset_snapshot: snapshot.id,
       rule_revisions: snapshot.revisions,
+      worker_lane: workerLane,
       admission_cutoff: now,
       payload: event, started_at: now, updated_at: now,
     });
@@ -422,6 +504,7 @@ async function loadAdmissions(client: any, eventIds: string[]): Promise<Automati
     snapshotId: doc._source.ruleset_snapshot,
     revisions: doc._source.rule_revisions || [],
     admissionCutoff: doc._source.admission_cutoff,
+    workerLane: doc._source.worker_lane,
   }));
 }
 
@@ -436,7 +519,11 @@ async function finishAdmissions(client: any, admissions: AutomationAdmission[], 
   await executeBulkPairs(client, body);
 }
 
-async function enqueueAdmissions(client: any, admissions: AutomationAdmission[]) {
+async function enqueueAdmissions(
+  client: any,
+  admissions: AutomationAdmission[],
+  finishAdmissionMarkers = true
+) {
   if (!admissions.length) return { enqueued: 0, deferred: 0, duplicates: 0, failed: 0 };
   const [settings, counts] = await Promise.all([
     loadAutomationSettings(client),
@@ -449,7 +536,7 @@ async function enqueueAdmissions(client: any, admissions: AutomationAdmission[])
   const overflow: AutomationAdmission[] = [];
   const submitted: AutomationAdmission[] = [];
   for (const admission of admissions) {
-    const { event, snapshotId, revisions, admissionCutoff } = admission;
+    const { event, snapshotId, revisions, admissionCutoff, workerLane } = admission;
     const eventId = automationEventId(event.alert_uid);
     const defer = settings.paused || admitted >= settings.maxBacklog;
     if (defer && deferredCount >= settings.maxDeferred) {
@@ -462,10 +549,15 @@ async function enqueueAdmissions(client: any, admissions: AutomationAdmission[])
     body.push({
       event_id: eventId,
       alert_uid: event.alert_uid,
+      event_timestamp: event['@timestamp'] || event.ingested_at || now,
+      worker_lane: Number.isInteger(workerLane) ? workerLane : automationWorkerLane(eventId),
       ruleset_snapshot: snapshotId,
       rule_revisions: revisions,
       admission_cutoff: admissionCutoff,
-      state: defer ? 'deferred' : 'pending',
+      // The operational alert is written after durable admission. Workers may
+      // only claim this record after sync publishes it below.
+      state: 'staged',
+      target_state: defer ? 'deferred' : 'pending',
       enqueued_at: now,
       available_at: now,
       attempts: 0,
@@ -484,7 +576,7 @@ async function enqueueAdmissions(client: any, admissions: AutomationAdmission[])
     const operation = items[position]?.create;
     if (operation?.status >= 200 && operation?.status < 300 && !operation.error) {
       const source = body[position * 2 + 1];
-      if (source.state === 'deferred') deferred += 1;
+      if (source.target_state === 'deferred') deferred += 1;
       else enqueued += 1;
       admittedAdmissions.push(admission);
     } else if (operation?.status === 409) {
@@ -492,37 +584,106 @@ async function enqueueAdmissions(client: any, admissions: AutomationAdmission[])
       admittedAdmissions.push(admission);
     } else failedAdmissions.push(admission);
   });
-  await finishAdmissions(client, admittedAdmissions, 'admitted');
+  if (finishAdmissionMarkers) await finishAdmissions(client, admittedAdmissions, 'admitted');
   for (const admission of failedAdmissions) {
     await writeDlq(client, [admission.event], 'enqueue-item', new Error('queue bulk item failed'), 0, admission.snapshotId, admission.revisions, admission.admissionCutoff);
-    await finishAdmissions(client, [admission], 'admission_dlq');
+    if (finishAdmissionMarkers) await finishAdmissions(client, [admission], 'admission_dlq');
   }
   for (const admission of overflow) {
     await writeDlq(client, [admission.event], 'admission', new Error('automation deferred backlog limit reached'), 0, admission.snapshotId, admission.revisions, admission.admissionCutoff);
-    await finishAdmissions(client, [admission], 'admission_dlq');
+    if (finishAdmissionMarkers) await finishAdmissions(client, [admission], 'admission_dlq');
   }
   return { enqueued, deferred, duplicates, failed: failedAdmissions.length + overflow.length };
 }
 
-/** Admission records precede the queue outbox and retain the exact ingestion-time ruleset. */
+export async function activateAutomationEvents(client: any, events: AutomationEvent[]): Promise<number> {
+  const ids = Array.from(new Set(events.map((event) => automationEventId(event.alert_uid)).filter(Boolean)));
+  if (!ids.length) return 0;
+  const now = new Date().toISOString();
+  const body: any[] = [];
+  for (const id of ids) {
+    body.push({ update: {
+      _index: assertManagedWriteTarget(AUTOMATION_QUEUE_INDEX),
+      _id: id,
+      retry_on_conflict: 3,
+    } });
+    body.push({ script: {
+      lang: 'painless',
+      source:
+        'if (ctx._source.state == "staged") { ctx._source.state = ctx._source.target_state == null ? "pending" : ctx._source.target_state; ' +
+        'ctx._source.target_state = null; ctx._source.available_at = params.now; ctx._source.updated_at = params.now; } else { ctx.op = "noop"; }',
+      params: { now },
+    } });
+  }
+  const items = await executeBulkPairs(client, body);
+  const invalid = items.filter((item: any) => {
+    const operation = item.update;
+    return !operation || operation.error || operation.status < 200 || operation.status >= 300;
+  });
+  if (items.length !== ids.length || invalid.length) {
+    throw new Error(`automation queue activation failed for ${invalid.length || 'unknown'} item(s)`);
+  }
+  return items.filter((item: any) => item.update?.result !== 'noop').length;
+}
+
+async function reconcileStagedAutomationEvents(client: any): Promise<number> {
+  const result: any = await client.search({
+    index: AUTOMATION_QUEUE_INDEX,
+    body: {
+      size: AUTOMATION_ADMISSION_RECONCILE_BATCH,
+      _source: false,
+      sort: [{ enqueued_at: 'asc' }, { event_id: 'asc' }],
+      query: { term: { state: 'staged' } },
+    },
+  });
+  const ids = (result?.body?.hits?.hits || []).map((hit: any) => String(hit._id));
+  if (!ids.length) return 0;
+  const locations = await resolveAlerts(client, ids);
+  return activateAutomationEvents(
+    client,
+    ids.filter((id: string) => locations.has(id)).map((alert_uid: string) => ({ alert_uid }))
+  );
+}
+
+/** Candidate queue records retain the exact ingestion-time ruleset. */
 export async function enqueueAutomationEvents(client: any, events: AutomationEvent[]) {
-  if (!events.length) return { enqueued: 0, deferred: 0, duplicates: 0, failed: 0 };
-  let snapshot: AutomationRulesetSnapshot;
+  if (!events.length) return { enqueued: 0, deferred: 0, duplicates: 0, failed: 0, candidateAlertUids: [] as string[] };
   try {
-    snapshot = await captureRulesetSnapshot(client);
+    const snapshot = await captureRulesetSnapshot(client);
+    const normalizedRules = normalizeAutomationRules(snapshot.rules as any[]);
+    const candidates = events.map((event) => ({
+      event,
+      matchingRuleIds: candidateRuleIds(normalizedRules, event),
+    })).filter((candidate) => candidate.matchingRuleIds.length > 0);
+    if (!candidates.length) {
+      return { enqueued: 0, deferred: 0, duplicates: 0, failed: 0, candidateAlertUids: [] as string[] };
+    }
     await persistRulesetSnapshot(client, snapshot);
-    await createAdmissions(client, events, snapshot);
+    const admissionCutoff = new Date().toISOString();
+    // The staged queue document is itself the durable admission record: it
+    // contains the immutable ruleset reference, cutoff, lane, and full event
+    // payload. The operational bulk is not attempted until every queue create
+    // has a durable outcome. If this process dies during the queue bulk, the
+    // sync cursor remains unchanged and deterministic IDs safely replay it.
+    // This removes two per-alert admission-index writes from the ingestion hot
+    // path while retaining the older marker reconciler for upgrade recovery.
+    const admissions: AutomationAdmission[] = candidates.map(({ event, matchingRuleIds }) => ({
+      event,
+      snapshotId: snapshot.id,
+      revisions: snapshot.revisions || [],
+      admissionCutoff,
+      workerLane: automationWorkerLane(matchingRuleIds.join('|')),
+    }));
+    return {
+      ...(await enqueueAdmissions(client, admissions, false)),
+      candidateAlertUids: candidates.map(({ event }) => event.alert_uid),
+    };
   } catch (error: any) {
     // A user-created legacy over-limit ruleset disables automation admission
     // for this batch, but must never halt native alert ingestion.
     if (!error.automationRulesOverLimit) error.automationAdmissionUnsafe = true;
     throw error;
   }
-  const admissions = await loadAdmissions(client, events.map((event) => automationEventId(event.alert_uid)));
-  if (admissions.length !== events.length) {
-    throw Object.assign(new Error('automation admission marker could not be reloaded'), { automationAdmissionUnsafe: true });
-  }
-  return enqueueAdmissions(client, admissions);
 }
 
 /** Recover only unfinished, explicitly marked first-ingestion admissions. */
@@ -542,28 +703,43 @@ export async function reconcileAutomationAdmissions(client: any) {
       snapshotId: hit._source.ruleset_snapshot,
       revisions: hit._source.rule_revisions || [],
       admissionCutoff: hit._source.admission_cutoff,
+      workerLane: hit._source.worker_lane,
     })).filter((admission: AutomationAdmission) => admission.event?.alert_uid && admission.snapshotId);
-  return enqueueAdmissions(client, admissions);
+  const admissionResult = await enqueueAdmissions(client, admissions);
+  await reconcileStagedAutomationEvents(client);
+  return admissionResult;
 }
 
 function workerHolderId() {
   return `${os.hostname()}-${process.pid}-automation-${crypto.randomBytes(4).toString('hex')}`;
 }
 
-async function acquireWorkerLease(client: any, holderId: string, ttlSeconds: number): Promise<Fence | null> {
+export function automationWorkerLeaseId(lane: number): string {
+  if (!Number.isInteger(lane) || lane < 0 || lane >= DEFAULT_WORKER_CONCURRENCY) {
+    throw new Error(`automation worker lane must be between 0 and ${DEFAULT_WORKER_CONCURRENCY - 1}`);
+  }
+  return lane === 0 ? AUTOMATION_WORKER_LEASE_ID : `${AUTOMATION_WORKER_LEASE_ID}:${lane}`;
+}
+
+async function acquireWorkerLease(
+  client: any,
+  holderId: string,
+  ttlSeconds: number,
+  workerLeaseId = AUTOMATION_WORKER_LEASE_ID
+): Promise<Fence | null> {
   const now = Date.now();
   let current: any;
   try {
-    current = await client.get({ index: AUTOMATION_EXECUTIONS_INDEX, id: AUTOMATION_WORKER_LEASE_ID });
+    current = await client.get({ index: AUTOMATION_EXECUTIONS_INDEX, id: workerLeaseId });
   } catch (error: any) {
     if (error?.meta?.statusCode !== 404) throw error;
     const fence = { holderId, generation: 1, token: randomToken() };
     try {
       await client.create({
         index: AUTOMATION_EXECUTIONS_INDEX,
-        id: AUTOMATION_WORKER_LEASE_ID,
+        id: workerLeaseId,
         body: {
-          execution_id: AUTOMATION_WORKER_LEASE_ID,
+          execution_id: workerLeaseId,
           state: 'lease',
           holder_id: holderId,
           fencing_generation: fence.generation,
@@ -590,7 +766,7 @@ async function acquireWorkerLease(client: any, holderId: string, ttlSeconds: num
   try {
     await client.update({
       index: AUTOMATION_EXECUTIONS_INDEX,
-      id: AUTOMATION_WORKER_LEASE_ID,
+      id: workerLeaseId,
       if_seq_no: current.body._seq_no,
       if_primary_term: current.body._primary_term,
       body: { doc: {
@@ -636,13 +812,17 @@ async function renewOwnedLease(client: any, index: string, id: string, fence: Fe
   }
 }
 
-async function releaseWorkerLease(client: any, fence: Fence) {
+async function releaseWorkerLease(
+  client: any,
+  fence: Fence,
+  workerLeaseId = AUTOMATION_WORKER_LEASE_ID
+) {
   try {
-    const current: any = await client.get({ index: AUTOMATION_EXECUTIONS_INDEX, id: AUTOMATION_WORKER_LEASE_ID });
+    const current: any = await client.get({ index: AUTOMATION_EXECUTIONS_INDEX, id: workerLeaseId });
     if (!owns(current.body._source || {}, fence, 'lease')) return;
     await client.delete({
       index: AUTOMATION_EXECUTIONS_INDEX,
-      id: AUTOMATION_WORKER_LEASE_ID,
+      id: workerLeaseId,
       if_seq_no: current.body._seq_no,
       if_primary_term: current.body._primary_term,
     });
@@ -651,7 +831,12 @@ async function releaseWorkerLease(client: any, fence: Fence) {
   }
 }
 
-async function claimNext(client: any, fence: Fence, leaseSeconds: number): Promise<QueueClaim | null> {
+async function claimNext(
+  client: any,
+  fence: Fence,
+  leaseSeconds: number,
+  workerLeaseId = AUTOMATION_WORKER_LEASE_ID
+): Promise<QueueClaim | null> {
   const settings = await loadAutomationSettings(client);
   if (settings.paused) return null;
   const now = new Date().toISOString();
@@ -659,8 +844,13 @@ async function claimNext(client: any, fence: Fence, leaseSeconds: number): Promi
     index: AUTOMATION_QUEUE_INDEX,
     seq_no_primary_term: true,
     body: {
-      size: 10,
-      sort: [{ available_at: 'asc' }, { enqueued_at: 'asc' }, { event_id: 'asc' }],
+      size: 50,
+      sort: [
+        { available_at: 'asc' },
+        { event_timestamp: { order: 'asc', missing: '_last', unmapped_type: 'date' } },
+        { enqueued_at: 'asc' },
+        { event_id: 'asc' },
+      ],
       query: { bool: { should: [
         { term: { state: 'pending' } },
         { term: { state: 'deferred' } },
@@ -686,7 +876,7 @@ async function claimNext(client: any, fence: Fence, leaseSeconds: number): Promi
     if (!(await renewOwnedLease(
       client,
       AUTOMATION_EXECUTIONS_INDEX,
-      AUTOMATION_WORKER_LEASE_ID,
+      workerLeaseId,
       fence,
       leaseSeconds,
       'lease'
@@ -737,7 +927,13 @@ async function updateClaim(client: any, claim: QueueClaim, doc: any) {
   }
 }
 
-async function claimExecution(client: any, claim: QueueClaim, workerFence: Fence, leaseSeconds: number) {
+async function claimExecution(
+  client: any,
+  claim: QueueClaim,
+  workerFence: Fence,
+  leaseSeconds: number,
+  workerLeaseId = AUTOMATION_WORKER_LEASE_ID
+) {
   const rulesetSnapshot = claim.source.ruleset_snapshot || 'rules-v1';
   const executionId = automationExecutionId(claim.source.event_id, rulesetSnapshot);
   const now = Date.now();
@@ -763,7 +959,7 @@ async function claimExecution(client: any, claim: QueueClaim, workerFence: Fence
   } catch (error: any) {
     if (error?.meta?.statusCode !== 404) throw error;
     const workerOwned = await renewOwnedLease(
-      client, AUTOMATION_EXECUTIONS_INDEX, AUTOMATION_WORKER_LEASE_ID, workerFence, leaseSeconds, 'lease'
+      client, AUTOMATION_EXECUTIONS_INDEX, workerLeaseId, workerFence, leaseSeconds, 'lease'
     );
     const queueOwned = workerOwned && await renewOwnedLease(
       client, AUTOMATION_QUEUE_INDEX, claim.id, claim.fence, leaseSeconds, 'claimed'
@@ -783,7 +979,7 @@ async function claimExecution(client: any, claim: QueueClaim, workerFence: Fence
     return { executionId, completed: false, busy: true };
   }
   const workerOwned = await renewOwnedLease(
-    client, AUTOMATION_EXECUTIONS_INDEX, AUTOMATION_WORKER_LEASE_ID, workerFence, leaseSeconds, 'lease'
+    client, AUTOMATION_EXECUTIONS_INDEX, workerLeaseId, workerFence, leaseSeconds, 'lease'
   );
   const queueOwned = workerOwned && await renewOwnedLease(
     client, AUTOMATION_QUEUE_INDEX, claim.id, claim.fence, leaseSeconds, 'claimed'
@@ -827,7 +1023,8 @@ function startHeartbeat(
   workerFence: Fence,
   claim: QueueClaim,
   executionId: string,
-  leaseSeconds: number
+  leaseSeconds: number,
+  workerLeaseId = AUTOMATION_WORKER_LEASE_ID
 ) {
   let stopped = false;
   let lost = false;
@@ -837,7 +1034,7 @@ function startHeartbeat(
   const beat = () => {
     inFlight = (async () => {
       const worker = await renewOwnedLease(
-        client, AUTOMATION_EXECUTIONS_INDEX, AUTOMATION_WORKER_LEASE_ID, workerFence, leaseSeconds, 'lease'
+        client, AUTOMATION_EXECUTIONS_INDEX, workerLeaseId, workerFence, leaseSeconds, 'lease'
       );
       const queue = worker && await renewOwnedLease(
         client, AUTOMATION_QUEUE_INDEX, claim.id, claim.fence, leaseSeconds, 'claimed'
@@ -866,13 +1063,14 @@ export async function runAutomationWorkerOnce(
   logger: Logger,
   holderId: string,
   leaseSeconds = DEFAULT_LEASE_SECONDS,
-  evaluator: typeof evaluateCorrelationRules = evaluateCorrelationRules
+  evaluator: typeof evaluateCorrelationRules = evaluateCorrelationRules,
+  workerLeaseId = AUTOMATION_WORKER_LEASE_ID
 ) {
-  const workerFence = await acquireWorkerLease(client, holderId, leaseSeconds);
+  const workerFence = await acquireWorkerLease(client, holderId, leaseSeconds, workerLeaseId);
   if (!workerFence) return false;
-  const claim = await claimNext(client, workerFence, leaseSeconds);
+  const claim = await claimNext(client, workerFence, leaseSeconds, workerLeaseId);
   if (!claim) return false;
-  const execution = await claimExecution(client, claim, workerFence, leaseSeconds);
+  const execution = await claimExecution(client, claim, workerFence, leaseSeconds, workerLeaseId);
   if (execution.lost) return false;
   if (execution.busy) {
     await updateClaim(client, claim, {
@@ -891,9 +1089,8 @@ export async function runAutomationWorkerOnce(
     });
   }
 
-  const heartbeat = startHeartbeat(client, workerFence, claim, execution.executionId, leaseSeconds);
+  const heartbeat = startHeartbeat(client, workerFence, claim, execution.executionId, leaseSeconds, workerLeaseId);
   try {
-    await client.indices.refresh({ index: ALERT_STATUS_INDEX });
     // Resolve immutable definitions at execution time. Missing or corrupt
     // snapshots fail closed and are retried/DLQ'd without consulting live rules.
     const snapshot = await loadRulesetSnapshot(client, claim.source.ruleset_snapshot);
@@ -904,7 +1101,7 @@ export async function runAutomationWorkerOnce(
         let running: any;
         try {
           [worker, queue, running] = await Promise.all([
-            client.get({ index: AUTOMATION_EXECUTIONS_INDEX, id: AUTOMATION_WORKER_LEASE_ID }),
+            client.get({ index: AUTOMATION_EXECUTIONS_INDEX, id: workerLeaseId }),
             client.get({ index: AUTOMATION_QUEUE_INDEX, id: claim.id }),
             client.get({ index: AUTOMATION_EXECUTIONS_INDEX, id: execution.executionId }),
           ]);
@@ -993,40 +1190,471 @@ export async function runAutomationWorkerOnce(
   }
 }
 
-export function startAutomationWorker(client: any, logger: Logger): () => void {
-  const holderId = workerHolderId();
-  let stopped = false;
-  let running = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let lastFence: Fence | null = null;
-  const schedule = (delay = DEFAULT_POLL_MS) => {
-    if (!stopped) timer = setTimeout(tick, delay);
+export async function runAutomationWorkerBatchOnce(
+  client: any,
+  logger: Logger,
+  holderId: string,
+  lane: number,
+  leaseSeconds = DEFAULT_LEASE_SECONDS,
+  batchSize = DEFAULT_WORKER_BATCH_SIZE,
+  evaluator: typeof evaluateCorrelationRules = evaluateCorrelationRules
+) {
+  const workerLeaseId = automationWorkerLeaseId(lane);
+  const workerFence = await acquireWorkerLease(client, holderId, leaseSeconds, workerLeaseId);
+  if (!workerFence) return false;
+  const claims = await claimBatch(client, workerFence, leaseSeconds, workerLeaseId, lane, batchSize);
+  if (!claims.length) return false;
+  const { runnable, completed, busy } = await claimBatchExecutions(client, claims, leaseSeconds);
+  const now = new Date().toISOString();
+  if (completed.length) {
+    await transitionBatchOwned(
+      client,
+      AUTOMATION_QUEUE_INDEX,
+      completed.map((claim) => ({ id: claim.id, fence: claim.fence, state: 'claimed' })),
+      () => ({ state: 'completed', completed_at: now, holder_id: null, lease_expires_at: null, lease_token: null })
+    );
+  }
+  if (busy.length) {
+    await transitionBatchOwned(
+      client,
+      AUTOMATION_QUEUE_INDEX,
+      busy.map((claim) => ({ id: claim.id, fence: claim.fence, state: 'claimed' })),
+      (item) => {
+        const claim = busy.find((candidate) => candidate.id === item.id)!;
+        return {
+          state: 'retry',
+          available_at: new Date(Date.now() + retryDelayMs(claim.source.attempts)).toISOString(),
+          holder_id: null,
+          lease_expires_at: null,
+          lease_token: null,
+        };
+      }
+    );
+  }
+  if (!runnable.length) return completed.length > 0 || busy.length > 0;
+
+  let lastOwnershipCheck = 0;
+  const guard = {
+    async assertOwned() {
+      // One lane lease fences the whole batch. Cache a successful read briefly;
+      // the heartbeat renews document leases and final scripts still verify
+      // every claim token before acknowledging durable work.
+      if (Date.now() - lastOwnershipCheck < 1000) return;
+      await assertBatchOwned(client, workerLeaseId, workerFence, runnable);
+      lastOwnershipCheck = Date.now();
+    },
+    async check() {
+      try { await this.assertOwned(); return true; } catch (error) { return false; }
+    },
   };
-  const tick = async () => {
-    if (stopped || running) return;
-    running = true;
+  const heartbeat = startBatchHeartbeat(client, workerLeaseId, workerFence, runnable, leaseSeconds);
+  let outcome: any;
+  try {
+    const snapshot = await loadRulesetSnapshot(client, runnable[0].claim.source.ruleset_snapshot);
+    outcome = await (evaluator as any)(
+      client,
+      runnable.map((execution) => ({
+        _id: execution.claim.source.alert_uid,
+        _source: execution.claim.source.payload,
+      })),
+      logger,
+      undefined,
+      { ...snapshot, admission_cutoff: runnable[0].claim.source.admission_cutoff },
+      guard
+    );
+    await guard.assertOwned();
+  } catch (error: any) {
+    outcome = {
+      status: 'retryable_failure', counters: {}, appliedRuleIds: [],
+      failures: [{ stage: error?.ownershipLost ? 'execution_state' : 'rule_loading', message: error?.message || String(error) }],
+    };
+  }
+  if (!(await heartbeat.stop())) return false;
+
+  if (outcome.status === 'terminal_success') {
+    const completedAt = new Date().toISOString();
+    const executionDone = await transitionBatchOwned(
+      client,
+      AUTOMATION_EXECUTIONS_INDEX,
+      runnable.map((execution) => ({ id: execution.executionId, fence: execution.claim.fence, state: 'running' })),
+      () => ({
+        state: 'completed', completed_at: completedAt, updated_at: completedAt, lease_expires_at: null,
+        applied_rule_ids: outcome.appliedRuleIds, counters: outcome.counters,
+      })
+    );
+    if (!executionDone) return false;
+    return transitionBatchOwned(
+      client,
+      AUTOMATION_QUEUE_INDEX,
+      runnable.map((execution) => ({ id: execution.claim.id, fence: execution.claim.fence, state: 'claimed' })),
+      () => ({ state: 'completed', completed_at: completedAt, holder_id: null, lease_expires_at: null, lease_token: null })
+    );
+  }
+
+  const error: any = new Error(
+    `automation batch evaluation has ${outcome.failures?.length || 1} retryable failure(s): ${(outcome.failures || [])
+      .map((failure: any) => `${failure.stage}: ${failure.message}`).join('; ')}`
+  );
+  error.outcome = outcome;
+  const exhausted = runnable.filter((execution) => execution.claim.source.attempts >= MAX_ATTEMPTS);
+  const retrying = runnable.filter((execution) => execution.claim.source.attempts < MAX_ATTEMPTS);
+  const failedAt = new Date().toISOString();
+  if (exhausted.length) {
+    await writeDlq(
+      client,
+      exhausted.map((execution) => execution.claim.source.payload),
+      'execution',
+      error,
+      MAX_ATTEMPTS,
+      exhausted[0].claim.source.ruleset_snapshot,
+      exhausted[0].claim.source.rule_revisions || [],
+      exhausted[0].claim.source.admission_cutoff
+    );
+  }
+  await transitionBatchOwned(
+    client,
+    AUTOMATION_EXECUTIONS_INDEX,
+    runnable.map((execution) => ({ id: execution.executionId, fence: execution.claim.fence, state: 'running' })),
+    (item) => {
+      const execution = runnable.find((candidate) => candidate.executionId === item.id)!;
+      return {
+        state: execution.claim.source.attempts >= MAX_ATTEMPTS ? 'dlq' : 'retry',
+        updated_at: failedAt,
+        lease_expires_at: null,
+        last_error: errorDetails(error),
+      };
+    }
+  );
+  await transitionBatchOwned(
+    client,
+    AUTOMATION_QUEUE_INDEX,
+    runnable.map((execution) => ({ id: execution.claim.id, fence: execution.claim.fence, state: 'claimed' })),
+    (item) => {
+      const execution = runnable.find((candidate) => candidate.claim.id === item.id)!;
+      const isExhausted = execution.claim.source.attempts >= MAX_ATTEMPTS;
+      return {
+        state: isExhausted ? 'dlq' : 'retry',
+        ...(isExhausted ? {} : { available_at: new Date(Date.now() + retryDelayMs(execution.claim.source.attempts)).toISOString() }),
+        holder_id: null,
+        lease_expires_at: null,
+        lease_token: null,
+        last_error: errorDetails(error),
+      };
+    }
+  );
+  logger.error(
+    `wazuh-alert-manager automation: batch of ${runnable.length} events failed ` +
+    `(${retrying.length} retrying, ${exhausted.length} DLQ): ${error.message}`
+  );
+  return true;
+}
+
+export function startAutomationWorker(client: any, logger: Logger): () => void {
+  let stopped = false;
+  const lanes = Array.from({ length: DEFAULT_WORKER_CONCURRENCY }, (_, lane) => ({
+    lane,
+    holderId: `${workerHolderId()}-lane-${lane}`,
+    leaseId: automationWorkerLeaseId(lane),
+    running: false,
+    timer: null as ReturnType<typeof setTimeout> | null,
+  }));
+  let reconcileRunning = false;
+  let lastReconcileAt = 0;
+  const schedule = (lane: typeof lanes[number], delay = DEFAULT_POLL_MS) => {
+    if (!stopped) lane.timer = setTimeout(() => tick(lane), delay);
+  };
+  const tick = async (lane: typeof lanes[number]) => {
+    if (stopped || lane.running) return;
+    lane.running = true;
     try {
       // Recovery is independent of source sync progress and remains safe across
-      // replicas because both admission and queue IDs are deterministic.
-      await reconcileAutomationAdmissions(client);
-      const processed = await runAutomationWorkerOnce(client, logger, holderId);
-      running = false;
-      schedule(processed ? 0 : DEFAULT_POLL_MS);
+      // replicas because both admission and queue IDs are deterministic. It is
+      // periodic rather than part of every event's hot path.
+      if (lane.lane === 0 && !reconcileRunning && Date.now() - lastReconcileAt >= ADMISSION_RECONCILE_INTERVAL_MS) {
+        reconcileRunning = true;
+        try {
+          await reconcileAutomationAdmissions(client);
+          lastReconcileAt = Date.now();
+        } finally {
+          reconcileRunning = false;
+        }
+      }
+      const processed = await runAutomationWorkerBatchOnce(
+        client,
+        logger,
+        lane.holderId,
+        lane.lane
+      );
+      lane.running = false;
+      schedule(lane, processed ? 0 : DEFAULT_POLL_MS);
     } catch (error: any) {
       logger.error(`wazuh-alert-manager automation worker: ${error.message}`);
-      running = false;
-      schedule();
+      lane.running = false;
+      schedule(lane);
     }
   };
-  tick();
+  lanes.forEach((lane) => tick(lane));
   return () => {
     stopped = true;
-    if (timer) clearTimeout(timer);
-    // The holder check prevents shutdown from deleting a successor's lease.
-    acquireWorkerLease(client, holderId, DEFAULT_LEASE_SECONDS).then((fence) => {
-      lastFence = fence;
-      if (lastFence) return releaseWorkerLease(client, lastFence);
-    }).catch(() => {});
+    lanes.forEach((lane) => {
+      if (lane.timer) clearTimeout(lane.timer);
+      // The holder check prevents shutdown from deleting a successor's lease.
+      acquireWorkerLease(client, lane.holderId, DEFAULT_LEASE_SECONDS, lane.leaseId).then((fence) => {
+        if (fence) return releaseWorkerLease(client, fence, lane.leaseId);
+      }).catch(() => {});
+    });
+  };
+}
+
+function laneQuery(lane: number, now: string) {
+  const laneFilter = lane === 0
+    ? { bool: { should: [
+        { term: { worker_lane: 0 } },
+        { bool: { must_not: [{ exists: { field: 'worker_lane' } }] } },
+      ], minimum_should_match: 1 } }
+    : { term: { worker_lane: lane } };
+  return { bool: {
+    filter: [laneFilter],
+    must: [{ bool: { should: [
+      { term: { state: 'pending' } },
+      { term: { state: 'deferred' } },
+      { bool: { must: [{ term: { state: 'retry' } }, { range: { available_at: { lte: now } } }] } },
+      { bool: { must: [{ term: { state: 'claimed' } }, { range: { lease_expires_at: { lte: now } } }] } },
+    ], minimum_should_match: 1 } }],
+  } };
+}
+
+async function claimBatch(
+  client: any,
+  fence: Fence,
+  leaseSeconds: number,
+  workerLeaseId: string,
+  lane: number,
+  batchSize = DEFAULT_WORKER_BATCH_SIZE
+): Promise<QueueClaim[]> {
+  const settings = await loadAutomationSettings(client);
+  if (settings.paused) return [];
+  const now = new Date().toISOString();
+  const result: any = await client.search({
+    index: AUTOMATION_QUEUE_INDEX,
+    seq_no_primary_term: true,
+    body: {
+      size: batchSize,
+      sort: [
+        { available_at: 'asc' },
+        { event_timestamp: { order: 'asc', missing: '_last', unmapped_type: 'date' } },
+        { enqueued_at: 'asc' },
+        { event_id: 'asc' },
+      ],
+      query: laneQuery(lane, now),
+    },
+  });
+  const hits = result?.body?.hits?.hits || [];
+  if (!hits.length) return [];
+  if (!(await renewOwnedLease(
+    client, AUTOMATION_EXECUTIONS_INDEX, workerLeaseId, fence, leaseSeconds, 'lease'
+  ))) return [];
+
+  // A single evaluator call must use one immutable snapshot and admission
+  // cutoff. The sorted queue naturally groups sync admissions; retain that
+  // boundary explicitly when a lane crosses between batches.
+  const first = hits[0]?._source || {};
+  const candidates = hits.filter((hit: any) =>
+    hit?._source?.ruleset_snapshot === first.ruleset_snapshot &&
+    hit?._source?.admission_cutoff === first.admission_cutoff
+  );
+  const claimedAt = new Date().toISOString();
+  const claimFence = { ...fence, token: randomToken() };
+  const expiry = new Date(Date.now() + leaseSeconds * 1000).toISOString();
+  const body: any[] = [];
+  const claims: QueueClaim[] = [];
+  for (const hit of candidates) {
+    const source = {
+      ...(hit._source || {}),
+      state: 'claimed',
+      holder_id: claimFence.holderId,
+      fencing_generation: claimFence.generation,
+      lease_token: claimFence.token,
+      claimed_at: claimedAt,
+      lease_expires_at: expiry,
+      attempts: Number(hit?._source?.attempts || 0) + 1,
+    };
+    body.push({ update: {
+      _index: assertManagedWriteTarget(AUTOMATION_QUEUE_INDEX),
+      _id: hit._id,
+      if_seq_no: hit._seq_no,
+      if_primary_term: hit._primary_term,
+    } });
+    body.push({ doc: source });
+    claims.push({ id: hit._id, source, fence: claimFence });
+  }
+  const items = body.length ? await executeBulkPairs(client, body) : [];
+  return claims.filter((_claim, index) => {
+    const operation = items[index]?.update;
+    return operation && !operation.error && operation.status >= 200 && operation.status < 300;
+  });
+}
+
+interface BatchExecution {
+  claim: QueueClaim;
+  executionId: string;
+}
+
+async function claimBatchExecutions(
+  client: any,
+  claims: QueueClaim[],
+  leaseSeconds: number
+): Promise<{ runnable: BatchExecution[]; completed: QueueClaim[]; busy: QueueClaim[] }> {
+  if (!claims.length) return { runnable: [], completed: [], busy: [] };
+  const ids = claims.map((claim) => automationExecutionId(
+    claim.source.event_id,
+    claim.source.ruleset_snapshot || 'rules-v1'
+  ));
+  const existing: any = await client.mget({
+    index: AUTOMATION_EXECUTIONS_INDEX,
+    body: { ids },
+  });
+  const docs = existing?.body?.docs || [];
+  if (docs.length !== claims.length) throw new Error('automation execution mget returned an incomplete batch');
+  const now = Date.now();
+  const body: any[] = [];
+  const submitted: Array<{ claim: QueueClaim; executionId: string }> = [];
+  const completed: QueueClaim[] = [];
+  const busy: QueueClaim[] = [];
+  claims.forEach((claim, index) => {
+    const executionId = ids[index];
+    const current = docs[index];
+    const currentSource = current?._source || {};
+    if (current?.found !== false && currentSource.state === 'completed') {
+      completed.push(claim);
+      return;
+    }
+    if (current?.found !== false && !owns(currentSource, claim.fence) &&
+        Date.parse(currentSource.lease_expires_at || '') > now) {
+      busy.push(claim);
+      return;
+    }
+    const record = {
+      execution_id: executionId,
+      event_id: claim.source.event_id,
+      alert_uid: claim.source.alert_uid,
+      ruleset_snapshot: claim.source.ruleset_snapshot || 'rules-v1',
+      rule_revisions: claim.source.rule_revisions || [],
+      admission_cutoff: claim.source.admission_cutoff,
+      state: 'running',
+      holder_id: claim.fence.holderId,
+      fencing_generation: claim.fence.generation,
+      lease_token: claim.fence.token,
+      attempts: claim.source.attempts,
+      started_at: new Date(now).toISOString(),
+      updated_at: new Date(now).toISOString(),
+      lease_expires_at: new Date(now + leaseSeconds * 1000).toISOString(),
+    };
+    body.push(current?.found === false
+      ? { create: { _index: assertManagedWriteTarget(AUTOMATION_EXECUTIONS_INDEX), _id: executionId } }
+      : { update: { _index: assertManagedWriteTarget(AUTOMATION_EXECUTIONS_INDEX), _id: executionId } });
+    body.push(current?.found === false ? record : { doc: record });
+    submitted.push({ claim, executionId });
+  });
+  const items = body.length ? await executeBulkPairs(client, body) : [];
+  const runnable: BatchExecution[] = [];
+  submitted.forEach((item, index) => {
+    const operation = items[index]?.create || items[index]?.update;
+    if (operation && !operation.error && operation.status >= 200 && operation.status < 300) runnable.push(item);
+    else busy.push(item.claim);
+  });
+  return { runnable, completed, busy };
+}
+
+async function transitionBatchOwned(
+  client: any,
+  index: string,
+  items: Array<{ id: string; fence: Fence; state: string }>,
+  docFor: (item: { id: string; fence: Fence; state: string }) => any
+): Promise<boolean> {
+  if (!items.length) return true;
+  const body: any[] = [];
+  for (const item of items) {
+    body.push({ update: { _index: assertManagedWriteTarget(index), _id: item.id } });
+    body.push({ script: {
+      lang: 'painless',
+      source:
+        'if (ctx._source.state != params.state || ctx._source.holder_id != params.holder || ' +
+        'ctx._source.fencing_generation != params.generation || ctx._source.lease_token != params.token) ' +
+        '{ ctx.op = "noop"; return; } for (entry in params.doc.entrySet()) { ctx._source[entry.getKey()] = entry.getValue(); }',
+      params: {
+        state: item.state,
+        holder: item.fence.holderId,
+        generation: item.fence.generation,
+        token: item.fence.token,
+        doc: docFor(item),
+      },
+    } });
+  }
+  const results = await executeBulkPairs(client, body);
+  return results.length === items.length && results.every((result: any) => {
+    const operation = result.update;
+    return operation && !operation.error && operation.status >= 200 && operation.status < 300 && operation.result !== 'noop';
+  });
+}
+
+async function assertBatchOwned(
+  client: any,
+  workerLeaseId: string,
+  workerFence: Fence,
+  _executions: BatchExecution[]
+): Promise<void> {
+  const worker: any = await client.get({ index: AUTOMATION_EXECUTIONS_INDEX, id: workerLeaseId });
+  const now = Date.now();
+  const workerSource = worker?.body?._source || {};
+  if (!owns(workerSource, workerFence, 'lease') || !(Date.parse(workerSource.lease_expires_at || '') > now)) {
+    throw ownershipLostError();
+  }
+}
+
+function startBatchHeartbeat(
+  client: any,
+  workerLeaseId: string,
+  workerFence: Fence,
+  executions: BatchExecution[],
+  leaseSeconds: number
+) {
+  let stopped = false;
+  let lost = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let inFlight: Promise<void> = Promise.resolve();
+  const intervalMs = Math.max(1000, Math.min(30000, Math.floor(leaseSeconds * 1000 / 3)));
+  const beat = () => {
+    inFlight = (async () => {
+      const worker = await renewOwnedLease(
+        client, AUTOMATION_EXECUTIONS_INDEX, workerLeaseId, workerFence, leaseSeconds, 'lease'
+      );
+      const expiry = new Date(Date.now() + leaseSeconds * 1000).toISOString();
+      const queue = worker && await transitionBatchOwned(
+        client,
+        AUTOMATION_QUEUE_INDEX,
+        executions.map((execution) => ({ id: execution.claim.id, fence: execution.claim.fence, state: 'claimed' })),
+        () => ({ lease_expires_at: expiry, updated_at: new Date().toISOString() })
+      );
+      const running = queue && await transitionBatchOwned(
+        client,
+        AUTOMATION_EXECUTIONS_INDEX,
+        executions.map((execution) => ({ id: execution.executionId, fence: execution.claim.fence, state: 'running' })),
+        () => ({ lease_expires_at: expiry, updated_at: new Date().toISOString() })
+      );
+      if (!running) lost = true;
+    })().catch(() => { lost = true; }).finally(() => {
+      if (!stopped && !lost) timer = setTimeout(beat, intervalMs);
+    });
+  };
+  timer = setTimeout(beat, intervalMs);
+  return {
+    async stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      await inFlight;
+      return !lost;
+    },
   };
 }
 
@@ -1085,11 +1713,13 @@ export async function retryAutomationDlqEvent(client: any, eventId: string) {
         ruleset_snapshot: rulesetSnapshot,
         rule_revisions: ruleRevisions,
         admission_cutoff: admissionCutoff,
+        event_timestamp: source.payload['@timestamp'] || source.payload.ingested_at || now,
       },
       upsert: {
         event_id: eventId, alert_uid: source.payload.alert_uid, ruleset_snapshot: rulesetSnapshot,
         rule_revisions: ruleRevisions,
         admission_cutoff: admissionCutoff,
+        event_timestamp: source.payload['@timestamp'] || source.payload.ingested_at || now,
         state: 'retry', enqueued_at: now, available_at: now, attempts: 0, payload: source.payload,
       },
     },
@@ -1170,6 +1800,9 @@ export async function automationQueueHealth(client: any) {
       index: AUTOMATION_QUEUE_INDEX,
       body: {
         size: 0,
+        // OpenSearch otherwise caps hits.total.value at 10,000. Queue capacity
+        // and admission decisions must use the exact active backlog.
+        track_total_hits: true,
         query: { terms: { state: ['pending', 'claimed', 'retry', 'deferred'] } },
         aggs: {
           oldest: { min: { field: 'enqueued_at' } },

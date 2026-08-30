@@ -1,0 +1,18 @@
+{
+  "unit": "bytes",
+  "captured_after_deadline": true,
+  "indices": {
+    "wazuh-alert-status-v2-000001": 38571518,
+    "wazuh-alert-manager-v2-automation-queue": 52911684,
+    "wazuh-alert-manager-v2-automation-executions": 104104557,
+    "wazuh-alert-manager-v2-cases-000001": 976177,
+    "wazuh-alert-manager-v2-evidence-000001": 961343,
+    "wazuh-alert-manager-v2-activity-000001": 77356,
+    "wazuh-alert-manager-v2-rules": 281961,
+    "wazuh-alert-manager-v2-meta": 90723,
+    "wazuh-alert-manager-v2-migration": 21983,
+    "wazuh-alert-manager-v2-automation-dlq": 208,
+    "wazuh-alert-manager-v2-sync-dlq": 208
+  },
+  "note": "Primary-store sizes from OpenSearch _cat/indices. Lucene docs.count is deliberately omitted because nested documents make it differ from logical document counts."
+}

@@ -396,8 +396,8 @@ export class AlertsApiService {
     return this.http.post(`${API_ROOT}/rules/preview`, { body: JSON.stringify(payload) });
   }
 
-  async fetchCaseEvidence(caseId: string, cursor?: string): Promise<EvidenceListResponse> {
-    return this.http.get(`${API_ROOT}/cases/${caseId}/evidence`, { query: { cursor } });
+  async fetchCaseEvidence(caseId: string, cursor?: string, size = 25): Promise<EvidenceListResponse> {
+    return this.http.get(`${API_ROOT}/cases/${caseId}/evidence`, { query: { cursor, size } });
   }
 
   async fetchCaseEvidenceAlert(caseId: string, alertId: string): Promise<any> {

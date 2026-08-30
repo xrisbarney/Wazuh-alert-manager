@@ -56,7 +56,11 @@ export const DEFAULT_AUTOMATION_LIMITS: AutomationEvaluationLimits = {
   maxMatches: 1000,
   maxStatusChanges: 1000,
   maxAssignments: 1000,
-  maxCaseLinks: 200,
+  // One worker batch can contain up to 64 anchors and multiple deduplicated
+  // entity routes. Two hundred links forced otherwise healthy batches through
+  // the retry path. This remains bounded, but is sized to let a normal batch
+  // finish atomically on high-volume nodes.
+  maxCaseLinks: 4096,
   maxCaseCreations: MAX_AUTO_CASES_PER_RUN,
 };
 
@@ -219,6 +223,29 @@ const timestamp = (source: any) => Date.parse(String(source?.['@timestamp'] || '
 const compareSamples = (left: AutomationAlertSample, right: AutomationAlertSample) =>
   timestamp(left.source) - timestamp(right.source) || left.id.localeCompare(right.id);
 
+async function mapConcurrent<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  operation: (value: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let cursor = 0;
+  let firstFailure: any;
+  const workers = Array.from({ length: Math.min(Math.max(1, concurrency), values.length) }, async () => {
+    while (cursor < values.length && !firstFailure) {
+      const index = cursor++;
+      try {
+        results[index] = await operation(values[index], index);
+      } catch (error) {
+        if (!firstFailure) firstFailure = error;
+      }
+    }
+  });
+  await Promise.all(workers);
+  if (firstFailure) throw firstFailure;
+  return results;
+}
+
 function defaultGroup(): MatchingEntityGroup {
   return { groupId: '__default__', order: 0, values: [] };
 }
@@ -325,11 +352,12 @@ async function loadRules(client: any, snapshot?: AutomationRulesetSnapshot): Pro
 async function windowSamples(
   client: any,
   rule: NormalizedAutomationRule,
-  anchorTimestamp: string,
+  latestAnchorTimestamp: string,
   effectiveFrom?: string,
-  admissionCutoff?: string
+  admissionCutoff?: string,
+  earliestAnchorTimestamp = latestAnchorTimestamp
 ) {
-  const from = new Date(Date.parse(anchorTimestamp) - Number(rule.trigger.windowMinutes) * 60000).toISOString();
+  const from = new Date(Date.parse(earliestAnchorTimestamp) - Number(rule.trigger.windowMinutes) * 60000).toISOString();
   const response: any = await client.search({
     index: ALERT_STATUS_INDEX,
     body: {
@@ -340,7 +368,7 @@ async function windowSamples(
       query: {
         bool: {
           must: [
-            { range: { '@timestamp': { gte: from, lte: anchorTimestamp } } },
+            { range: { '@timestamp': { gte: from, lte: latestAnchorTimestamp } } },
             ...(effectiveFrom || admissionCutoff ? [{ range: { ingested_at: {
               ...(effectiveFrom ? { gte: effectiveFrom } : {}),
               ...(admissionCutoff ? { lte: admissionCutoff } : {}),
@@ -513,6 +541,227 @@ async function completeTrigger(client: any, evaluation: RuleTriggerEvaluation, g
   await client.update({ index: AUTOMATION_EXECUTIONS_INDEX, id: markerId, body: { doc: { state: 'completed', updated_at: new Date().toISOString() } } });
 }
 
+async function reserveImmediateTriggerBatch(
+  client: any,
+  entries: Array<{ evaluation: RuleTriggerEvaluation; index: number }>,
+  guard?: AutomationExecutionOwnershipGuard
+): Promise<boolean[]> {
+  if (!entries.length) return [];
+  if (typeof client.bulk !== 'function' || typeof client.mget !== 'function') {
+    return mapConcurrent(entries, 8, ({ evaluation }) => reserveTrigger(client, evaluation, guard));
+  }
+  const eligible = await reserveTriggerMarkersBatch(client, entries, guard);
+  return eligible.map((reserved, index) => reserved && entries[index].evaluation.triggered);
+}
+
+async function reserveTriggerMarkersBatch(
+  client: any,
+  entries: Array<{ evaluation: RuleTriggerEvaluation; index: number }>,
+  guard?: AutomationExecutionOwnershipGuard
+): Promise<boolean[]> {
+  await assertOwnership(guard);
+  const now = new Date().toISOString();
+  const body: any[] = [];
+  entries.forEach(({ evaluation }) => {
+    body.push({ create: {
+      _index: AUTOMATION_EXECUTIONS_INDEX,
+      _id: automationTriggerMarkerId(evaluation.matchingKey, evaluation.anchorAlertId),
+    } });
+    body.push({
+      state: 'pending', rule_id: evaluation.rule.id,
+      alert_uid: evaluation.anchorAlertId, updated_at: now,
+    });
+  });
+  const response: any = await client.bulk({ body });
+  const items = response?.body?.items || [];
+  if (items.length !== entries.length) throw new Error('Trigger reservation bulk returned an incomplete item list');
+  const reserved = new Array<boolean>(entries.length);
+  const conflicts: Array<{ position: number; id: string }> = [];
+  items.forEach((item: any, position: number) => {
+    const result = item?.create;
+    if (result && !result.error && result.status >= 200 && result.status < 300) {
+      reserved[position] = true;
+    } else if (result?.status === 409) {
+      conflicts.push({
+        position,
+        id: automationTriggerMarkerId(
+          entries[position].evaluation.matchingKey,
+          entries[position].evaluation.anchorAlertId
+        ),
+      });
+    } else {
+      throw new Error(`Trigger reservation failed with status ${result?.status || 'unknown'}: ${messageOf(result?.error)}`);
+    }
+  });
+  if (conflicts.length) {
+    const existing: any = await client.mget({
+      index: AUTOMATION_EXECUTIONS_INDEX,
+      body: { ids: conflicts.map((conflict) => conflict.id) },
+    });
+    const docs = existing?.body?.docs || [];
+    if (docs.length !== conflicts.length) throw new Error('Trigger conflict lookup was incomplete');
+    conflicts.forEach((conflict, offset) => {
+      reserved[conflict.position] = docs[offset]?.found !== false && docs[offset]?._source?.state === 'completed'
+        ? false
+        : true;
+    });
+  }
+  return reserved;
+}
+
+async function reserveBurstTriggerGroup(
+  client: any,
+  evaluations: RuleTriggerEvaluation[],
+  guard?: AutomationExecutionOwnershipGuard
+): Promise<boolean[]> {
+  if (!evaluations.length) return [];
+  if (typeof client.bulk !== 'function' || typeof client.mget !== 'function' ||
+      typeof client.create !== 'function' || typeof client.get !== 'function') {
+    const output: boolean[] = [];
+    for (const evaluation of evaluations) output.push(await reserveTrigger(client, evaluation, guard));
+    return output;
+  }
+  const markerEligible = await reserveTriggerMarkersBatch(
+    client, evaluations.map((evaluation, index) => ({ evaluation, index })), guard
+  );
+  const output = new Array<boolean>(evaluations.length).fill(false);
+  const active = evaluations
+    .map((evaluation, index) => ({ evaluation, index }))
+    .filter(({ index }) => markerEligible[index]);
+  if (!active.length) return output;
+  const stateId = automationTriggerStateId(evaluations[0].matchingKey);
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    let current: any = null;
+    try {
+      current = await client.get({ index: AUTOMATION_EXECUTIONS_INDEX, id: stateId });
+    } catch (error: any) {
+      if (error?.meta?.statusCode !== 404) throw error;
+    }
+    const source = current?.body?._source || {};
+    let state: AutomationTriggerState | undefined = current ? {
+      armed: source.armed === true,
+      last_seen_at: source.last_seen_at,
+      last_fired_at: source.last_fired_at || null,
+      last_trigger_alert_id: source.last_trigger_alert_id || null,
+      activities: source.activities || [],
+      fired_event_ids: source.fired_event_ids || [],
+    } : undefined;
+    const ordered = [...active].sort((left, right) =>
+      Date.parse(left.evaluation.anchorTimestamp) - Date.parse(right.evaluation.anchorTimestamp) ||
+      left.evaluation.anchorAlertId.localeCompare(right.evaluation.anchorAlertId)
+    );
+    const existingActivities = state?.activities || [];
+    const existingIds = new Set(existingActivities.map((item) => item.id));
+    const lastSeenMs = Date.parse(String(state?.last_seen_at || ''));
+    const canAppendChronologically = (!current || existingActivities.length > 0) && ordered.every(({ evaluation }) => {
+      const value = Date.parse(evaluation.anchorTimestamp);
+      return Number.isFinite(value) && (!Number.isFinite(lastSeenMs) || value >= lastSeenMs) &&
+        !existingIds.has(evaluation.anchorAlertId);
+    });
+    if (canAppendChronologically) {
+      const activities = [...existingActivities];
+      const fired = new Set(state?.fired_event_ids || []);
+      let armed = state?.armed ?? true;
+      let lastSeen = lastSeenMs;
+      let lastFired = Date.parse(String(state?.last_fired_at || ''));
+      let lastFiredId = state?.last_trigger_alert_id || null;
+      for (const { evaluation, index } of ordered) {
+        const value = Date.parse(evaluation.anchorTimestamp);
+        const quietMs = Number(evaluation.rule.trigger.rearm?.quietPeriodMinutes || 0) * 60000;
+        const cooldownMs = Number(evaluation.rule.trigger.cooldown?.durationMinutes || 0) * 60000;
+        if (evaluation.rule.trigger.rearm?.type === 'immediate' ||
+            (Number.isFinite(lastSeen) && value - lastSeen >= quietMs)) armed = true;
+        const fire = evaluation.triggered && armed &&
+          (!Number.isFinite(lastFired) || value - lastFired >= cooldownMs);
+        if (fire) {
+          fired.add(evaluation.anchorAlertId);
+          armed = false;
+          lastFired = value;
+          lastFiredId = evaluation.anchorAlertId;
+        }
+        activities.push({
+          id: evaluation.anchorAlertId,
+          timestamp: evaluation.anchorTimestamp,
+          triggered: evaluation.triggered,
+        });
+        lastSeen = value;
+        output[index] = fire;
+      }
+      state = {
+        armed,
+        last_seen_at: new Date(lastSeen).toISOString(),
+        last_fired_at: Number.isFinite(lastFired) ? new Date(lastFired).toISOString() : null,
+        last_trigger_alert_id: lastFiredId,
+        activities,
+        fired_event_ids: Array.from(fired).sort(),
+      };
+    } else {
+      for (const { evaluation, index } of active) {
+        const transition = transitionAutomationTrigger(evaluation, state);
+        output[index] = transition.fire;
+        state = transition.state;
+      }
+    }
+    try {
+      await assertOwnership(guard);
+      const now = new Date().toISOString();
+      if (current) {
+        await client.update({
+          index: AUTOMATION_EXECUTIONS_INDEX,
+          id: stateId,
+          if_seq_no: current.body._seq_no,
+          if_primary_term: current.body._primary_term,
+          body: { doc: { ...state, updated_at: now } },
+        });
+      } else {
+        await client.create({
+          index: AUTOMATION_EXECUTIONS_INDEX,
+          id: stateId,
+          body: {
+            state: 'trigger_state', rule_id: evaluations[0].rule.id,
+            matching_key: evaluations[0].matchingKey, ...state, updated_at: now,
+          },
+        });
+      }
+      return output;
+    } catch (error: any) {
+      if (!isConflict(error)) throw error;
+    }
+  }
+  throw new Error('Batched trigger state could not be reserved after OCC retries');
+}
+
+async function completeTriggers(
+  client: any,
+  evaluations: RuleTriggerEvaluation[],
+  guard?: AutomationExecutionOwnershipGuard
+) {
+  if (!evaluations.length) return;
+  if (typeof client.bulk !== 'function' || typeof client.mget !== 'function') {
+    await mapConcurrent(evaluations, 8, (evaluation) => completeTrigger(client, evaluation, guard));
+    return;
+  }
+  await assertOwnership(guard);
+  const body: any[] = [];
+  const now = new Date().toISOString();
+  evaluations.forEach((evaluation) => {
+    body.push({ update: {
+      _index: AUTOMATION_EXECUTIONS_INDEX,
+      _id: automationTriggerMarkerId(evaluation.matchingKey, evaluation.anchorAlertId),
+      retry_on_conflict: 3,
+    } });
+    body.push({ doc: { state: 'completed', updated_at: now } });
+  });
+  const response: any = await client.bulk({ body });
+  const items = response?.body?.items || [];
+  const failed = items.filter((item: any) =>
+    !item?.update || item.update.error || item.update.status < 200 || item.update.status >= 300
+  );
+  if (items.length !== evaluations.length || failed.length) {
+    throw new Error(`Trigger completion bulk failed for ${failed.length || 'unknown'} item(s)`);
+  }
+}
+
 function bulkFailures(result: any, expected: number): string[] {
   const items = result?.body?.items;
   if (!Array.isArray(items) || items.length !== expected) return [`Bulk response contained ${Array.isArray(items) ? items.length : 0} item(s) for ${expected} operation(s)`];
@@ -543,9 +792,28 @@ export async function evaluateCorrelationRules(
     return retryable(counters, applied, [{ stage: 'rule_loading', message: messageOf(error) }]);
   }
   if (!rules.length || !syncedHits.length) return { status: 'terminal_success', counters, appliedRuleIds: [] };
-  const input = syncedHits.slice(0, limits.maxMatches);
-  counters.skippedBySafety += syncedHits.length - input.length;
-  continuationRequired = syncedHits.length > input.length;
+  const boundedInput = syncedHits.slice(0, limits.maxMatches);
+  counters.skippedBySafety += syncedHits.length - boundedInput.length;
+  continuationRequired = syncedHits.length > boundedInput.length;
+  // Admission payloads contain the immutable security fields used for rule
+  // matching. Reject controls before resolving mutable workflow state from
+  // managed storage. Most production alerts do not match automation rules, so
+  // this keeps the hot-path cost proportional to candidates rather than total
+  // Wazuh ingestion volume.
+  const input = boundedInput.filter((hit) => {
+    const source = hit._source || {};
+    return rules.some((rule) =>
+      evaluateAlertMatch(rule, source).matched && groupsFor(rule, source).length > 0
+    );
+  });
+  if (!input.length) {
+    return continuationRequired
+      ? retryable(counters, applied, [{
+          stage: 'execution_state',
+          message: 'Automation safety cap reached; durable trigger markers retain the remaining work for continuation',
+        }])
+      : { status: 'terminal_success', counters, appliedRuleIds: [] };
+  }
   let locations: Map<string, any>;
   try {
     locations = await resolveAlerts(client, input.map((hit) => String(hit._id)), true);
@@ -568,43 +836,106 @@ export async function evaluateCorrelationRules(
       state_version: resolved?.state_version,
     } };
   });
-  const evaluations: RuleTriggerEvaluation[] = [];
+  const evaluationTasks: Array<{ anchor: AutomationAlertSample; rule: NormalizedAutomationRule }> = [];
   for (const anchor of current) {
     for (const rule of rules) {
-      try {
+      // Reject non-candidates before a burst window search. At production
+      // volume, querying a historical window for every enabled burst rule on
+      // an alert that cannot match that rule is prohibitively expensive.
+      if (evaluateAlertMatch(rule, anchor.source).matched && groupsFor(rule, anchor.source).length) {
+        evaluationTasks.push({ anchor, rule });
+      }
+    }
+  }
+  let evaluationGroups: RuleTriggerEvaluation[][];
+  try {
+    evaluationGroups = new Array<RuleTriggerEvaluation[]>(evaluationTasks.length);
+    const burstTasks = new Map<string, Array<{ index: number; anchor: AutomationAlertSample; rule: NormalizedAutomationRule }>>();
+    evaluationTasks.forEach(({ anchor, rule }, index) => {
+      if (rule.trigger.type === 'burst') {
+        const group = burstTasks.get(rule.id) || [];
+        group.push({ index, anchor, rule });
+        burstTasks.set(rule.id, group);
+      } else {
         const anchorMs = timestamp(anchor.source);
         if (!Number.isFinite(anchorMs)) throw new Error(`Alert ${anchor.id} has no valid @timestamp`);
         const effectiveFrom = snapshot?.effective_from || snapshot?.effectiveFrom || (rule as any).effective_from;
         const admissionCutoff = snapshot?.admission_cutoff || snapshot?.admissionCutoff;
-        if (snapshot && rule.trigger.type === 'burst' && !Number.isFinite(Date.parse(String(admissionCutoff || '')))) {
-          throw new Error(`Queued burst alert ${anchor.id} has no valid admission cutoff`);
-        }
-        const window = rule.trigger.type === 'burst'
-          ? await windowSamples(client, rule, new Date(anchorMs).toISOString(), effectiveFrom, admissionCutoff)
-          : { samples: [anchor], truncated: false };
-        const anchorIndex = window.samples.findIndex((sample) => sample.id === anchor.id);
-        if (anchorIndex < 0) window.samples.push(anchor);
-        else window.samples[anchorIndex] = anchor;
-        evaluations.push(...evaluateRuleAtAlert(
-          rule, anchor, window.samples, window.truncated, effectiveFrom, admissionCutoff
-        ));
-      } catch (error: any) {
-        return retryable(counters, applied, [{ stage: 'window', ruleId: rule.id, alertId: anchor.id, message: messageOf(error) }]);
+        evaluationGroups[index] = evaluateRuleAtAlert(
+          rule, anchor, [anchor], false, effectiveFrom, admissionCutoff
+        );
       }
-    }
+    });
+    // A worker batch frequently contains dozens of anchors for the same burst
+    // rule. Read their union window once, then let the pure evaluator apply
+    // each anchor's exact lower/upper event-time boundary locally. This keeps
+    // correctness identical while removing N duplicate historical searches.
+    await mapConcurrent(Array.from(burstTasks.values()), 8, async (tasks) => {
+      const rule = tasks[0].rule;
+      const effectiveFrom = snapshot?.effective_from || snapshot?.effectiveFrom || (rule as any).effective_from;
+      const admissionCutoff = snapshot?.admission_cutoff || snapshot?.admissionCutoff;
+      if (snapshot && !Number.isFinite(Date.parse(String(admissionCutoff || '')))) {
+        throw new Error(`Queued burst alert ${tasks[0].anchor.id} has no valid admission cutoff`);
+      }
+      const anchorTimes = tasks.map(({ anchor }) => {
+        const value = timestamp(anchor.source);
+        if (!Number.isFinite(value)) throw new Error(`Alert ${anchor.id} has no valid @timestamp`);
+        return value;
+      });
+      const earliest = new Date(Math.min(...anchorTimes)).toISOString();
+      const latest = new Date(Math.max(...anchorTimes)).toISOString();
+      const window = await windowSamples(client, rule, latest, effectiveFrom, admissionCutoff, earliest);
+      for (const { index, anchor } of tasks) {
+        const samples = [...window.samples];
+        const anchorIndex = samples.findIndex((sample) => sample.id === anchor.id);
+        if (anchorIndex < 0) samples.push(anchor);
+        else samples[anchorIndex] = anchor;
+        evaluationGroups[index] = evaluateRuleAtAlert(
+          rule, anchor, samples, window.truncated, effectiveFrom, admissionCutoff
+        );
+      }
+    });
+  } catch (error: any) {
+    return retryable(counters, applied, [{ stage: 'window', message: messageOf(error) }]);
   }
+  const evaluations = ([] as RuleTriggerEvaluation[]).concat(...evaluationGroups);
 
   const firing: RuleTriggerEvaluation[] = [];
-  for (const evaluation of evaluations) {
-    let triggerReserved: boolean;
+  const triggerReservations = new Array<boolean>(evaluations.length);
+  try {
+    const immediate = evaluations
+      .map((evaluation, index) => ({ evaluation, index }))
+      .filter(({ evaluation }) => evaluation.rule.trigger.type === 'per_alert');
+    const immediateReservations = await reserveImmediateTriggerBatch(client, immediate, ownershipGuard);
+    immediate.forEach(({ index }, position) => {
+      triggerReservations[index] = immediateReservations[position];
+    });
+    // Burst reservations for one rule/entity key remain ordered. Independent
+    // entity keys have disjoint state documents and can progress concurrently.
+    const burstGroups = new Map<string, number[]>();
+    evaluations.forEach((evaluation, index) => {
+      if (evaluation.rule.trigger.type === 'per_alert') return;
+      const indices = burstGroups.get(evaluation.matchingKey) || [];
+      indices.push(index);
+      burstGroups.set(evaluation.matchingKey, indices);
+    });
+    await mapConcurrent(Array.from(burstGroups.values()), 8, async (indices) => {
+      const reservations = await reserveBurstTriggerGroup(
+        client, indices.map((index) => evaluations[index]), ownershipGuard
+      );
+      indices.forEach((index, position) => {
+        triggerReservations[index] = reservations[position];
+      });
+    });
+  } catch (error: any) {
+    return retryable(counters, applied, [{ stage: 'execution_state', message: messageOf(error) }]);
+  }
+  const notFiring: RuleTriggerEvaluation[] = [];
+  for (let index = 0; index < evaluations.length; index += 1) {
+    const evaluation = evaluations[index];
     try {
-      triggerReserved = await reserveTrigger(client, evaluation, ownershipGuard);
-    } catch (error: any) {
-      return retryable(counters, applied, [{ stage: 'execution_state', ruleId: evaluation.rule.id, alertId: evaluation.anchorAlertId, message: messageOf(error) }]);
-    }
-    try {
-      if (triggerReserved && await reserveRateLimit(client, evaluation, ownershipGuard)) firing.push(evaluation);
-      else await completeTrigger(client, evaluation, ownershipGuard);
+      if (triggerReservations[index] && await reserveRateLimit(client, evaluation, ownershipGuard)) firing.push(evaluation);
+      else notFiring.push(evaluation);
     } catch (error: any) {
       return retryable(counters, applied, [{
         stage: error?.ownershipLost ? 'execution_state' : 'rate_limit',
@@ -613,6 +944,11 @@ export async function evaluateCorrelationRules(
         message: messageOf(error),
       } as AutomationEvaluationFailure]);
     }
+  }
+  try {
+    await completeTriggers(client, notFiring, ownershipGuard);
+  } catch (error: any) {
+    return retryable(counters, applied, [{ stage: 'execution_state', message: messageOf(error) }]);
   }
   const burstByAlert = new Map<string, Set<string>>();
   const eligibleByAlert = new Map<string, Set<string>>();
@@ -699,7 +1035,7 @@ export async function evaluateCorrelationRules(
           'for (entry in action.value.entrySet()) { ctx._source[action.field][entry.getKey()] = entry.getValue(); } ' +
           '} else { ' +
           'ctx._source[action.field] = action.value; ' +
-          'if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(["timestamp":params.now,"user":params.actor,"action":"rule:" + action.rule,"from":null,"to":action.value]); ' +
+          'if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(["timestamp":params.now,"user":params.actor,"action":"rule:" + action.rule,"from":null,"to":action.value]); while (ctx._source.history.size() > 1000) { ctx._source.history.remove(0); } ' +
           '} ' +
           'ctx._source.automation_action_markers.add(action.marker); } } ' +
           'ctx._source.state_version = (ctx._source.state_version == null ? 0 : ctx._source.state_version) + 1; ctx._source.updated_at = params.now; ctx._source.updated_by = params.actor;',
@@ -732,9 +1068,33 @@ export async function evaluateCorrelationRules(
     plans.some((plan) => plan.alertId === evaluation.anchorAlertId && plan.matched.includes(evaluation.rule.id))
   );
   const processedCaseAlerts = new Map<string, Set<string>>();
-  if (typeof client.get === 'function') {
+  if (caseEvaluations.length && typeof client.mget === 'function') {
     try {
-      for (const evaluation of caseEvaluations) {
+      const markerIds = caseEvaluations.map((evaluation) =>
+        automationTriggerMarkerId(evaluation.matchingKey, evaluation.anchorAlertId)
+      );
+      const response: any = await client.mget({
+        index: AUTOMATION_EXECUTIONS_INDEX,
+        body: { ids: markerIds },
+      });
+      const markers = response?.body?.docs || [];
+      if (markers.length !== caseEvaluations.length) {
+        throw new Error('Case progress lookup returned an incomplete marker list');
+      }
+      caseEvaluations.forEach((evaluation, index) => {
+        const marker = markers[index];
+        if (marker?.found === false) throw new Error(`Case progress marker ${markerIds[index]} was not found`);
+        processedCaseAlerts.set(
+          `${evaluation.matchingKey}|${evaluation.anchorAlertId}`,
+          new Set(marker?._source?.processed_case_alert_ids || [])
+        );
+      });
+    } catch (error: any) {
+      return retryable(counters, applied, [{ stage: 'execution_state', message: messageOf(error) }]);
+    }
+  } else if (caseEvaluations.length && typeof client.get === 'function') {
+    try {
+      await mapConcurrent(caseEvaluations, 8, async (evaluation) => {
         const marker: any = await client.get({
           index: AUTOMATION_EXECUTIONS_INDEX,
           id: automationTriggerMarkerId(evaluation.matchingKey, evaluation.anchorAlertId),
@@ -743,7 +1103,7 @@ export async function evaluateCorrelationRules(
           `${evaluation.matchingKey}|${evaluation.anchorAlertId}`,
           new Set(marker?.body?._source?.processed_case_alert_ids || [])
         );
-      }
+      });
     } catch (error: any) {
       return retryable(counters, applied, [{ stage: 'execution_state', message: messageOf(error) }]);
     }
@@ -765,9 +1125,14 @@ export async function evaluateCorrelationRules(
   if (caseTriggers.length) {
     try {
       let linksRemaining = Math.max(0, limits.maxCaseLinks);
-      let creationsRemaining = Math.max(0, limits.maxCaseCreations);
-      const creationsByRule = new Map<string, number>();
+      let creationSlots = Math.max(0, limits.maxCaseCreations);
+      const creationSlotsByRule = new Map<string, number>();
       const routes = planAutomationCaseRoutes(caseTriggers);
+      const planned: Array<{
+        route: ReturnType<typeof planAutomationCaseRoutes>[number];
+        selectedIds: string[];
+        allowCreate: boolean;
+      }> = [];
       for (const route of routes) {
         const routeProgress = new Set(caseEvaluations
           .filter((item) => route.matchingKeys.includes(item.matchingKey))
@@ -776,7 +1141,6 @@ export async function evaluateCorrelationRules(
         if (!routeAlertIds.length) continue;
         const rule = rules.find((candidate) => candidate.id === route.ruleId)!;
         const ruleLimit = rule.safety.maxCasesPerRun ?? Number.POSITIVE_INFINITY;
-        const ruleRemaining = Math.max(0, ruleLimit - (creationsByRule.get(route.ruleId) || 0));
         if (!linksRemaining) {
           continuationRequired = true;
           counters.skippedBySafety += routeAlertIds.length;
@@ -787,28 +1151,64 @@ export async function evaluateCorrelationRules(
           continuationRequired = true;
           counters.skippedBySafety += routeAlertIds.length - selectedIds.length;
         }
+        linksRemaining -= selectedIds.length;
+        const ruleSlots = creationSlotsByRule.get(route.ruleId) || 0;
+        const allowCreate = creationSlots > 0 && ruleSlots < ruleLimit;
+        if (allowCreate) {
+          creationSlots -= 1;
+          creationSlotsByRule.set(route.ruleId, ruleSlots + 1);
+        }
+        planned.push({ route, selectedIds, allowCreate });
+      }
+      // Separate entity groups have disjoint deterministic case identities and
+      // can safely cross refresh barriers together. Consolidated/one-per-rule
+      // routes stay sequential because their deduplication domains may overlap.
+      const routeConcurrency = routes.every((route) => route.routing === 'separate_by_group') ? 8 : 1;
+      const routedResults = await mapConcurrent(planned, routeConcurrency, async ({ route, selectedIds, allowCreate }) => {
         await assertOwnership(ownershipGuard);
         const routed = await applyAutomationCaseRoutes(
           client,
           [{ ...route, alertIds: selectedIds }],
-          creationsRemaining,
+          allowCreate ? 1 : 0,
           selectedIds.length,
-          new Map([[route.ruleId, ruleRemaining]]),
+          new Map([[route.ruleId, allowCreate ? 1 : 0]]),
           () => assertOwnership(ownershipGuard)
         );
         if (!routed.caseIds.length) {
-          continuationRequired = true;
-          counters.skippedBySafety += selectedIds.length;
-          continue;
+          return { routed, selectedCount: selectedIds.length, incomplete: true };
         }
-        linksRemaining -= selectedIds.length;
-        creationsRemaining -= routed.created;
-        creationsByRule.set(route.ruleId, (creationsByRule.get(route.ruleId) || 0) + routed.created);
-        counters.caseCreations += routed.created;
-        counters.caseLinks += routed.linked;
 
-        if (typeof client.update === 'function') {
-          for (const evaluation of caseEvaluations.filter((item) => route.matchingKeys.includes(item.matchingKey))) {
+        const routeEvaluations = caseEvaluations.filter((item) => route.matchingKeys.includes(item.matchingKey));
+        if (typeof client.bulk === 'function') {
+          const progressBody: any[] = [];
+          for (const evaluation of routeEvaluations) {
+            const progressKey = `${evaluation.matchingKey}|${evaluation.anchorAlertId}`;
+            const completed = processedCaseAlerts.get(progressKey) || new Set<string>();
+            selectedIds.filter((id) => evaluation.alertIds.includes(id)).forEach((id) => completed.add(id));
+            processedCaseAlerts.set(progressKey, completed);
+            progressBody.push({ update: {
+              _index: AUTOMATION_EXECUTIONS_INDEX,
+              _id: automationTriggerMarkerId(evaluation.matchingKey, evaluation.anchorAlertId),
+              retry_on_conflict: 3,
+            } });
+            progressBody.push({ doc: {
+              processed_case_alert_ids: Array.from(completed).sort(),
+              updated_at: new Date().toISOString(),
+            } });
+          }
+          if (progressBody.length) {
+            await assertOwnership(ownershipGuard);
+            const progress: any = await client.bulk({ body: progressBody });
+            const items = progress?.body?.items || [];
+            const failed = items.filter((item: any) =>
+              !item?.update || item.update.error || item.update.status < 200 || item.update.status >= 300
+            );
+            if (items.length !== routeEvaluations.length || failed.length) {
+              throw new Error(`Case progress bulk failed for ${failed.length || 'unknown'} item(s)`);
+            }
+          }
+        } else if (typeof client.update === 'function') {
+          for (const evaluation of routeEvaluations) {
             const progressKey = `${evaluation.matchingKey}|${evaluation.anchorAlertId}`;
             const completed = processedCaseAlerts.get(progressKey) || new Set<string>();
             selectedIds.filter((id) => evaluation.alertIds.includes(id)).forEach((id) => completed.add(id));
@@ -821,11 +1221,72 @@ export async function evaluateCorrelationRules(
             });
           }
         }
+        return { routed, selectedCount: selectedIds.length, incomplete: false };
+      });
+      for (const result of routedResults) {
+        counters.caseCreations += result.routed.created;
+        counters.caseLinks += result.routed.linked;
+        if (result.incomplete) {
+          continuationRequired = true;
+          counters.skippedBySafety += result.selectedCount;
+        }
       }
       caseTriggers.forEach((task) => applied.add(task.ruleId));
     } catch (error: any) {
       const message = messageOf(error);
       const stage = /dedup|returned .* case|reserve/i.test(message) ? 'case_dedup' : /Evidence/i.test(message) ? 'evidence_linkage' : 'case_write';
+      return retryable(counters, applied, [{ stage, message } as AutomationEvaluationFailure]);
+    }
+  }
+  // Cooldown/rearm suppresses duplicate case creation, not evidence. Once a
+  // burst has crossed its threshold, every later alert in the same continuous
+  // entity episode must extend the already-open deduplicated case. Route only
+  // the new anchor here and set creation allowance to zero; the firing path
+  // above remains the sole authority that may create the case.
+  const firingIdentities = new Set(firing.map((evaluation) =>
+    `${evaluation.matchingKey}\u0000${evaluation.anchorAlertId}`
+  ));
+  const extensionEvaluations = evaluations.filter((evaluation) =>
+    evaluation.triggered &&
+    evaluation.rule.trigger.type === 'burst' &&
+    evaluation.rule.actions.createCase &&
+    !firingIdentities.has(`${evaluation.matchingKey}\u0000${evaluation.anchorAlertId}`)
+  );
+  if (extensionEvaluations.length) {
+    try {
+      const extensionTriggers: AutomationCaseTrigger[] = extensionEvaluations.map((evaluation) => ({
+        ruleId: evaluation.rule.id,
+        ruleName: evaluation.rule.name,
+        revision: Number(evaluation.rule.revision || 0),
+        routing: evaluation.rule.trigger.routing!,
+        severity: evaluation.rule.actions.caseSeverity || 'medium',
+        assignedTo: evaluation.rule.actions.assignTo ? String(evaluation.rule.actions.assignTo) : null,
+        group: evaluation.group,
+        alertIds: [evaluation.anchorAlertId],
+        threshold: evaluation.threshold,
+        windowMinutes: evaluation.windowMinutes,
+        count: evaluation.count,
+        truncated: evaluation.truncated,
+      }));
+      const routes = planAutomationCaseRoutes(extensionTriggers);
+      await assertOwnership(ownershipGuard);
+      const routed = await applyAutomationCaseRoutes(
+        client,
+        routes,
+        0,
+        Math.max(0, limits.maxCaseLinks),
+        new Map(rules.map((rule) => [rule.id, 0])),
+        () => assertOwnership(ownershipGuard)
+      );
+      counters.caseLinks += routed.linked;
+      extensionEvaluations.forEach((evaluation) => applied.add(evaluation.rule.id));
+    } catch (error: any) {
+      const message = messageOf(error);
+      const stage = /dedup|returned .* case|reserve/i.test(message)
+        ? 'case_dedup'
+        : /Evidence/i.test(message)
+        ? 'evidence_linkage'
+        : 'case_write';
       return retryable(counters, applied, [{ stage, message } as AutomationEvaluationFailure]);
     }
   }
@@ -836,7 +1297,7 @@ export async function evaluateCorrelationRules(
     }]);
   }
   try {
-    for (const evaluation of firing) await completeTrigger(client, evaluation, ownershipGuard);
+    await completeTriggers(client, firing, ownershipGuard);
   } catch (error: any) {
     return retryable(counters, applied, [{ stage: 'execution_state', message: messageOf(error) }]);
   }

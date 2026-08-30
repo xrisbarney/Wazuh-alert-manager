@@ -5,12 +5,14 @@ jest.mock('./sync_lock', () => ({
 }));
 jest.mock('./index_resolution', () => ({ resolveAlerts: jest.fn().mockResolvedValue(new Map()) }));
 jest.mock('./automation_queue', () => ({
+  activateAutomationEvents: jest.fn().mockResolvedValue(1),
   enqueueAutomationEvents: jest.fn().mockResolvedValue({ enqueued: 1, duplicates: 0, failed: 0 }),
   reconcileAutomationAdmissions: jest.fn().mockResolvedValue({ enqueued: 0, duplicates: 0, failed: 0 }),
   recordAutomationEnqueueFailure: jest.fn().mockResolvedValue(undefined),
 }));
 
 import {
+  activateAutomationEvents,
   enqueueAutomationEvents,
   reconcileAutomationAdmissions,
   recordAutomationEnqueueFailure,
@@ -276,6 +278,69 @@ describe('source pagination', () => {
 
     expect((enqueueAutomationEvents as jest.Mock).mock.invocationCallOrder[0])
       .toBeLessThan(client.bulk.mock.invocationCallOrder[0]);
+    expect(client.bulk).toHaveBeenCalledWith(expect.objectContaining({ refresh: 'wait_for' }));
+    expect(client.bulk.mock.invocationCallOrder[0])
+      .toBeLessThan((activateAutomationEvents as jest.Mock).mock.invocationCallOrder[0]);
+  });
+
+  test('activates only alerts selected by the immutable admission ruleset', async () => {
+    const client = clientWithHits([
+      {
+        _id: 'control', _index: 'wazuh-alerts-4.x-2026.08.28',
+        _source: { '@timestamp': '2026-08-28T10:01:00.000Z' },
+        sort: ['2026-08-28T10:01:00.000Z', 1],
+      },
+      {
+        _id: 'candidate', _index: 'wazuh-alerts-4.x-2026.08.28',
+        _source: { '@timestamp': '2026-08-28T10:01:01.000Z' },
+        sort: ['2026-08-28T10:01:01.000Z', 2],
+      },
+    ]);
+    config.sync.batchSize = 3;
+    client.bulk.mockImplementation(async ({ body }: any) => ({
+      body: {
+        errors: false,
+        items: body.filter((item: any) => item.update).map(() => ({ update: { status: 201 } })),
+      },
+    }));
+    (enqueueAutomationEvents as jest.Mock).mockImplementation(async (_client: any, events: any[]) => ({
+      enqueued: 1, duplicates: 0, failed: 0, candidateAlertUids: [events[1].alert_uid],
+    }));
+
+    await runSyncOnce(client, config, logger, 'holder', 120);
+
+    const admitted = (enqueueAutomationEvents as jest.Mock).mock.calls[0][1];
+    expect(activateAutomationEvents).toHaveBeenCalledWith(client, [admitted[1]]);
+  });
+
+  test('bounds large operational bulks and refreshes all targets once', async () => {
+    config.sync.batchSize = 1001;
+    const hits = Array.from({ length: 1001 }, (_, id) => ({
+      _id: `source-${id}`,
+      _index: 'wazuh-alerts-4.x-2026.08.28',
+      _source: {
+        '@timestamp': `2026-08-28T10:00:${String(id % 60).padStart(2, '0')}.000Z`,
+        rule: { id: '100', level: 5 },
+      },
+      sort: [`2026-08-28T10:00:${String(id % 60).padStart(2, '0')}.000Z`, id],
+    }));
+    const client: any = clientWithHits(hits);
+    client.bulk.mockImplementation(async ({ body }: any) => ({
+      body: {
+        errors: false,
+        items: body.filter((item: any) => item.update).map(() => ({ update: { status: 201 } })),
+      },
+    }));
+    client.indices = { refresh: jest.fn().mockResolvedValue({}) };
+
+    await runSyncOnce(client, config, logger, 'holder', 120);
+
+    expect(client.bulk).toHaveBeenCalledTimes(2);
+    expect(client.bulk.mock.calls[0][0].body).toHaveLength(2000);
+    expect(client.bulk.mock.calls[1][0].body).toHaveLength(2);
+    expect(client.bulk.mock.calls.every((call: any[]) => call[0].refresh == null)).toBe(true);
+    expect(client.indices.refresh).toHaveBeenCalledTimes(1);
+    expect(client.indices.refresh).toHaveBeenCalledWith({ index: ['wazuh-alert-status-v2-write'] });
   });
 
   test('initializes the immutable ingestion boundary without overwriting it on replay', async () => {

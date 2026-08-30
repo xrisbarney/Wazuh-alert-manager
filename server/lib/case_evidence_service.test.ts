@@ -73,6 +73,20 @@ function clientFor(options: {
 }
 
 describe('reconcileCaseEvidence', () => {
+  test('leaves hot automation compatibility projection to the atomic case-route merge', async () => {
+    const client = clientFor({
+      alerts: { a1: { case_id: null, source_index: 'wazuh-alerts-4.x', source_id: 'native-1' } },
+    });
+
+    const result = await reconcileCaseEvidence(client, {
+      caseId: 'c1', linkAlertIds: ['a1'], actor: 'correlation-rule', waitForRefresh: false,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ ok: true, linkedAlertIds: ['a1'] }));
+    expect(result.stages).toContainEqual({ stage: 'sync_case_metadata', attempted: 0, succeeded: 0, failed: 0 });
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
   test('moves a resolved alert while preserving old evidence and rebuilding both case views', async () => {
     const client = clientFor({
       alerts: {

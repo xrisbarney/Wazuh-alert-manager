@@ -9,6 +9,7 @@ import {
   resolveArchivedEvidence,
   setEvidenceHold,
 } from '../lib/evidence';
+import { resolveCaseAlerts } from '../lib/index_resolution';
 import { resolveAlerts } from '../lib/index_resolution';
 
 const paramsSchema = schema.object({ caseId: schema.string(), alertId: schema.string() });
@@ -30,7 +31,17 @@ export function defineEvidenceRoutes(router: IRouter) {
         const client = context.core.opensearch.client.asCurrentUser;
         const { size, cursor } = request.query as any;
         const page = await listCaseEvidence(client, (request.params as any).caseId, { size, cursor });
-        return response.ok({ body: page });
+        const locations = await resolveCaseAlerts(client, page.evidence);
+        const alerts = page.evidence.map((item: any) => {
+          const resolved = locations.get(item.alert_id);
+          return {
+            _id: item.alert_id,
+            _source: resolved?.source || item.snapshot || {},
+            evidence_only: resolved?.availability !== 'live',
+            evidence_availability: resolved?.availability || 'unavailable',
+          };
+        });
+        return response.ok({ body: { ...page, alerts } });
       } catch (e: any) {
         return response.customError({ statusCode: e.statusCode || e?.meta?.statusCode || 500, body: { message: e.message } });
       }

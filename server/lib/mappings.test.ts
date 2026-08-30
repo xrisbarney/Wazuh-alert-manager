@@ -3,6 +3,7 @@ import {
   automationDlqMapping,
   automationExecutionMapping,
   automationQueueMapping,
+  casesMapping,
   ruleExecutionStateProperties,
   rulesMapping,
 } from './mappings';
@@ -68,6 +69,7 @@ describe('persisted automation mappings', () => {
   test('defines each automation singleton mapping', () => {
     expect(automationQueueMapping.properties).toMatchObject({
       event_id: { type: 'keyword' },
+      event_timestamp: { type: 'date' },
       state: { type: 'keyword' },
       available_at: { type: 'date' },
       payload: { type: 'object', enabled: false },
@@ -89,6 +91,13 @@ describe('persisted automation mappings', () => {
       applied_rule_ids: { type: 'keyword' },
       counters: { properties: { matches: { type: 'long' }, skippedBySafety: { type: 'long' } } },
       last_error: { type: 'object', enabled: false },
+    });
+  });
+
+  test('keeps an exact case evidence count beside the bounded compatibility preview', () => {
+    expect(casesMapping.properties).toMatchObject({
+      alert_ids: { type: 'keyword' },
+      evidence_count: { type: 'long' },
     });
   });
 });

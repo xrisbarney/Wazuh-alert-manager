@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "run_date_utc": "2026-08-29",
+  "release": "v2.0.1",
+  "target": {
+    "wazuh": "4.14.7",
+    "opensearch_dashboards": "2.19.5",
+    "topology": "single all-in-one VirtualBox VM"
+  },
+  "source": {
+    "index": "wazuh-alerts-4.x-paperbench-v201",
+    "documents": 100000,
+    "injection_seconds": 33.624,
+    "injection_alerts_per_second": 2974.1,
+    "manager_decode_included": false
+  },
+  "projection": {
+    "documents": 100000,
+    "reached_total_after_seconds": 589.028,
+    "batch_size": 10000
+  },
+  "automation": {
+    "deadline_seconds": 1800,
+    "measured_after_seconds": 1802.54,
+    "passed": false,
+    "timed_out": true,
+    "queue": {
+      "total": 100000,
+      "pending": 98616,
+      "completed": 1376,
+      "retry": 7,
+      "claimed": 1,
+      "dlq": 0
+    },
+    "observed": {
+      "immediate_user_cases": 10,
+      "immediate_user_linked": 130,
+      "burst_srcip_cases": 10,
+      "burst_srcip_linked": 806,
+      "boolean_group_cases": 2,
+      "boolean_group_linked": 400,
+      "immediate_agent_cases": 10,
+      "immediate_agent_linked": 57,
+      "closed_alerts": 624,
+      "assigned_in_progress": 32,
+      "cooccurrence_cases": 0,
+      "cooccurrence_linked": 0,
+      "false_actions_on_controls": 0
+    },
+    "interpretation": "Projection completed; automation did not drain. Partial outcome counts are not a complete correctness result."
+  },
+  "defects_exposed": [
+    "The globally leased v2.0.1 worker claims and evaluates one event sequentially.",
+    "The v2.0.1 queue-health and Alerts searches capped hits.total.value at 10000 because exact hit tracking was not requested.",
+    "The v2.0.1 rule list continued to display Last fired: Never after durable executions completed."
+  ]
+}

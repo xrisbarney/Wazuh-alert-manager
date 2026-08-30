@@ -10,8 +10,8 @@ abstract: >-
   alerts, with deterministic triage aids (precedent and suggested related
   alerts) and per-analyst reporting.
 type: software
-version: "1.5.0"
-date-released: "2026-08-25"
+version: "2.0.2"
+date-released: "2026-08-30"
 license: Apache-2.0
 repository-code: "https://github.com/xrisbarney/Wazuh-alert-manager"
 url: "https://github.com/xrisbarney/Wazuh-alert-manager"

@@ -53,6 +53,16 @@ jobs:
         with:
           path: plugin-src
 
+      - name: Validate installer shell format
+        working-directory: plugin-src
+        run: |
+          test "$(head -c 2 install.sh)" = '#!'
+          if grep -q $'\r' install.sh; then
+            echo 'install.sh contains CRLF line endings' >&2
+            exit 1
+          fi
+          bash -n install.sh
+
       - name: Checkout wazuh-dashboard ${{ matrix.dashboardRef }}
         uses: actions/checkout@v4
         with:
@@ -194,9 +204,10 @@ jobs:
       - name: Create release with all version zips attached
         uses: softprops/action-gh-release@v2
         with:
+          name: ${{ github.ref_name }}
+          body_path: RELEASE_NOTES_v2.0.2.md
           files: |
             dist/*.zip
             dist/*.sha256
             install.sh
             install.sh.sha256
-          generate_release_notes: true

@@ -1,0 +1,65 @@
+{"elapsed_seconds": 1.54, "synced": 0, "queue": {"active": 0, "reportedLag": 0, "deferred": 0, "failed": 0, "pending": 0, "claimed": 0, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 20.118, "synced": 2385, "queue": {"active": 0, "reportedLag": 0, "deferred": 0, "failed": 0, "pending": 0, "claimed": 0, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 38.448, "synced": 10930, "queue": {"active": 10000, "reportedLag": 10000, "deferred": 0, "failed": 0, "pending": 8976, "claimed": 1024, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 57.714, "synced": 20000, "queue": {"active": 11276, "reportedLag": 11276, "deferred": 0, "failed": 0, "pending": 10252, "claimed": 1024, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 79.382, "synced": 32473, "queue": {"active": 9996, "reportedLag": 9996, "deferred": 0, "failed": 0, "pending": 9052, "claimed": 944, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 98.238, "synced": 50000, "queue": {"active": 8284, "reportedLag": 8284, "deferred": 0, "failed": 0, "pending": 7516, "claimed": 768, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 117.721, "synced": 64053, "queue": {"active": 6492, "reportedLag": 6492, "deferred": 0, "failed": 0, "pending": 5892, "claimed": 600, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 136.617, "synced": 80000, "queue": {"active": 4868, "reportedLag": 4868, "deferred": 0, "failed": 0, "pending": 4356, "claimed": 512, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 152.888, "synced": 100000, "queue": {"active": 3220, "reportedLag": 3220, "deferred": 0, "failed": 0, "pending": 2964, "claimed": 256, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 169.43, "synced": 100000, "queue": {"active": 2964, "reportedLag": 2964, "deferred": 0, "failed": 0, "pending": 2708, "claimed": 256, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 186.532, "synced": 100000, "queue": {"active": 2452, "reportedLag": 2452, "deferred": 0, "failed": 0, "pending": 2200, "claimed": 252, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 203.738, "synced": 100000, "queue": {"active": 920, "reportedLag": 920, "deferred": 0, "failed": 0, "pending": 664, "claimed": 256, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 219.596, "synced": 100000, "queue": {"active": 0, "reportedLag": 0, "deferred": 0, "failed": 0, "pending": 0, "claimed": 0, "retry": 0, "admissionOpen": true}}
+{
+  "actual": {
+    "assigned_in_progress": 2500,
+    "boolean_group_cases": 2,
+    "boolean_group_linked": 1200,
+    "burst_srcip_cases": 10,
+    "burst_srcip_linked": 2000,
+    "closed_alerts": 5000,
+    "cooccurrence_cases": 10,
+    "cooccurrence_linked": 600,
+    "false_actions_on_controls": 0,
+    "immediate_agent_cases": 10,
+    "immediate_agent_linked": 500,
+    "immediate_user_cases": 10,
+    "immediate_user_linked": 1000,
+    "total_synced": 100000
+  },
+  "end_to_end_seconds": 219.596,
+  "expected": {
+    "assigned_in_progress": 2500,
+    "boolean_group_cases": 2,
+    "boolean_group_linked": 1200,
+    "burst_srcip_cases": 10,
+    "burst_srcip_linked": 2000,
+    "closed_alerts": 5000,
+    "cooccurrence_cases": 10,
+    "cooccurrence_linked": 600,
+    "false_actions_on_controls": 0,
+    "immediate_agent_cases": 10,
+    "immediate_agent_linked": 500,
+    "immediate_user_cases": 10,
+    "immediate_user_linked": 1000,
+    "total_synced": 100000
+  },
+  "mismatches": {},
+  "passed": true,
+  "queue_final": {
+    "active": 0,
+    "admissionOpen": true,
+    "claimed": 0,
+    "deferred": 0,
+    "failed": 0,
+    "pending": 0,
+    "reportedLag": 0,
+    "retry": 0
+  },
+  "queue_high_water": {
+    "active": 11276,
+    "deferred": 0,
+    "failed": 0
+  }
+}

@@ -79,6 +79,7 @@ export interface CommentListResponse {
 
 export interface EvidenceListResponse {
   evidence: CaseEvidence[];
+  alerts?: Alert[];
   nextCursor: string | null;
   total: number;
   truncated: boolean;
@@ -121,6 +122,8 @@ export interface Case {
   status: CaseStatus;
   assigned_to?: string | null;
   alert_ids: string[];
+  /** Exact authoritative evidence relationship count; alert_ids is only a bounded compatibility preview. */
+  evidence_count?: number;
   created_by: string;
   created_at: string;
   updated_by?: string;

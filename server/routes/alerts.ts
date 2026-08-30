@@ -74,6 +74,27 @@ function buildBoolQuery(query: Record<string, any>, includeStatusFilter: boolean
   return { bool: { must, filter } };
 }
 
+export function buildAlertListSearchBody(q: any) {
+  return {
+    from: q.from_offset || 0,
+    size: q.size || 20,
+    // Workbench totals are operational controls, not sampled search
+    // estimates. OpenSearch otherwise caps hits.total.value at 10,000.
+    track_total_hits: true,
+    sort: [{ [q.sortField || '@timestamp']: { order: q.sortDirection || 'desc' } }],
+    query: buildBoolQuery(q, true),
+  };
+}
+
+export function buildAlertCountSearchBody(q: any) {
+  return {
+    size: 0,
+    track_total_hits: true,
+    query: buildBoolQuery(q, false),
+    aggs: { status_counts: { terms: { field: 'status', size: 10 } } },
+  };
+}
+
 export function defineAlertRoutes(router: IRouter) {
   router.get(
     {
@@ -93,12 +114,7 @@ export function defineAlertRoutes(router: IRouter) {
         const client = context.core.opensearch.client.asCurrentUser;
         const result: any = await client.search({
           index: ALERT_STATUS_INDEX,
-          body: {
-            from: q.from_offset || 0,
-            size: q.size || 20,
-            sort: [{ [q.sortField || '@timestamp']: { order: q.sortDirection || 'desc' } }],
-            query: buildBoolQuery(q, true),
-          },
+          body: buildAlertListSearchBody(q),
         });
         return response.ok({ body: result.body });
       } catch (e: any) {
@@ -121,11 +137,7 @@ export function defineAlertRoutes(router: IRouter) {
         const client = context.core.opensearch.client.asCurrentUser;
         const result: any = await client.search({
           index: ALERT_STATUS_INDEX,
-          body: {
-            size: 0,
-            query: buildBoolQuery(q, false),
-            aggs: { status_counts: { terms: { field: 'status', size: 10 } } },
-          },
+          body: buildAlertCountSearchBody(q),
         });
         const counts: Record<string, number> = { open: 0, in_progress: 0, closed: 0 };
         for (const bucket of result.body.aggregations?.status_counts?.buckets || []) {

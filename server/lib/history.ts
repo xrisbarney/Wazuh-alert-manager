@@ -4,6 +4,7 @@
 export const APPEND_HISTORY_SCRIPT_SOURCE = `
   if (ctx._source.history == null) { ctx._source.history = []; }
   ctx._source.history.add(params.entry);
+  while (ctx._source.history.size() > 1000) { ctx._source.history.remove(0); }
   if (params.fields != null) {
     for (entry in params.fields.entrySet()) {
       ctx._source[entry.getKey()] = entry.getValue();

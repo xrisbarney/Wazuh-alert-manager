@@ -13,7 +13,6 @@ import {
   EuiSuperDatePicker,
   EuiText,
   EuiButtonIcon,
-  EuiLink,
   EuiPanel,
   EuiStat,
   EuiLoadingSpinner,
@@ -91,7 +90,14 @@ export const CasesView: React.FC<Props> = ({ apiService, onToast, openCaseId, on
         setPageIndex(Math.max(0, Math.ceil(nextTotal / pageSize) - 1));
         return;
       }
-      setCases(res?.cases || []);
+      // EuiBasicTable can retain a previous record object while updating a
+      // field's displayed value during rapid server-side refreshes. Carry the
+      // identity and label in one scalar field so row controls never combine a
+      // new title with a stale case id.
+      setCases((res?.cases || []).map((caseDoc) => ({
+        ...caseDoc,
+        __row_identity: JSON.stringify([caseDoc.id, caseDoc.title]),
+      })) as Case[]);
       setTotalCases(nextTotal);
       setSummary(res?.summary || { open: 0, in_progress: 0, closed: 0, total: nextTotal });
       if (preserveSelection.length) {
@@ -157,11 +163,11 @@ export const CasesView: React.FC<Props> = ({ apiService, onToast, openCaseId, on
   const onTableChange = (criteria: CriteriaWithPagination<Case>) => {
     const sortChanged = Boolean(
       criteria.sort &&
-      (criteria.sort.field !== sortField || criteria.sort.direction !== sortDirection)
+      ((criteria.sort.field === '__row_identity' ? 'title' : criteria.sort.field) !== sortField || criteria.sort.direction !== sortDirection)
     );
     clearSelection();
     if (sortChanged && criteria.sort) {
-      setSortField(criteria.sort.field as CaseListSortField);
+      setSortField((criteria.sort.field === '__row_identity' ? 'title' : criteria.sort.field) as CaseListSortField);
       setSortDirection(criteria.sort.direction);
       setPageIndex(0);
     }
@@ -181,48 +187,50 @@ export const CasesView: React.FC<Props> = ({ apiService, onToast, openCaseId, on
 
   const navigateToCase = (event: React.MouseEvent, caseId: string) => {
     event.preventDefault();
-    const url = new URL(window.location.href);
-    url.searchParams.set('tab', 'cases');
-    url.searchParams.set('case', caseId);
-    // A native navigation deliberately remounts the app. The dashboard's SPA
-    // link interceptor otherwise updates the URL without replaying App's
-    // initial deep-link state, leaving the case visibly unopened.
-    window.location.assign(url.toString());
+    event.stopPropagation();
+    setSelectedCaseId(caseId);
   };
 
   const columns = [
     {
-      field: 'title',
+      field: '__row_identity',
       name: 'Title',
       sortable: true,
-      render: (title: string, caseDoc: Case) => (
-        <EuiLink
-          href={`?tab=cases&case=${encodeURIComponent(caseDoc.id)}`}
-          onClick={(event) => navigateToCase(event, caseDoc.id)}
-        >
-          {title}
-        </EuiLink>
-      ),
+      render: (identity: string) => {
+        const [caseId, title] = JSON.parse(identity);
+        return (
+          <EuiButtonEmpty size="xs" flush="left" onClick={(event) => navigateToCase(event, caseId)}>
+            {title}
+          </EuiButtonEmpty>
+        );
+      },
     },
     { field: 'severity', name: 'Severity', sortable: true, render: (s: string) => <CaseSeverityBadge severity={s} /> },
     { field: 'status', name: 'Status', sortable: true, render: (s: CaseStatus) => <StatusBadge status={s} /> },
-    { field: 'alert_ids', name: 'Alerts', render: (ids: string[]) => ids?.length || 0 },
+    {
+      field: 'evidence_count',
+      name: 'Alerts',
+      render: (count: number | undefined, caseDoc: Case) => count ?? caseDoc.alert_ids?.length ?? 0,
+    },
     { field: 'assigned_to', name: 'Assigned to', sortable: true, render: (v: string | null) => v || 'Unassigned' },
     { field: 'created_by', name: 'Created by', sortable: true },
     { field: 'created_at', name: 'Created', sortable: true, render: (v: string) => formatAbsolute(v) },
     { field: 'updated_at', name: 'Updated', sortable: true, render: (v: string) => formatAbsolute(v) },
     {
+      field: '__row_identity',
       name: 'Details',
       width: '64px',
       align: 'right',
-      render: (caseDoc: Case) => (
-        <EuiButtonIcon
-          iconType="inspect"
-          aria-label={`Open details for ${caseDoc.title}`}
-          href={`?tab=cases&case=${encodeURIComponent(caseDoc.id)}`}
-          onClick={(event) => navigateToCase(event, caseDoc.id)}
-        />
-      ),
+      render: (identity: string) => {
+        const [caseId, title] = JSON.parse(identity);
+        return (
+          <EuiButtonIcon
+            iconType="inspect"
+            aria-label={`Open details for ${title}`}
+            onClick={(event) => navigateToCase(event, caseId)}
+          />
+        );
+      },
     },
   ];
 
@@ -397,13 +405,14 @@ export const CasesView: React.FC<Props> = ({ apiService, onToast, openCaseId, on
         />
       ) : (
         <EuiBasicTable<Case>
+          key={cases.map((caseDoc) => caseDoc.id).join('|')}
           ref={tableRef}
           className="wamCaseTable"
           items={cases}
           itemId="id"
           columns={columns}
           loading={loading}
-          sorting={{ sort: { field: sortField, direction: sortDirection } }}
+          sorting={{ sort: { field: sortField === 'title' ? '__row_identity' : sortField, direction: sortDirection } }}
           pagination={{ pageIndex, pageSize, totalItemCount: pageableCases, pageSizeOptions: [10, 20, 50] }}
           selection={{ selectable: () => !bulkBusy, onSelectionChange: setSelectedCases }}
           onChange={onTableChange}

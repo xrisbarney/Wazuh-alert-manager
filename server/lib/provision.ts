@@ -39,7 +39,7 @@ import { assertManagedWriteTarget } from './index_namespace';
 // A fresh install creates indices with the current mapping and records this
 // version; an upgraded install has an older (or absent) version and runs
 // ensureMappingAdditions() once to PUT the new fields onto its existing indices.
-const MAPPING_VERSION = 11;
+const MAPPING_VERSION = 12;
 const MAPPING_VERSION_DOC_ID = 'mapping_version';
 
 const MANAGED_INDICES: Array<[string, any]> = [

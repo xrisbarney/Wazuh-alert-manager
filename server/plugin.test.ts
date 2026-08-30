@@ -62,15 +62,34 @@ describe('plugin initialization lifecycle', () => {
     (ensureIndices as jest.Mock).mockReturnValue(new Promise<void>((resolve) => (finishProvision = resolve)));
     const plugin = pluginWithConfig();
 
-    plugin.start(core);
+    const started = plugin.start(core);
     await Promise.resolve();
     const stopped = plugin.stop();
     finishProvision();
-    await stopped;
+    await Promise.all([started, stopped]);
 
     expect(startLifecycleJob).not.toHaveBeenCalled();
     expect(startAutomationWorker).not.toHaveBeenCalled();
     expect(startSyncJob).not.toHaveBeenCalled();
+  });
+
+  test('does not report plugin start complete before owned indices are provisioned', async () => {
+    let finishProvision!: () => void;
+    (ensureIndices as jest.Mock).mockReturnValue(new Promise<void>((resolve) => (finishProvision = resolve)));
+    const plugin = pluginWithConfig();
+    let started = false;
+
+    const startPromise = plugin.start(core).then(() => { started = true; });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(ensureIndices).toHaveBeenCalledTimes(1);
+    expect(started).toBe(false);
+
+    finishProvision();
+    await startPromise;
+
+    expect(started).toBe(true);
   });
 
   test('cleans workers already started when a later startup stage fails', async () => {

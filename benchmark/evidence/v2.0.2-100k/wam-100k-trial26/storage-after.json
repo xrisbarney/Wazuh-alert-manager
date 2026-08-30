@@ -1,0 +1,14 @@
+{
+  "wazuh-alert-manager-v2-*": {
+    "bytes": 41372655,
+    "documents": 44079
+  },
+  "wazuh-alert-status-v2-*": {
+    "bytes": 43886852,
+    "documents": 115300
+  },
+  "wazuh-alerts-4.x-wam-benchmark": {
+    "bytes": 3466589,
+    "documents": 100000
+  }
+}

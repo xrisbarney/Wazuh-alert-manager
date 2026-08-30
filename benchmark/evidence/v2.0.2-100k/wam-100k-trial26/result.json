@@ -1,0 +1,67 @@
+{"elapsed_seconds": 1.378, "synced": 0, "queue": {"active": 0, "reportedLag": 0, "deferred": 0, "failed": 0, "pending": 0, "claimed": 0, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 19.515, "synced": 10000, "queue": {"active": 0, "reportedLag": 0, "deferred": 0, "failed": 0, "pending": 0, "claimed": 0, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 39.816, "synced": 22000, "queue": {"active": 11988, "reportedLag": 11988, "deferred": 0, "failed": 0, "pending": 10720, "claimed": 1268, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 59.19, "synced": 34000, "queue": {"active": 10464, "reportedLag": 10464, "deferred": 0, "failed": 0, "pending": 9184, "claimed": 1280, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 76.311, "synced": 49394, "queue": {"active": 8180, "reportedLag": 8180, "deferred": 0, "failed": 0, "pending": 7416, "claimed": 764, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 96.932, "synced": 62156, "queue": {"active": 6832, "reportedLag": 6832, "deferred": 0, "failed": 0, "pending": 6320, "claimed": 512, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 116.428, "synced": 86189, "queue": {"active": 6320, "reportedLag": 6320, "deferred": 0, "failed": 0, "pending": 5976, "claimed": 344, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 132.447, "synced": 100000, "queue": {"active": 5976, "reportedLag": 5976, "deferred": 0, "failed": 0, "pending": 5720, "claimed": 256, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 148.58, "synced": 100000, "queue": {"active": 5720, "reportedLag": 5720, "deferred": 0, "failed": 0, "pending": 5464, "claimed": 256, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 165.197, "synced": 100000, "queue": {"active": 5208, "reportedLag": 5208, "deferred": 0, "failed": 0, "pending": 4952, "claimed": 256, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 181.349, "synced": 100000, "queue": {"active": 3416, "reportedLag": 3416, "deferred": 0, "failed": 0, "pending": 3416, "claimed": 0, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 197.541, "synced": 100000, "queue": {"active": 2575, "reportedLag": 2575, "deferred": 0, "failed": 0, "pending": 2575, "claimed": 0, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 213.527, "synced": 100000, "queue": {"active": 1551, "reportedLag": 1551, "deferred": 0, "failed": 0, "pending": 1551, "claimed": 0, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 229.962, "synced": 100000, "queue": {"active": 172, "reportedLag": 172, "deferred": 0, "failed": 0, "pending": 0, "claimed": 172, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 246.181, "synced": 100000, "queue": {"active": 0, "reportedLag": 0, "deferred": 0, "failed": 0, "pending": 0, "claimed": 0, "retry": 0, "admissionOpen": true}}
+{
+  "actual": {
+    "assigned_in_progress": 2500,
+    "boolean_group_cases": 2,
+    "boolean_group_linked": 1200,
+    "burst_srcip_cases": 10,
+    "burst_srcip_linked": 2000,
+    "closed_alerts": 5000,
+    "cooccurrence_cases": 10,
+    "cooccurrence_linked": 600,
+    "false_actions_on_controls": 0,
+    "immediate_agent_cases": 10,
+    "immediate_agent_linked": 500,
+    "immediate_user_cases": 10,
+    "immediate_user_linked": 1000,
+    "total_synced": 100000
+  },
+  "end_to_end_seconds": 246.181,
+  "expected": {
+    "assigned_in_progress": 2500,
+    "boolean_group_cases": 2,
+    "boolean_group_linked": 1200,
+    "burst_srcip_cases": 10,
+    "burst_srcip_linked": 2000,
+    "closed_alerts": 5000,
+    "cooccurrence_cases": 10,
+    "cooccurrence_linked": 600,
+    "false_actions_on_controls": 0,
+    "immediate_agent_cases": 10,
+    "immediate_agent_linked": 500,
+    "immediate_user_cases": 10,
+    "immediate_user_linked": 1000,
+    "total_synced": 100000
+  },
+  "mismatches": {},
+  "passed": true,
+  "queue_final": {
+    "active": 0,
+    "admissionOpen": true,
+    "claimed": 0,
+    "deferred": 0,
+    "failed": 0,
+    "pending": 0,
+    "reportedLag": 0,
+    "retry": 0
+  },
+  "queue_high_water": {
+    "active": 11988,
+    "deferred": 0,
+    "failed": 0
+  }
+}
