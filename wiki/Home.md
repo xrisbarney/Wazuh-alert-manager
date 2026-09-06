@@ -2,6 +2,8 @@
 
 **Wazuh Alert Manager** is an (unofficial) OpenSearch Dashboards plugin that turns Wazuh alerts into a working SOC workbench: triage alerts with a real lifecycle, group them into investigative cases, automate the routine handling, and report on what your team is doing.
 
+This wiki documents **version 2.0.2** only.
+
 > ⚠️ **Unofficial** — this plugin is not produced or endorsed by Wazuh Inc. It reads Wazuh's alerts and stores its own workflow state in separate indices; it never modifies `wazuh-alerts-*`.
 
 ![Alert queue with operational summaries and filters](images/workbench-alert-queue.png)
@@ -13,6 +15,7 @@
 - **Automation rules** — match alerts and, on a per-alert or burst trigger, **open a case**, **auto-close** routine noise, and/or **auto-assign** to an analyst. See [[Automation Rules]].
 - **Triage helpers** — a **"seen before"** precedent callout and **suggested related alerts**, both deterministic (no LLM).
 - **Reporting** — status donuts, status-over-time, period-over-period deltas, SLA compliance, and per-analyst workload/performance. See [[Reporting]].
+- **Bounded storage lifecycle** — roll alert, activity, case, and evidence generations; retire, restore, reopen, or explicitly purge them under administrator control. See [[Lifecycle, Retention and RBAC|Lifecycle-Retention-and-RBAC]].
 - **Optional AI analysis** — bring-your-own-key summaries with a strict egress boundary. See [[AI Analysis]] and [[Security Model]].
 
 ## Supported versions
@@ -35,4 +38,4 @@ Download the zip for your version from the **[Releases page](https://github.com/
 - **[[Security Model]]** — identity, data egress, and what leaves the network.
 - **[[Troubleshooting]]** — common issues (including the indexer startup timeout).
 - **[[Architecture]]** — how the sync job and indices work.
-- **[[Release Notes 2.0|Release-Notes-2.0]]** — v2.0 features, compatibility, and validation scope.
+- **[[Release Notes 2.0.2|Release-Notes-2.0]]** — shipped features, compatibility, and validation evidence.

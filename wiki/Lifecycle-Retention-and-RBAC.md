@@ -43,19 +43,18 @@ Wazuh documentation: [Active Directory and LDAP integration](https://documentati
 
 ### What each setting means
 
-| Setting | Meaning | Example |
-|---|---|---|
-| Automatic rollover | Checks plugin-owned generation families and rolls a writer when either configured limit is reached. It does not retire or delete the old generation. | Enabled |
-| Maximum generation age | Oldest allowed age of the current write generation before rollover. | `7d` |
-| Maximum generation size | Maximum primary-store size of the current writer before rollover. | `20gb` |
-| Alert retention | Minimum age before a non-write alert generation is marked due for reviewed retirement. | `90` days |
-| Activity retention | Minimum age before append-only comments/audit activity can leave live views and reports. | `365` days |
-| Case retention | How long closed cases remain live-searchable before Archived Cases eligibility. | `365` days |
-| Evidence retention | Policy horizon for retained full payloads; relationships and bounded snapshots have a separate carry-forward lifecycle. | Organization policy |
+| Setting | Meaning | v2.0.2 default | Minimum |
+|---|---|---:|---:|
+| Automatic rollover | Approximately every five minutes, checks all four plugin-owned rollover families and rolls a writer when either configured limit is reached. It does not retire or delete the old generation. | Enabled | — |
+| Maximum generation age | Maximum age of the current write generation before rollover. Examples: `12h`, `7d`, `30d`. | `7d` | Positive duration |
+| Maximum generation size | Maximum primary-store size of the current writer before rollover. Examples: `500mb`, `20gb`, `1tb`. | `20gb` | Positive size |
+| Alert retention | Age before a non-write alert generation is marked due for reviewed retirement. | `90` days | `7` days |
+| Activity retention | Age before comments/audit activity can leave live views and operational reports. | `365` days | `30` days |
+| Case retention | How long closed cases remain live-searchable before Archived Cases eligibility. | `365` days | `30` days |
+| Evidence retention | Required retention horizon for a retired full alert payload while case evidence still references it. Evidence relationships and snapshots have their own carry-forward lifecycle. | `730` days | `30` days |
 
-Age and size use lowercase units accepted by the UI (`12h`, `7d`, `500mb`,
-`20gb`, `1tb`). Alert retention has a seven-day minimum; activity retention has
-a thirty-day minimum. A threshold creates eligibility, never automatic deletion.
+Age and size use lowercase units accepted by the UI. Retention can be configured
+up to 3,650 days. A threshold creates eligibility, never automatic deletion.
 
 ### Rollover, retirement, restore, and purge are different
 

@@ -1,74 +1,96 @@
 # Architecture
 
-## Overview
+## Version 2.0.2 overview
 
-Wazuh Alert Manager is an OpenSearch Dashboards **New Platform** plugin (server + public halves). It reads Wazuh alerts, maintains a parallel workflow record for each, and layers cases, automation, and reporting on top — all without touching `wazuh-alerts-*`.
+Wazuh Alert Manager 2.0.2 is an OpenSearch Dashboards New Platform plugin with server and browser components. It reads native Wazuh alert indices, builds a bounded operational projection, and adds alert workflow, cases, evidence relationships, automation, lifecycle controls, reporting, and optional AI analysis.
 
-## Indices the plugin owns
+The central safety boundary is strict: native `wazuh-alerts-*` indices are read-only. Every plugin write is restricted to the exact `wazuh-alert-status-v2-` and `wazuh-alert-manager-v2-` prefixes.
 
-All indices are **v2**, auto-created and aliased on first start. Wazuh's native
-`wazuh-alerts-*` indices are read-only evidence sources and are never written to.
+## Plugin-owned storage
+
+Four data families use read/write aliases and numeric rollover generations:
+
+| Family | Read alias | Write alias | Initial generation | Purpose |
+|---|---|---|---|---|
+| Alert projection | `wazuh-alert-status-v2-read` | `wazuh-alert-status-v2-write` | `wazuh-alert-status-v2-000001` | Selected operational alert fields plus status, assignment, case preview, and workflow metadata. |
+| Activity | `wazuh-alert-manager-v2-activity-read` | `wazuh-alert-manager-v2-activity-write` | `wazuh-alert-manager-v2-activity-000001` | Comments and audit activity for alerts and cases. |
+| Cases | `wazuh-alert-manager-v2-cases-read` | `wazuh-alert-manager-v2-cases-write` | `wazuh-alert-manager-v2-cases-000001` | Case records, state, ownership, correlation identity, and bounded alert previews. |
+| Evidence | `wazuh-alert-manager-v2-evidence-read` | `wazuh-alert-manager-v2-evidence-write` | `wazuh-alert-manager-v2-evidence-000001` | Authoritative case-to-alert relationships and evidence snapshots. |
+
+The following are fixed stores. "Fixed" means that each has one stable index name rather than a rollover alias; it does not mean the documents are immutable.
 
 | Index | Purpose |
-|-------|---------|
-| `wazuh-alert-status-v2-*` | Operational projection of each alert + its workflow state (status, assignee, case link, related-alert links, AI analysis, history). Exposed through read/write aliases and numeric rollover generations. |
-| `wazuh-alert-manager-v2-activity` | Comment threads and audit events on alerts and cases (read/write aliases + generations). |
-| `wazuh-alert-manager-v2-cases` | Cases (title, severity, status, alert IDs, correlation key, history). |
-| `wazuh-alert-manager-v2-rules` | Automation (correlation) rules. |
-| `wazuh-alert-manager-v2-meta` | Internal metadata: the sync watermark, leader lock, lifecycle settings, AI settings, retirement records. |
-| `wazuh-alert-manager-v2-migration` | Legacy v1 -> v2 migration progress and checkpoint. |
-| `wazuh-alert-manager-v2-sync-dlq` | Dead-letter queue for alerts that fail to sync. |
+|---|---|
+| `wazuh-alert-manager-v2-meta` | Sync cursor, leases, lifecycle settings, AI settings, and retirement metadata. |
+| `wazuh-alert-manager-v2-rules` | Enabled and disabled automation rules. |
+| `wazuh-alert-manager-v2-migration` | Resumable legacy migration checkpoints and validation state. |
+| `wazuh-alert-manager-v2-sync-dlq` | Source alerts that could not be projected after retry handling. |
+| `wazuh-alert-manager-v2-automation-queue` | Durable automation events and their processing state. |
+| `wazuh-alert-manager-v2-automation-dlq` | Automation events that exhausted retry handling. |
+| `wazuh-alert-manager-v2-automation-executions` | Idempotency records and content-addressed ruleset snapshots. |
 
-Legacy v1 indices (`wazuh-alert-status`, `wazuh-alert-manager-cases`,
-`wazuh-alert-manager-comments`, `wazuh-alert-manager-rules`,
-`wazuh-alert-manager-meta`) are read-only migration inputs and remain retained
-after migration.
+Mappings are bounded and versioned. Provisioning is idempotent and applies compatible mapping additions across retained generations. Legacy v1 indices are read-only migration inputs and are retained after migration.
 
-Mappings are versioned; an idempotent migration applies additive changes on start
-and fails safe on incompatible ones. Write validation is fail-closed to the exact
-prefixes `wazuh-alert-status-v2-` and `wazuh-alert-manager-v2-`.
+## Alert synchronization
 
-## Lifecycle, retirement, and restore
+One dashboard replica at a time acquires a renewable sync lease. The synchronizer reads new native alerts with a point-in-time search, a composite `@timestamp` and document-ID cursor, and an overlap window. Full batches trigger an immediate continuation rather than waiting for the next configured interval.
 
-The lifecycle is plugin-managed (see [[Lifecycle-Retention-and-RBAC]]): the stock
-dashboard service account can create plugin indices but may lack cluster-wide ISM
-policy privileges, so rollover is driven by the plugin worker rather than ISM.
+For each batch, the server:
 
-- **Rollover** creates a new writable generation when the current one reaches its
-  age or size threshold.
-- **Retention** marks older, non-current generations "due" for review — it never
-  deletes data automatically.
-- **Retirement** carries every `open`/`in_progress` alert plus closed alerts needed
-  by active cases or evidence holds into a compact carry index. Closed alerts in
-  closed, unheld cases become archive-only with a durable evidence stub.
-- **Restore** copies only IDs missing from the live store into the current writer,
-  never overwriting a newer live record; it is idempotent and reversible.
-- **Purge** is the only permanent deletion and always requires a separate explicit
-  confirmation.
+1. reconciles incomplete automation admissions from an earlier interrupted run;
+2. captures the applicable saved ruleset snapshot and durably stages automation events;
+3. writes alert projections with scripted partial upserts and refreshes them;
+4. activates the staged automation events;
+5. renews the sync lease; and
+6. commits the cursor and watermark.
 
-## The sync job
+The cursor is not advanced before durable automation admission. Re-reading an overlapping source alert is safe: partial upserts preserve status, assignment, comments, case links, and other analyst-owned state. Records that cannot be synchronized enter the sync dead-letter queue instead of silently disappearing.
 
-A background job periodically projects **new** Wazuh alerts into the
-`wazuh-alert-status-v2-write` alias:
+Only a bounded operational field set is projected. Full raw alert details remain in Wazuh and are loaded lazily from the trusted `source_index` and `source_id` recorded on the projection.
 
-- It searches **sorted ascending** by `@timestamp` and advances its **watermark** only to the last alert actually copied — so a window with more matches than the batch size never silently drops the remainder.
-- The copy is **field-protective**: plugin-owned fields (status, assignee, case link, history) are never overwritten by an incoming same-named Wazuh field.
-- The whole tick runs under a **leader lock** (a document in the meta index), so with multiple dashboard replicas there is exactly one writer.
+## Automation execution
 
-## Automation evaluation
+Automation does not execute inline as an unrecorded side effect of cursor advancement. Admitted events contain the identity of an immutable, content-addressed ruleset snapshot. Separately leased worker lanes claim queue items, evaluate that saved snapshot, and perform idempotent actions. Retries, execution records, and the automation dead-letter queue make interruption and recovery visible.
 
-After a tick commits its watermark, the enabled [[Automation Rules]] are evaluated against **that tick's batch**:
+Rules are prospective: they apply as alerts are ingested after a rule is enabled and do not scan historical alerts retroactively. See [[Automation-Rules]] for trigger, Boolean entity-group, deduplication, cap, and action semantics.
 
-- **Per-alert** rules act on each matching alert immediately.
-- **Burst** rules group the batch's matches by entity, then check each candidate entity's full window (threshold + any-of/all-of coverage) with an aggregation; a firing entity's burst gets the rule's actions, and case creation de-duplicates against the still-open case for that rule + entity.
+## Cases and evidence
 
-Because candidate work is scoped to the batch, evaluation cost is proportional to new-alert volume, not index size.
+Evidence documents are the authoritative case-to-alert relationship. The `alert_ids` stored on a case is a compatibility preview bounded to 1,000 IDs; `evidence_count` is the exact relationship count. Case detail views paginate the evidence family, so large cases do not require an ever-growing array in one case document.
 
-## Front-end
+Creating, correlating, adding, or removing alert evidence updates the relationship store and the bounded case preview. Migration from legacy releases is resumable and validates relationship counts before relying on evidence-first reads.
 
-- Two registered apps under one nav category: **Workbench** (Alerts / Cases / Settings) and **Reporting**.
-- Charts (trends, donuts, status-over-time) use `@elastic/charts`, bundled by the monorepo; the attack-path graph is dependency-free SVG for maximum portability across OSD versions.
+## Lifecycle, retirement, restore, and purge
 
-## Compatibility
+The plugin manages rollover without requiring cluster-wide ISM privileges. Approximately every five minutes it checks the current writers for the configured maximum generation age or primary-shard size.
 
-The plugin is built per target (OSD 2.19.1 / 2.19.2 / 2.19.5 for Wazuh 4.12 / 4.13 / 4.14). The **server code is identical** across builds; only the version stamp differs. Each ZIP is compiled inside the matching official Wazuh Dashboard source tree rather than relabelled after the fact.
+- **Alert retirement:** the selected source generation is write-blocked and detached. Open and in-progress alerts are carried into a deterministic live carry generation. Closed alerts are also carried when an active case or explicit hold requires them; other closed alerts become archive-only. The retired source remains retained.
+- **Activity retirement:** the generation is write-blocked and detached without copying old activity into the live family.
+- **Case retirement:** active cases and closed cases still inside case retention are carried. Expired closed cases become archived and can be restored or reopened through the workbench.
+- **Evidence retirement:** relationship documents are copied insert-only into the current evidence writer before the retired generation is detached, preserving authoritative case membership without overwriting newer relationships.
+
+Restore is insert-only: an archived alert is copied into the current writer only if its ID is absent from the live read alias. An archive is never attached directly to a live alias, and a newer live record is never overwritten. Purge is a separate, privileged, explicit action with reference and retention guards; retirement by itself does not physically delete data.
+
+See [[Lifecycle-Retention-and-RBAC]] and [[Case-Evidence-and-Case-Lifecycle]] for the operator workflow and safeguards.
+
+## Reporting
+
+Operational reports query the live, unarchived projection and case aliases. Resolution metrics use write-time lifecycle fields and composite pagination for exact results; v2.0.2 does not estimate them from a sample. Archived records do not contribute unless they are restored to the live families.
+
+## Browser applications and API
+
+The browser provides the **Workbench** for alerts, cases, automation, settings, lifecycle operations, and optional AI analysis, plus **Reporting** for operational metrics. Browser code uses schema-validated plugin routes under `/api/wazuh_alert_manager`; it does not write indices through Console proxy endpoints.
+
+Administrative settings and destructive lifecycle actions use the current Wazuh/OpenSearch Dashboards security context. Read-only users can inspect permitted data, while changes require the documented administrative privileges. The dashboard service identity's access to native alert indices constrains background ingestion. If users must see different subsets of projected alerts, apply document-level security separately to the plugin-owned operational indices; native-index restrictions are not automatically inherited by the copy.
+
+## Supported builds
+
+Plugin archives are compiled separately because the OpenSearch Dashboards version pin is exact:
+
+| Wazuh | OpenSearch Dashboards |
+|---|---|
+| 4.12.x | 2.19.1 |
+| 4.13.x | 2.19.2 |
+| 4.14.x | 2.19.5 |
+
+Install the matching archive on every OpenSearch Dashboards node that can serve users. Nothing is installed on Wazuh agents, and a manager-only or indexer-only node does not need the dashboard plugin. See [[Installation]].

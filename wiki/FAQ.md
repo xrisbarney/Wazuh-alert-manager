@@ -22,7 +22,7 @@ Yes — via [[Automation Rules]]. "Set status = Closed" is auto-close; "Assign t
 Not in this release — it's deliberately deferred pending a security review.
 
 **Where does automation run — will it double-fire with multiple dashboards?**
-No. Rules run inside the sync tick under a leader lock, so there is a single writer across replicas. See [[Architecture]].
+The sync job uses a single-writer lease and durably admits each alert with its saved ruleset snapshot before committing the cursor. Separate worker lanes use fenced leases and deterministic execution identities, so replicas, retries, restarts, and lease loss do not duplicate actions. See [[Architecture]].
 
 **How do I install it in Docker or Kubernetes?**
 Bake it into a custom dashboard image and reference that image. See [[Installation#container-deployments-docker--kubernetes]].

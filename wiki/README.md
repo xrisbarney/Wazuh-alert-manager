@@ -16,9 +16,9 @@ These Markdown files are the source for the project's GitHub **Wiki**. They are 
 | `Architecture.md` | Sync job & indices |
 | `Lifecycle-Retention-and-RBAC.md` | Rollover, retention, retirement, restore, purge, and Wazuh RBAC |
 | `Case-Evidence-and-Case-Lifecycle.md` | Rollable cases, bounded evidence relationships, archive lookup, holds, and migration |
-| `Release-Notes-2.0.md` | Version 2.0 highlights, compatibility, upgrade behavior, and validation scope |
+| `Release-Notes-2.0.md` | Version 2.0.2 highlights, compatibility, upgrade behavior, and validation evidence |
 | `images/` | Browser screenshots captured from the installed release candidate |
-| `Roadmap.md` | Planned work and superseded design notes |
+| `Roadmap.md` | Version 2.0.2 shipped scope and current limitations |
 | `Troubleshooting.md` | Common issues |
 | `FAQ.md` | Quick answers |
 | `_Sidebar.md` / `_Footer.md` | Wiki chrome |

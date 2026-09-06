@@ -21,7 +21,7 @@ Every alert has a status: **Open → In progress → Closed**. Status is stored 
 
 ### Filters
 
-A single-row filter bar: status toggles, severity/level, rule, agent, alert type, assignee, a time range, and a full-width **Lucene query** box for advanced expressions (e.g. `rule.description:*ssh* AND NOT agent.name:server1`).
+A collapsible filter panel provides status toggles, severity/level, rule, agent, alert type, assignee, a time range, and a full-width **Lucene query** box for advanced expressions (e.g. `rule.description:*ssh* AND NOT agent.name:server1`). The alert and case summary rows are also collapsible, allowing more room for the work queues.
 
 ### Row actions & bulk actions
 

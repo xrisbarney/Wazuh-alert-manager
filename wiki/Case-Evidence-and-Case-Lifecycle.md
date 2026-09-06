@@ -2,11 +2,9 @@
 
 ## Architecture decision
 
-Keeping every case-linked alert in the live operational alias forever is only an
-interim correctness measure. It protects case drill-down, but recreates
-unbounded storage as closed cases accumulate.
-
-The scalable design separates:
+Version 2.0.2 does not keep every case-linked alert in the live operational alias
+forever. Doing so would recreate unbounded storage as closed cases accumulate.
+The shipped design separates:
 
 1. the mutable operational alert used by triage;
 2. a compact, durable case-evidence relationship and snapshot; and
@@ -125,16 +123,15 @@ Example lifecycle:
    unnecessary unless an administrator intentionally wants those alerts live
    again.
 
-## Non-destructive migration
+## Non-destructive migration in v2.0.2
 
-1. Provision evidence and case alias families without changing legacy stores.
-2. Backfill evidence relationships from case `alert_ids` and alert `case_id`,
-   recording discrepancies instead of guessing.
-3. Dual-write relationship changes during backfill.
-4. Validate per-case counts, then use relationship-first reads with legacy-array
-   fallback.
-5. Enable direct archived-evidence lookup and the bounded retirement planner.
-6. Convert cases to rollover generations and enable archived case workflows.
-7. Remove fallback only in a later release after an explicit health check.
+On upgrade, v2.0.2 provisions the case and evidence alias families without
+changing the legacy stores. Its resumable backfill derives evidence relationships
+from case `alert_ids` and alert `case_id`, records discrepancies instead of
+guessing, and dual-writes relationship changes while backfill is incomplete.
+Per-case counts are validated before evidence-first reads become authoritative.
 
-Every phase is resumable. Native `wazuh-alerts-*` indices remain read-only.
+The compatibility `alert_ids` preview is bounded to 1,000 IDs and is not the
+long-term membership source of truth. A bounded legacy fallback remains available
+while a migration is incomplete. Native `wazuh-alerts-*` indices remain read-only,
+and legacy plugin indices are retained as migration inputs rather than deleted.
