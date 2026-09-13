@@ -45,6 +45,113 @@ sudo systemctl restart wazuh-manager
 
 ---
 
+## Alerts stop syncing after a dashboard or VM restart
+
+**Symptom.** Native `wazuh-alerts-*` indices continue receiving alerts, but the
+newest alert in Wazuh Alert Manager remains fixed at the time of a restart. The
+dashboard and indexer services may both report `active (running)`, while the
+plugin's sync watermark never advances.
+
+First check the services and the plugin version:
+
+```bash
+sudo systemctl --no-pager --full status \
+  wazuh-dashboard wazuh-indexer wazuh-manager
+sudo /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin list | \
+  grep -i wazuhAlertManager
+sudo cat \
+  /usr/share/wazuh-dashboard/plugins/wazuhAlertManager/common/build_info.js
+```
+
+The background sync runs inside `wazuh-dashboard`; it does not have a separate
+service or log file. Query its logs through the systemd journal:
+
+```bash
+# Current boot
+sudo journalctl -u wazuh-dashboard -b --no-pager | \
+  grep -iE 'wazuhAlertManager|wazuh-alert-manager|ResponseError'
+
+# Across previous boots (adjust the date)
+sudo journalctl -u wazuh-dashboard \
+  --since '2026-08-28 00:00:00' --no-pager | \
+  grep -iE 'failed to provision|wazuh-alert-manager sync|sync lock|ResponseError'
+```
+
+Related Wazuh logs are available through:
+
+```bash
+sudo journalctl -u wazuh-indexer -b --no-pager
+sudo journalctl -u wazuh-manager -b --no-pager
+sudo tail -n 200 /var/log/wazuh-indexer/wazuh-cluster.log
+sudo tail -n 200 /var/ossec/logs/ossec.log
+sudo journalctl -u filebeat -b --no-pager
+```
+
+In **Indexer management → Dev Tools**, compare the native and projected data
+and inspect the sync control documents:
+
+```http
+GET wazuh-alerts-*/_search
+{
+  "size": 1,
+  "sort": [{ "@timestamp": "desc" }],
+  "_source": ["@timestamp", "agent.name", "rule.level"]
+}
+
+GET wazuh-alert-status-v2-read/_search
+{
+  "size": 1,
+  "sort": [{ "@timestamp": "desc" }],
+  "_source": ["@timestamp", "agent.name", "rule.level", "source_index"]
+}
+
+GET wazuh-alert-manager-v2-meta/_doc/sync_state
+GET wazuh-alert-manager-v2-meta/_doc/sync_settings
+GET wazuh-alert-manager-v2-meta/_doc/sync_lock
+GET _cat/indices/wazuh-alerts-*,wazuh-alert-status-v2-*,wazuh-alert-manager-v2-*?v
+GET _cat/aliases/wazuh-alert-status-v2-*?v
+```
+
+`sync_settings.enabled` should be `true`. A missing `sync_lock` is normally
+harmless for no more than one polling interval because a running sync worker
+recreates it. A missing lock combined with a frozen `sync_state.updated_at`
+means the worker probably never started.
+
+**Known early-v2 failure.** Some development builds labelled `2.0.0` queried
+the `_id` metadata field with a prefix query during retirement recovery. On the
+OpenSearch version shipped with Wazuh 4.14, startup then logs:
+
+```text
+wazuhAlertManager: failed to provision indices:
+search_phase_execution_exception: [query_shard_exception]
+Reason: Can only use prefix queries on keyword and text fields - not on [_id]
+which is of type [_id]
+```
+
+The dashboard process remains healthy, but plugin initialization stops before
+the lifecycle, automation, and sync workers are started. A restart exposes the
+problem because initialization and retirement recovery run again; repeated VM
+shutdowns do not themselves corrupt the watermark.
+
+**Fix.** Install the current supported build (2.0.2 for Wazuh 4.14 / OpenSearch
+Dashboards 2.19.5) and let the installer restart the dashboard:
+
+```bash
+curl -fsSL \
+  https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | \
+  sudo bash -s -- --version 2.0.2
+```
+
+Do not delete the sync state, reset its watermark, or manually create the lock.
+The stored watermark is the safe resume point. After the upgrade, verify that
+there is no new `failed to provision indices` message and query `sync_state`
+again after one polling interval. Its `updated_at` and `completed_at` values
+should advance. If the backlog exceeds the configured batch size, the plugin
+persists a point-in-time cursor and continues draining batches immediately; the
+native and projected newest timestamps should converge.
+
+---
+
 ## Analyst/assignee metrics are empty
 
 Current operational data is stored under the `wazuh-alert-status-v2-*` aliases and generations, where `assigned_to` is mapped as a keyword. Check system health and dashboard migration logs for a failed v2 provisioning or legacy migration step. Do not point the plugin at a native Wazuh index or broaden its managed write prefixes. Repair the failed v2 migration/provisioning issue before rebuilding an affected plugin-owned generation.
