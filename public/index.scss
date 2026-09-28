@@ -412,7 +412,8 @@
 }
 
 // ---- Attack graph (Wazuh console design: "SSH Attack Graph v2") ----
-// Light by default with an opt-in dark theme (.wamAg--dark), matching the
+// Light by default; the Entity graph canvas can opt into the dark theme
+// (.wamAg--dark), matching the
 // design's two token sets. Manrope and Inconsolata are bundled (SIL OFL 1.1,
 // licences next to the files) because the dashboard CSP blocks Google Fonts.
 @font-face {
@@ -1025,19 +1026,6 @@
   .euiTab__content { font-weight: 700; }
   &::after { display: none; }
 }
-
-// Dark console theme for the flyout while a console tab is showing.
-.wamCaseFlyout--dark,
-.wamCaseFlyout--dark .euiFlyoutHeader,
-.wamCaseFlyout--dark .euiFlyoutBody {
-  background: var(--ag-bg);
-  color: var(--ag-ink);
-}
-.wamCaseFlyout--dark .euiFlyoutHeader { box-shadow: none; }
-.wamCaseFlyout--dark .euiFlyout__closeButton,
-.wamCaseFlyout--dark .wamAg__headR .euiButtonIcon { color: var(--ag-mute); }
-.wamCaseFlyout--dark .euiFlyout__closeButton { background: transparent; }
-.wamCaseFlyout--dark .euiFlyout__closeButton:hover { background: var(--ag-card); }
 
 .wamAg__page { margin-top: 16px; }
 

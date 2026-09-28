@@ -194,9 +194,11 @@ interface Props {
   /** Opens the Linked Alerts tab filtered to these alerts. */
   onOpenLinked?: (alertIds: string[], label: string) => void;
   headerActions?: React.ReactNode;
+  /** Dark console theme for this canvas only; the rest of the case stays light. */
+  dark?: boolean;
 }
 
-export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selection, onSelectionChange, hops, onOpenLinked, headerActions }) => {
+export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selection, onSelectionChange, hops, onOpenLinked, headerActions, dark = false }) => {
   const wrapRef = useRef<HTMLDivElement>(null);
   const markerId = useMemo(() => `wamAg${++markerSeq}`, []);
   // base fits the stage to the container; zoom and pan are the viewer's own.
@@ -429,7 +431,7 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
   const columnTitle = (c: StoryColumn) => COLUMN_TITLE[c];
 
   return (
-    <div className="wamAg__panel">
+    <div className={`wamAg__panel${dark ? ' wamAg wamAg--dark' : ''}`}>
       <div className="wamAg__ptop">
         <div>
           <h2 className="wamAg__h2">Which hosts and accounts were targeted, and how</h2>

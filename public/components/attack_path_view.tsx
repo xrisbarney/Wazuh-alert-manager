@@ -99,6 +99,7 @@ export const AttackPathView: React.FC<Props> = ({ caseId, graph, loading, theme,
               onSelectionChange={setSelection}
               hops={graph.hops}
               onOpenLinked={onOpenLinked}
+              dark={theme === 'dark'}
               headerActions={
                 <div className="wamAg__seg wamAg__seg--icons" role="group" aria-label="Theme">
                   <button type="button" title="Light mode" aria-label="Light mode" className={theme === 'light' ? 'wamAg__on' : ''} aria-pressed={theme === 'light'} onClick={() => onThemeChange('light')}><SunIcon /></button>

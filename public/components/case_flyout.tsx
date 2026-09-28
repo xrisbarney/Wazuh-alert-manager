@@ -50,8 +50,6 @@ interface Props {
 }
 
 const FILTER_PAGE = 25;
-// Tabs that use the console design and follow its Light/Dark choice.
-const CONSOLE_TABS = new Set(['alerts', 'attack-path']);
 
 function headerRange(graph: AttackGraph | null) {
   const times = (graph?.hops || []).map((h) => Date.parse(h.timestamp)).filter(Number.isFinite);
@@ -369,7 +367,7 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
       onClose={onClose}
       size={isExpanded ? '95vw' : 'l'}
       aria-labelledby="case-details-flyout"
-      className={`wamCaseFlyout wamAgTokens${theme === 'dark' && CONSOLE_TABS.has(activeTab) ? ' wamAg--dark wamCaseFlyout--dark' : ''}`}
+      className="wamCaseFlyout wamAgTokens"
     >
       <EuiFlyoutHeader className="wamCaseHead">
         <div className="wamAg wamAg__head">
