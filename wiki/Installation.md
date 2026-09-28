@@ -51,10 +51,10 @@ artifact and refuses any version not in this table — it never guesses.
 
 ```bash
 # Latest compatible release
-curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://github.com/SamsonIdowu/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash -s -- --base-url https://github.com/SamsonIdowu/Wazuh-alert-manager/releases
 
 # Pinned release (recommended)
-curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash -s -- --version 2.0.2
+curl -fsSL https://github.com/SamsonIdowu/Wazuh-alert-manager/releases/download/v2.0.2-attackgraph.1/install.sh | sudo bash -s -- --base-url https://github.com/SamsonIdowu/Wazuh-alert-manager/releases --version 2.0.2-attackgraph.1
 
 # Local / offline artifact
 sudo ./install.sh --artifact ./wazuhAlertManager-2.19.5.zip \
@@ -65,14 +65,18 @@ For stronger supply-chain safety, download and verify the installer before
 running it:
 
 ```bash
-curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.2/install.sh
-curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.2/install.sh.sha256
+curl -fsSLO https://github.com/SamsonIdowu/Wazuh-alert-manager/releases/download/v2.0.2-attackgraph.1/install.sh
+curl -fsSLO https://github.com/SamsonIdowu/Wazuh-alert-manager/releases/download/v2.0.2-attackgraph.1/install.sh.sha256
 sha256sum -c install.sh.sha256
-sudo bash install.sh --version 2.0.2
+sudo bash install.sh --base-url https://github.com/SamsonIdowu/Wazuh-alert-manager/releases --version 2.0.2-attackgraph.1
 ```
 
-The default release host is GitHub Releases (override with `--base-url` or the
-`WAM_RELEASE_BASE_URL` environment variable for a private mirror). Versioned artifacts are published under
+Releases for this fork are published at <https://github.com/SamsonIdowu/Wazuh-alert-manager/releases>. `--base-url` is required:
+`install.sh` otherwise downloads plugin artifacts from the upstream
+(xrisbarney) releases. Prefer `--base-url` over the `WAM_RELEASE_BASE_URL`
+environment variable, which `sudo` drops by default. Pass `--version` without
+the leading `v`, and add `--dry-run` to confirm the resolved artifact URL points
+at `SamsonIdowu/Wazuh-alert-manager` before installing. Versioned artifacts are published under
 `<base-url>/download/v<version>/wazuhAlertManager-<osd>.zip` plus `.sha256` (required)
 and `.minisig` (optional, verified when `minisign` and
 `WAM_MINISIGN_PUBLIC_KEY` are present). `<base-url>/latest/download/` resolves the newest
@@ -108,7 +112,7 @@ migrates its own indices using the dashboard service identity.
 
 | Command | Effect |
 |---------|--------|
-| `install.sh --version 2.0.2` | Fresh install, v2 upgrade, or same-version reinstall |
+| `install.sh --base-url https://github.com/SamsonIdowu/Wazuh-alert-manager/releases --version 2.0.2-attackgraph.1` | Fresh install, v2 upgrade, or same-version reinstall |
 | `install.sh --dry-run` | Resolve versions/artifacts and print the plan without changing anything |
 | `install.sh --no-restart` | Install but leave the dashboard stopped |
 | `install.sh --rollback` | Restore the most recent backup |
