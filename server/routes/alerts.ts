@@ -577,7 +577,11 @@ export function defineAlertRoutes(router: IRouter) {
           body.push({ script: { lang: 'painless', source: scriptSource, params: { ids: [id] } } });
         }
 
-        const result: any = await client.bulk({ body });
+        // wait_for: the Related Alerts panel re-reads related_alert_ids (and
+        // the Suggested exclusions) through a search immediately after this
+        // call, and a search only sees the update once the index refreshes.
+        // Without it the panel showed the pre-link state until a later reload.
+        const result: any = await client.bulk({ body, refresh: 'wait_for' });
         const items = result?.body?.items;
         const expectedItems = relatedIds.length + 2;
         if (!Array.isArray(items) || items.length !== expectedItems) {
