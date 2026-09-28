@@ -272,7 +272,12 @@ export function defineAlertRoutes(router: IRouter) {
         }
         const failed: any[] = [];
         if (body.length) {
-          const result: any = await client.bulk({ body });
+          // wait_for: the Workbench queue and alert flyout re-read these alerts
+          // through a search right after this call; without it they could show
+          // the old status/assignee until the next index refresh. It waits for
+          // the scheduled refresh rather than forcing one, so large batches
+          // (up to 1000 alerts) add at most ~1s instead of refresh load.
+          const result: any = await client.bulk({ body, refresh: 'wait_for' });
           const items = result?.body?.items;
           if (!Array.isArray(items) || items.length !== owners.length) {
             throw new Error(`Bulk response contained ${Array.isArray(items) ? items.length : 0} item(s) for ${owners.length} operation(s)`);

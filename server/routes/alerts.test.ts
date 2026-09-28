@@ -27,8 +27,45 @@ describe('alert route exact totals', () => {
   });
 });
 
+const ALERT_INDEX = 'wazuh-alert-status-v2-000001';
+const alertSearch = (ids: string[]) => jest.fn(async () => ({
+  body: { hits: { hits: ids.map((id) => ({ _id: id, _index: ALERT_INDEX, _source: { status: 'open' } })) } },
+}));
+const handlerFor = (method: 'get' | 'post' | 'put', path: string) => {
+  const router: any = { get: jest.fn(), post: jest.fn(), put: jest.fn() };
+  defineAlertRoutes(router);
+  const registration = router[method].mock.calls.find(([config]: any[]) => config.path === `${API_ROOT}${path}`);
+  expect(registration).toBeDefined();
+  return registration![1];
+};
+
+describe('alert bulk update', () => {
+  test('waits for status and assignment changes to be searchable before responding', async () => {
+    const handler = handlerFor('post', '/alerts/bulk-update');
+    const client = {
+      search: alertSearch(['a1', 'a2']),
+      // Per alert: the alert update plus its activity-log entry.
+      bulk: jest.fn(async () => ({ body: { items: Array.from({ length: 4 }, () => ({ update: { status: 200 } })) } })),
+    };
+    const ok = jest.fn((value: any) => value);
+    const customError = jest.fn((value: any) => value);
+
+    await handler(
+      { core: { opensearch: { client: { asCurrentUser: client } } } },
+      { body: { ids: ['a1', 'a2'], status: 'in_progress', assignedTo: 'tier-2' } },
+      { ok, customError, badRequest: jest.fn() }
+    );
+
+    expect(customError).not.toHaveBeenCalled();
+    expect(ok).toHaveBeenCalledWith({ body: { requested: 2, updated: 2 } });
+    const request = client.bulk.mock.calls[0][0] as any;
+    expect(request.refresh).toBe('wait_for');
+    expect(request.body[0]).toEqual({ update: { _index: ALERT_INDEX, _id: 'a1' } });
+    expect(request.body[1].script.params.fields).toEqual(expect.objectContaining({ status: 'in_progress', assigned_to: 'tier-2', updated_by: 'analyst' }));
+  });
+});
+
 describe('related alert linking', () => {
-  const ALERT_INDEX = 'wazuh-alert-status-v2-000001';
 
   test('waits for the link to be searchable so the panel re-read shows it (issue #11)', async () => {
     const router: any = { get: jest.fn(), post: jest.fn(), put: jest.fn() };
