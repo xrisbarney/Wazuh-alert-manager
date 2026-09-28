@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AttackStory, StoryColumn, StoryEdge, StoryNode, storyPathOf, TECHNIQUE_PLAIN } from '../../common';
 import { formatDuration } from '../design';
-import { storyTone, StoryTone, TONE_HEX, TONE_LABEL } from './attack_story_tone';
+import { EDGE_HEX, storyTone, StoryTone, TONE_HEX, TONE_LABEL } from './attack_story_tone';
 
-// Fixed logical stage, scaled to the container width - the same approach as the
-// design, so node spacing and edge labels stay legible at any flyout size.
+// Fixed logical stage, fitted to the container width and then zoomed/panned on
+// top of that - the same model as the design, so node spacing and edge labels
+// keep their proportions at any flyout size.
 const STAGE_W = 1200;
 const NODE_W = 214;
 const SOURCE_W = 190;
@@ -12,7 +13,8 @@ const NODE_H = 54;
 const TOP = 112;
 const BOTTOM_PAD = 52;
 const ROW_GAP = 104;
-const MIN_SCALE = 0.72;
+const MIN_ZOOM = 0.4;
+const MAX_ZOOM = 3;
 
 export type StorySelection = { kind: 'node'; id: string } | { kind: 'edge'; id: string } | null;
 
@@ -186,7 +188,15 @@ interface Props {
 export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selection, onSelectionChange, onSelectAlert, headerActions }) => {
   const wrapRef = useRef<HTMLDivElement>(null);
   const markerId = useMemo(() => `wamAg${++markerSeq}`, []);
-  const [scale, setScale] = useState(1);
+  // base fits the stage to the container; zoom and pan are the viewer's own.
+  const [base, setBase] = useState(1);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
+  const scale = base * zoom;
+  const view = useRef({ base, zoom, pan });
+  view.current = { base, zoom, pan };
+  const panDrag = useRef<{ pointerId: number; sx: number; sy: number; px: number; py: number; moved: boolean } | null>(null);
+  const [panning, setPanning] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, Point>>(() => readSaved(storageKey));
   const overridesRef = useRef(overrides);
   overridesRef.current = overrides;
@@ -231,9 +241,7 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
   useLayoutEffect(() => {
     const el = wrapRef.current;
     if (!el) return undefined;
-    // Below MIN_SCALE labels stop being legible, so narrow flyouts scroll
-    // horizontally instead of shrinking further.
-    const fit = () => { if (el.clientWidth) setScale(clamp(el.clientWidth / STAGE_W, MIN_SCALE, 1.15)); };
+    const fit = () => { if (el.clientWidth) setBase(Math.min(1.15, el.clientWidth / STAGE_W)); };
     fit();
     if (typeof ResizeObserver === 'undefined') {
       window.addEventListener('resize', fit);
@@ -243,6 +251,53 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  // Zoom about a point in wrap coordinates (defaults to the centre), keeping
+  // that point fixed on screen.
+  const zoomAt = useCallback((nextZoom: number, cx?: number, cy?: number) => {
+    const el = wrapRef.current;
+    const { base: b, zoom: z, pan: p } = view.current;
+    const target = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM);
+    const x = cx ?? (el ? el.clientWidth / 2 : 0);
+    const y = cy ?? (el ? el.clientHeight / 2 : 0);
+    const k = (b * target) / (b * z);
+    setPan({ x: x - (x - p.x) * k, y: y - (y - p.y) * k });
+    setZoom(target);
+  }, []);
+  const resetView = useCallback(() => { setZoom(1); setPan({ x: 0, y: 0 }); }, []);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    const onWheel = (ev: WheelEvent) => {
+      ev.preventDefault();
+      const r = el.getBoundingClientRect();
+      zoomAt(view.current.zoom * Math.exp(-ev.deltaY * 0.0015), ev.clientX - r.left, ev.clientY - r.top);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [zoomAt]);
+
+  const onWrapPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch (e) { /* pointer already gone */ }
+    panDrag.current = { pointerId: event.pointerId, sx: event.clientX, sy: event.clientY, px: pan.x, py: pan.y, moved: false };
+  };
+  const onWrapPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const d = panDrag.current;
+    if (!d || d.pointerId !== event.pointerId) return;
+    const dx = event.clientX - d.sx;
+    const dy = event.clientY - d.sy;
+    if (!d.moved && Math.abs(dx) + Math.abs(dy) > 3) { d.moved = true; setPanning(true); }
+    if (d.moved) setPan({ x: d.px + dx, y: d.py + dy });
+  };
+  const onWrapPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const d = panDrag.current;
+    if (!d || d.pointerId !== event.pointerId) return;
+    panDrag.current = null;
+    setPanning(false);
+    if (!d.moved) onSelectionChange(null);
+  };
 
   const byId = useMemo(() => new Map(story.nodes.map((n) => [n.id, n])), [story.nodes]);
 
@@ -263,6 +318,7 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
 
   const reset = () => {
     setOverrides({});
+    resetView();
     try { window.localStorage.removeItem(storageKey); } catch (e) { /* ignore */ }
   };
 
@@ -382,11 +438,14 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
 
       <div
         ref={wrapRef}
-        className="wamAg__stageWrap"
-        onPointerDown={() => onSelectionChange(null)}
+        className={`wamAg__stageWrap${panning ? ' wamAg__stageWrap--panning' : ''}`}
+        style={{ height: layout.height * base }}
+        onPointerDown={onWrapPointerDown}
+        onPointerMove={onWrapPointerMove}
+        onPointerUp={onWrapPointerUp}
+        onPointerCancel={onWrapPointerUp}
       >
-        <div className="wamAg__sizer" style={{ width: STAGE_W * scale, height: layout.height * scale }}>
-        <div className="wamAg__stage" style={{ width: STAGE_W, height: layout.height, transform: `scale(${scale})` }}>
+        <div className="wamAg__stage" style={{ width: STAGE_W, height: layout.height, transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})` }}>
           <div className="wamAg__cols" aria-hidden="true">
             {story.columns.map((c, i) => (
               <div key={c} className="wamAg__col" style={{ left: layout.colX(i) }}>
@@ -405,7 +464,7 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
             <defs>
               {(['high', 'med', 'low'] as StoryTone[]).map((t) => (
                 <marker key={t} id={`${markerId}-${t}`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto">
-                  <path d="M0,1 L10,5 L0,9 z" fill={TONE_HEX[t]} />
+                  <path d="M0,1 L10,5 L0,9 z" fill={EDGE_HEX[t]} />
                 </marker>
               ))}
             </defs>
@@ -414,7 +473,7 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
               .map((e) => {
                 const geo = edgeGeo.get(e.id)!;
                 const tone = storyTone(e.maxLevel);
-                const color = TONE_HEX[tone];
+                const color = EDGE_HEX[tone];
                 const a = byId.get(e.source)!;
                 const b = byId.get(e.target)!;
                 const dim = Boolean(focus && !focus.edges.has(e.id));
@@ -436,12 +495,12 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
                       className="wamAg__edge"
                       d={geo.d}
                       stroke={color}
-                      strokeWidth={Math.max(2, Math.min(8, 1.5 + Math.sqrt(e.alertCount) * 1.1))}
+                      strokeWidth={Math.max(2, Math.min(8, 1.5 + e.alertCount * 0.4))}
                       strokeOpacity={tone === 'low' ? 0.7 : 0.9}
                       markerEnd={`url(#${markerId}-${tone})`}
                     />
                     <rect className="wamAg__erect" x={geo.label.x - geo.w / 2} y={geo.label.y - 10} width={geo.w} height={20} rx={10} stroke={color} />
-                    <text className="wamAg__elabel" x={geo.label.x} y={geo.label.y} dy={4} textAnchor="middle" fill={color}>{geo.text}</text>
+                    <text className={`wamAg__elabel wamAg__elabel--${tone}`} x={geo.label.x} y={geo.label.y} dy={4} textAnchor="middle" fill={color}>{geo.text}</text>
                   </g>
                 );
               })}
@@ -477,8 +536,20 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
             );
           })}
         </div>
+        <div className="wamAg__zoom" onPointerDown={(ev) => ev.stopPropagation()}>
+          <button type="button" title="Zoom out" aria-label="Zoom out" onClick={() => zoomAt(zoom / 1.2)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M8 11h6M21 21l-4.3-4.3" /></svg>
+          </button>
+          <button type="button" className="wamAg__pct" title="Reset zoom" onClick={resetView}>{Math.round(zoom * 100)}%</button>
+          <button type="button" title="Zoom in" aria-label="Zoom in" onClick={() => zoomAt(zoom * 1.2)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M8 11h6M11 8v6M21 21l-4.3-4.3" /></svg>
+          </button>
+          <span className="wamAg__sep" />
+          <button type="button" title="Fit to view" aria-label="Fit to view" onClick={resetView}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+          </button>
         </div>
-        <div className="wamAg__hint">Drag boxes to move · click a box or line to focus · click empty space to clear</div>
+        <div className="wamAg__hint">Drag boxes to move · drag empty space to pan · scroll or use buttons to zoom · click to focus</div>
       </div>
 
       <div className="wamAg__info" aria-live="polite">

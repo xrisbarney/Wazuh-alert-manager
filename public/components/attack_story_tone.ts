@@ -19,6 +19,14 @@ export const TONE_HEX: Record<StoryTone, string> = {
   low: '#808080',
 };
 
+// Edges use a slightly different ramp from the node fills in the design: a
+// darker amber and a lighter grey, so lines read on the light stage.
+export const EDGE_HEX: Record<StoryTone, string> = {
+  high: '#EA2D0D',
+  med: '#EAB308',
+  low: '#A1A1AA',
+};
+
 export const TONE_LABEL: Record<StoryTone, string> = {
   high: 'High',
   med: 'Medium',
