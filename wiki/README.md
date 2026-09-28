@@ -28,9 +28,9 @@ These Markdown files are the source for the project's GitHub **Wiki**. They are 
 Enable the wiki on the repo (Settings → Features → Wikis) and create one page in the UI so the wiki repo exists, then:
 
 ```bash
-git clone https://github.com/SamsonIdowu/Wazuh-alert-manager.wiki.git
-cp wiki/*.md Wazuh-alert-manager.wiki/
-cd Wazuh-alert-manager.wiki
+git clone https://github.com/<owner>/<repo>.wiki.git
+cp wiki/*.md <repo>.wiki/
+cd <repo>.wiki
 git add .
 git commit -m "Add Wazuh Alert Manager wiki"
 git push

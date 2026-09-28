@@ -198,35 +198,28 @@ version.
 
 ```bash
 # Latest compatible release
-curl -fsSL https://github.com/SamsonIdowu/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash -s -- --base-url https://github.com/SamsonIdowu/Wazuh-alert-manager/releases
+curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash
 
 # Pinned release (recommended)
-curl -fsSL https://github.com/SamsonIdowu/Wazuh-alert-manager/releases/download/v2.0.2-attackgraph.1/install.sh | sudo bash -s -- --base-url https://github.com/SamsonIdowu/Wazuh-alert-manager/releases --version 2.0.2-attackgraph.1
+curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash -s -- --version 2.0.2
 
 # Supply-chain-safe: download and verify the installer first
-curl -fsSLO https://github.com/SamsonIdowu/Wazuh-alert-manager/releases/download/v2.0.2-attackgraph.1/install.sh
-curl -fsSLO https://github.com/SamsonIdowu/Wazuh-alert-manager/releases/download/v2.0.2-attackgraph.1/install.sh.sha256
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.2/install.sh
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.2/install.sh.sha256
 sha256sum -c install.sh.sha256
-sudo bash install.sh --base-url https://github.com/SamsonIdowu/Wazuh-alert-manager/releases --version 2.0.2-attackgraph.1
+sudo bash install.sh --version 2.0.2
 ```
-
-`--base-url` is required: `install.sh` otherwise downloads plugin artifacts
-from the upstream (xrisbarney) releases. Pass `--version` without the leading
-`v`, and add `--dry-run` to confirm the resolved artifact URL points at
-`SamsonIdowu/Wazuh-alert-manager` before installing.
 
 It also handles `--dry-run`, `--no-restart`, `--rollback`,
 `--uninstall-plugin` (retains all data), and a separately confirmed
 `--remove-data`, which prints exact manual indexer cleanup instructions instead
-of accepting indexer credentials or deleting data itself. Use `--base-url`
-rather than `WAM_RELEASE_BASE_URL` with `sudo`, which drops environment variables by default. See `wiki/Installation.md` for the full reference and the release-side
+of accepting indexer credentials or deleting data itself. Override
+`WAM_RELEASE_BASE_URL` only for a private release mirror. See `wiki/Installation.md` for the full reference and the release-side
 checksum/signature tooling (`scripts/make-release-artifacts.sh`).
 
 ### Manual install (alternative)
 
-1. Download the zip matching your dashboard's OpenSearch Dashboards version
-   (2.19.1 / 2.19.2 / 2.19.5) from
-   https://github.com/SamsonIdowu/Wazuh-alert-manager/releases and install it:
+1. Install the plugin zip:
 
    ```bash
    sudo systemctl stop wazuh-dashboard
@@ -375,7 +368,7 @@ must be built from inside a `wazuh-dashboard` checkout:
 ```bash
 git clone --branch v4.14.7 https://github.com/wazuh/wazuh-dashboard.git
 cd wazuh-dashboard
-git clone https://github.com/SamsonIdowu/Wazuh-alert-manager.git plugins/wazuhAlertManager
+git clone <this repo> plugins/wazuhAlertManager
 yarn osd bootstrap
 cd plugins/wazuhAlertManager
 node scripts/set-target-version.js --osd-version 2.19.5   # already the checked-in default

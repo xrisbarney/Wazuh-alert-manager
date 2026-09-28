@@ -23,7 +23,7 @@
 | 4.13  | 2.19.2                | `wazuhAlertManager-2.19.2.zip` |
 | 4.14  | 2.19.5                | `wazuhAlertManager-2.19.5.zip` |
 
-Download the zip for your version from the **[Releases page](https://github.com/SamsonIdowu/Wazuh-alert-manager/releases)**. The server code is identical across builds; only the target-version stamp differs.
+Download the zip for your version from the **[Releases page](https://github.com/xrisbarney/Wazuh-alert-manager/releases)**. The server code is identical across builds; only the target-version stamp differs.
 
 ## Where to next
 
