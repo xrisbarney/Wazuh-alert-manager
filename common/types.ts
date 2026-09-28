@@ -170,7 +170,12 @@ export interface AttackGraphHop {
   timestamp: string;
   alertId: string;
   host: string | null;
+  // Source addresses (data.srcip) - the "who" behind the alert when the decoder
+  // records one. Optional so graphs cached/served by older builds still render.
+  sources?: string[];
   users: string[];
+  // MITRE technique ids aligned index-for-index with `techniques` (labels).
+  techniqueIds?: string[];
   techniques: string[];
   tactics: string[];
   ruleDescription: string;

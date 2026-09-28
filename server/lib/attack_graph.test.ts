@@ -108,4 +108,23 @@ describe('buildAttackGraph', () => {
     expect(graph.edges.every((e) => e.alertId === 'a1')).toBe(true);
     expect(graph.edges.every((e) => e.level === 9)).toBe(true);
   });
+
+  test('records source addresses and technique ids on each hop', () => {
+    const graph = buildAttackGraph([
+      {
+        _id: 'a1',
+        _source: {
+          '@timestamp': ts(1),
+          agent: { name: 'h' },
+          rule: { level: 5, mitre: { id: ['T1110.001', 'T1021.004'], technique: ['Password Guessing', 'SSH'] } },
+          data: { srcip: ['203.0.113.7', '203.0.113.7'], srcuser: 'root' },
+        },
+      },
+      { _id: 'a2', _source: { '@timestamp': ts(2), agent: { name: 'h' }, data: { srcip: '198.51.100.2' } } },
+      { _id: 'a3', _source: { '@timestamp': ts(3), agent: { name: 'h' } } },
+    ]);
+    expect(graph.hops.map((h) => h.sources)).toEqual([['203.0.113.7'], ['198.51.100.2'], []]);
+    expect(graph.hops[0].techniqueIds).toEqual(['T1110.001', 'T1021.004']);
+    expect(graph.hops[0].techniques).toEqual(['Password Guessing', 'SSH']);
+  });
 });
