@@ -1,9 +1,9 @@
 import { AttackGraph, AttackGraphHop, KillChainPhase } from './types';
 
 /**
- * Turns the raw attack-graph payload into a left-to-right "story": who the
- * activity came from, which hosts it hit, which accounts were involved, and
- * which MITRE techniques were used. Unlike the co-occurrence edges on the
+ * Turns the raw attack-graph payload into a left-to-right "story": which
+ * hosts were hit, which accounts were involved, and which MITRE techniques were
+ * used - led by a source-address column only when the alerts record data.srcip. Unlike the co-occurrence edges on the
  * payload, story edges are directed and only join adjacent layers, so the graph
  * reads like a sentence instead of a hairball. Pure and DOM-free so it can be
  * unit tested alongside the server code.
@@ -23,8 +23,6 @@ export interface StoryNode {
   alertIds: string[];
   firstSeen: string | null;
   lastSeen: string | null;
-  /** Set on the synthetic "Attacker" node used when no source address was recorded. */
-  synthetic?: boolean;
   /** Set on a "+N more" node that stands in for the long tail of a column. */
   groupedCount?: number;
   /** Rank within its column by alert count (0 = busiest). */
@@ -69,18 +67,19 @@ interface Acc {
   maxLevel: number;
   firstSeen: string | null;
   lastSeen: string | null;
-  synthetic?: boolean;
 }
 
 const earlier = (a: string | null, b: string | null) => (!a ? b : !b ? a : a < b ? a : b);
 const later = (a: string | null, b: string | null) => (!a ? b : !b ? a : a > b ? a : b);
 
 function hopLayers(hop: AttackGraphHop, anySource: boolean) {
-  const sources = hop.sources && hop.sources.length
-    ? hop.sources.map((ip) => ({ id: `source:${ip}`, label: ip }))
-    : [anySource
-      ? { id: 'source:unknown', label: 'Unknown source' }
-      : { id: 'source:attacker', label: 'Attacker', synthetic: true }];
+  // The source column only exists when some alert records a source address;
+  // within it, alerts without one are grouped under "Unknown source".
+  const sources = !anySource
+    ? []
+    : hop.sources && hop.sources.length
+      ? hop.sources.map((ip) => ({ id: `source:${ip}`, label: ip }))
+      : [{ id: 'source:unknown', label: 'Unknown source' }];
   const hosts = hop.host ? [{ id: `host:${hop.host}`, label: hop.host }] : [];
   const users = (hop.users || []).map((u) => ({ id: `user:${u}`, label: u }));
   const techniques = (hop.techniques || []).map((label, i) => {
@@ -89,7 +88,7 @@ function hopLayers(hop: AttackGraphHop, anySource: boolean) {
   });
   return { source: sources, host: hosts, user: users, technique: techniques } as Record<
     StoryColumn,
-    Array<{ id: string; label: string; techniqueId?: string; synthetic?: boolean }>
+    Array<{ id: string; label: string; techniqueId?: string }>
   >;
 }
 
@@ -101,10 +100,10 @@ export function buildAttackStory(graph: AttackGraph, opts: { maxPerColumn?: numb
   // Pass 1: count every entity so each column's long tail can be folded into
   // a single "+N more" node before edges are built.
   const raw = new Map<string, Acc>();
-  const touch = (column: StoryColumn, e: { id: string; label: string; techniqueId?: string; synthetic?: boolean }, hop: AttackGraphHop) => {
+  const touch = (column: StoryColumn, e: { id: string; label: string; techniqueId?: string }, hop: AttackGraphHop) => {
     const acc = raw.get(e.id) || {
       id: e.id, column, label: e.label, techniqueId: e.techniqueId, alertIds: new Set<string>(),
-      maxLevel: 0, firstSeen: null, lastSeen: null, synthetic: e.synthetic,
+      maxLevel: 0, firstSeen: null, lastSeen: null,
     };
     acc.alertIds.add(hop.alertId);
     acc.maxLevel = Math.max(acc.maxLevel, Number(hop.level) || 0);
@@ -191,7 +190,6 @@ export function buildAttackStory(graph: AttackGraph, opts: { maxPerColumn?: numb
     alertIds: Array.from(n.alertIds),
     firstSeen: n.firstSeen,
     lastSeen: n.lastSeen,
-    synthetic: n.synthetic,
     groupedCount: n.groupedCount,
     rank: rankIn.get(n.id) || 0,
   }));

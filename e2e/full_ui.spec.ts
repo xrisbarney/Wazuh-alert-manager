@@ -191,7 +191,7 @@ test.describe('full workbench UI bench', () => {
     await flyout.getByRole('button', { name: 'Release evidence hold' }).first().click();
 
     await flyout.getByRole('tab', { name: 'Attack Graph' }).click();
-    await expect(flyout.getByText('Entity co-occurrence and MITRE ATT&CK context derived from this case\'s linked alerts.')).toBeVisible({ timeout: 60_000 });
+    await expect(flyout.getByText('Entity relationships and MITRE ATT&CK context derived from this case\'s linked alerts.')).toBeVisible({ timeout: 60_000 });
     await flyout.getByText('Alert timeline', { exact: true }).click();
     await expect(flyout.getByRole('heading', { name: 'Alert chronology' })).toBeVisible();
 

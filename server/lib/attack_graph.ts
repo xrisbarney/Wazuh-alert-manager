@@ -36,6 +36,13 @@ export interface AttackGraphEdge {
   level: number;
 }
 
+/** Case-relationship state for one hop, attached by the attack-path route. */
+export interface AttackGraphHopEvidence {
+  relationship_state: string | null;
+  hold_reason: string | null;
+  archive_index: string | null;
+}
+
 export interface KillChainPhase {
   tactic: string;
   order: number;
@@ -54,8 +61,11 @@ export interface AttackGraphHop {
   techniqueIds: string[];
   techniques: string[];
   tactics: string[];
+  ruleId: string;
   ruleDescription: string;
   level: number;
+  status: string | null;
+  evidence?: AttackGraphHopEvidence;
 }
 
 export interface AttackGraph {
@@ -161,8 +171,10 @@ export function buildAttackGraph(alerts: Array<{ _id: string; _source: any }>): 
       techniqueIds,
       techniques: techniqueLabels,
       tactics,
+      ruleId: src.rule?.id != null ? String(src.rule.id) : '',
       ruleDescription: src.rule?.description || '',
       level,
+      status: typeof src.status === 'string' ? src.status : null,
     });
   }
 

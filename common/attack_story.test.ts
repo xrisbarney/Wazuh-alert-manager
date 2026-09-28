@@ -5,18 +5,16 @@ const ts = (m: number) => `2026-09-24T11:${String(m).padStart(2, '0')}:00.000Z`;
 const alert = (id: string, m: number, src: any) => ({ _id: id, _source: { '@timestamp': ts(m), ...src } });
 
 describe('buildAttackStory', () => {
-  test('uses one synthetic attacker and directed adjacent-layer edges when no srcip is recorded', () => {
+  test('starts at hosts with directed adjacent-layer edges when no srcip is recorded', () => {
     const story = buildAttackStory(buildAttackGraph([
       alert('a1', 1, { agent: { name: 'web' }, data: { srcuser: 'root' }, rule: { level: 10, mitre: { id: 'T1110.001', technique: 'Password Guessing' } } }),
       alert('a2', 2, { agent: { name: 'web' }, data: { srcuser: 'root' }, rule: { level: 5 } }),
       alert('a3', 3, { agent: { name: 'db' }, rule: { level: 3, mitre: { id: 'T1078', technique: 'Valid Accounts' } } }),
     ]));
-    expect(story.columns).toEqual(['source', 'host', 'user', 'technique']);
-    const attacker = story.nodes.find((n) => n.column === 'source')!;
-    expect(attacker).toMatchObject({ id: 'source:attacker', synthetic: true, alertCount: 3 });
+    expect(story.columns).toEqual(['host', 'user', 'technique']);
+    expect(story.nodes.some((n) => n.column === 'source')).toBe(false);
     const edge = (s: string, t: string) => story.edges.find((e) => e.source === s && e.target === t);
-    expect(edge('source:attacker', 'host:web')).toMatchObject({ alertCount: 2, maxLevel: 10 });
-    expect(edge('host:web', 'user:root')?.alertCount).toBe(2);
+    expect(edge('host:web', 'user:root')).toMatchObject({ alertCount: 2, maxLevel: 10 });
     expect(edge('user:root', 'technique:T1110.001')?.alertCount).toBe(1);
     // No account on a3: the host links straight to the technique rather than dropping it.
     expect(edge('host:db', 'technique:T1078')?.alertCount).toBe(1);
@@ -53,7 +51,7 @@ describe('buildAttackStory', () => {
       alert('a2', 2, { agent: { name: 'b' }, data: { srcuser: 'y' } }),
     ]));
     const path = storyPathOf(story, 'host:a');
-    expect(Array.from(path).sort()).toEqual(['host:a', 'source:attacker', 'user:x']);
+    expect(Array.from(path).sort()).toEqual(['host:a', 'user:x']);
   });
 
   test('carries the highest rule level onto kill-chain phases', () => {

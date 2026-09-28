@@ -127,4 +127,14 @@ describe('buildAttackGraph', () => {
     expect(graph.hops[0].techniqueIds).toEqual(['T1110.001', 'T1021.004']);
     expect(graph.hops[0].techniques).toEqual(['Password Guessing', 'SSH']);
   });
+
+  test('records the Wazuh rule ID and alert status on each hop', () => {
+    const graph = buildAttackGraph([
+      { _id: 'a1', _source: { '@timestamp': ts(1), status: 'open', rule: { id: '5760', level: 5, description: 'sshd: authentication failed.' } } },
+      { _id: 'a2', _source: { '@timestamp': ts(2), rule: { id: 5402, level: 3 } } },
+      { _id: 'a3', _source: { '@timestamp': ts(3) } },
+    ]);
+    expect(graph.hops.map((h) => h.ruleId)).toEqual(['5760', '5402', '']);
+    expect(graph.hops.map((h) => h.status)).toEqual(['open', null, null]);
+  });
 });

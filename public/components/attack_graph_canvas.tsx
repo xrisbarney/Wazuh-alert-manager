@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { AttackStory, StoryColumn, StoryEdge, StoryNode, storyPathOf, TECHNIQUE_PLAIN } from '../../common';
-import { formatDuration } from '../design';
+import { AttackGraphHop, AttackStory, StoryColumn, StoryEdge, StoryNode, storyPathOf, TECHNIQUE_PLAIN } from '../../common';
+import { formatAbsolute, formatDuration } from '../design';
 import { EDGE_HEX, storyTone, StoryTone, TONE_HEX, TONE_LABEL } from './attack_story_tone';
 
 // Fixed logical stage, fitted to the container width and then zoomed/panned on
@@ -19,21 +19,28 @@ const MAX_ZOOM = 3;
 export type StorySelection = { kind: 'node'; id: string } | { kind: 'edge'; id: string } | null;
 
 const COLUMN_TITLE: Record<StoryColumn, string> = {
-  source: 'The attacker',
-  host: 'Hosts attacked',
-  user: 'Accounts involved',
-  technique: 'Methods used',
+  source: 'Source IPs',
+  host: 'Hosts',
+  user: 'Accounts',
+  technique: 'Techniques',
 };
 
-// Verb pills between adjacent columns, read left to right like a sentence.
+// Pills between adjacent columns, read left to right. Kept generic (the design's
+// "login attempts as" only fits authentication cases).
 const verbFor = (from: StoryColumn, to: StoryColumn) => {
   if (to === 'host') return 'targeted';
   if (to === 'user') return 'as account';
-  return 'using';
+  return 'targeted using';
+};
+
+// The same relationships as full sentences, for the info panel.
+const sentenceVerb = (from: StoryColumn, to: StoryColumn) => {
+  if (to === 'host') return 'targeted';
+  if (to === 'user') return from === 'host' ? 'saw activity as' : 'acted as';
+  return from === 'user' ? 'was targeted using' : 'was hit using';
 };
 
 const ICON: Record<string, React.ReactNode> = {
-  bug: <><path d="M12 3v3M5 8l2 2M19 8l-2 2M4 14h3M17 14h3M6 20l2-2M18 20l-2-2" /><rect x="7" y="7" width="10" height="13" rx="5" /></>,
   globe: <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18" /></>,
   server: <><rect x="4" y="4" width="16" height="7" rx="1.5" /><rect x="4" y="13" width="16" height="7" rx="1.5" /><path d="M8 7.5h.01M8 16.5h.01" /></>,
   user: <><circle cx="12" cy="8" r="4" /><path d="M4 21c0-4 4-6 8-6s8 2 8 6" /></>,
@@ -51,7 +58,7 @@ const ADMIN_ACCOUNTS = new Set(['root', 'administrator', 'admin']);
 
 const iconFor = (node: StoryNode) => {
   if (node.groupedCount != null) return 'more';
-  if (node.column === 'source') return node.synthetic ? 'bug' : 'globe';
+  if (node.column === 'source') return 'globe';
   if (node.column === 'host') return 'server';
   if (node.column === 'user') return ADMIN_ACCOUNTS.has(node.label.toLowerCase()) ? 'crown' : 'user';
   const id = node.techniqueId || '';
@@ -75,13 +82,11 @@ const subtitleFor = (node: StoryNode, story: AttackStory) => {
   const count = alertsText(node.alertCount);
   const columnSize = story.nodes.filter((n) => n.column === node.column).length;
   if (node.groupedCount != null) return `${count} · grouped`;
-  if (node.column === 'source') {
-    const span = spanOf(node.firstSeen, node.lastSeen);
-    return node.synthetic ? `${count}${span ? ` · ~${span}` : ''}` : count;
-  }
   if (node.column === 'technique') return `${node.techniqueId && node.techniqueId !== node.label ? `${node.techniqueId} · ` : ''}${count}`;
   if (node.column === 'user' && ADMIN_ACCOUNTS.has(node.label.toLowerCase())) return `${count} · admin account`;
-  if (node.rank === 0 && columnSize > 1) return `${count} · ${node.column === 'host' ? 'main target' : 'most involved'}`;
+  if (node.rank === 0 && columnSize > 1 && (node.column === 'host' || node.column === 'user')) {
+    return `${count} · ${node.column === 'host' ? 'main target' : 'most targeted'}`;
+  }
   return count;
 };
 
@@ -92,26 +97,26 @@ const joinNames = (names: string[]) => names.map((name, i) => (
 
 function describeNode(node: StoryNode, story: AttackStory): React.ReactNode {
   const count = <B>{alertsText(node.alertCount)}</B>;
+  const columnSize = story.nodes.filter((n) => n.column === node.column).length;
+  const top = node.rank === 0 && columnSize > 1;
   let lead: React.ReactNode;
   if (node.groupedCount != null) {
     lead = <>{node.groupedCount} less active {node.column === 'user' ? 'accounts' : `${node.column}s`} are grouped here to keep the graph readable. Together they account for {count}.</>;
   } else if (node.column === 'source') {
-    const span = spanOf(node.firstSeen, node.lastSeen);
-    lead = node.synthetic
-      ? <>These rules didn't record a source address, so all {count}{span ? <> over ~{span}</> : null} are grouped under one attacker.</>
-      : node.id === 'source:unknown'
-        ? <>{count} had no recorded source address.</>
-        : <><B>{node.label}</B> is recorded as the source of {count}{span ? <> over ~{span}</> : null}.</>;
+    lead = node.id === 'source:unknown'
+      ? <>{count} had no recorded source address.</>
+      : <><B>{node.label}</B> is recorded as the source of {count}.</>;
   } else if (node.column === 'host') {
-    lead = <><B>{node.label}</B> was involved in {count}{node.rank === 0 && story.distinct.host > 1 ? ', more than any other host' : ''}.</>;
+    lead = top ? <><B>{node.label}</B> was the main target, with {count}.</> : <><B>{node.label}</B> saw {count}.</>;
   } else if (node.column === 'user') {
-    const admin = ADMIN_ACCOUNTS.has(node.label.toLowerCase());
-    lead = admin
+    lead = ADMIN_ACCOUNTS.has(node.label.toLowerCase())
       ? <><B>{node.label}</B> is the all-powerful admin account. It appeared in {count}.</>
-      : <>The account <B>{node.label}</B> appeared in {count}.</>;
+      : top
+        ? <><B>{node.label}</B> was the most targeted account ({count}).</>
+        : <>The account <B>{node.label}</B> appeared in {count}.</>;
   } else {
     const plain = node.techniqueId ? TECHNIQUE_PLAIN[node.techniqueId] : undefined;
-    lead = <><B>{node.label}</B>{node.techniqueId && node.techniqueId !== node.label ? <> ({node.techniqueId})</> : null}{plain ? <>: {plain.charAt(0).toLowerCase() + plain.slice(1)}</> : null}. Seen in {count}.</>;
+    lead = <><B>{node.label}</B>{plain ? <>: {plain.charAt(0).toLowerCase() + plain.slice(1)}</> : null}. Seen in {count}.</>;
   }
   const byId = new Map(story.nodes.map((n) => [n.id, n]));
   const ins = story.edges.filter((e) => e.target === node.id).map((e) => byId.get(e.source)!.label);
@@ -119,8 +124,8 @@ function describeNode(node: StoryNode, story: AttackStory): React.ReactNode {
   return (
     <>
       {lead}
-      {ins.length > 0 && node.column !== 'source' && <> Linked from {joinNames(ins)}.</>}
-      {outs.length > 0 && <> {node.column === 'source' ? 'It' : 'Then'} {verbFor(node.column, outs[0].column)} {joinNames(outs.map((n) => n.label))}.</>}
+      {ins.length > 0 && <> Linked from {joinNames(ins)}.</>}
+      {outs.length > 0 && <> It {sentenceVerb(node.column, outs[0].column)} {joinNames(outs.map((n) => n.label))}.</>}
     </>
   );
 }
@@ -128,7 +133,7 @@ function describeNode(node: StoryNode, story: AttackStory): React.ReactNode {
 function describeEdge(edge: StoryEdge, a: StoryNode, b: StoryNode): React.ReactNode {
   return (
     <>
-      <B>{a.label}</B> {verbFor(a.column, b.column)} <B>{b.label}</B> in <B>{alertsText(edge.alertCount)}</B>. {TONE_LABEL[storyTone(edge.maxLevel)]} severity (highest rule level {edge.maxLevel}).
+      <B>{a.label}</B> {sentenceVerb(a.column, b.column)} <B>{b.label}</B> in <B>{alertsText(edge.alertCount)}</B>. {TONE_LABEL[storyTone(edge.maxLevel)]} severity.
     </>
   );
 }
@@ -137,19 +142,22 @@ function summaryOf(story: AttackStory): React.ReactNode {
   const hostNode = story.nodes.find((n) => n.column === 'host' && n.rank === 0 && n.groupedCount == null);
   const userNode = story.nodes.find((n) => n.column === 'user' && n.rank === 0 && n.groupedCount == null);
   const span = spanOf(story.firstSeen, story.lastSeen);
-  const parts: React.ReactNode[] = [];
   const scope = [
     story.distinct.host ? `${story.distinct.host} host${story.distinct.host === 1 ? '' : 's'}` : null,
     story.distinct.user ? `${story.distinct.user} account${story.distinct.user === 1 ? '' : 's'}` : null,
   ].filter(Boolean).join(' and ');
-  parts.push(<React.Fragment key="a"><B>{alertsText(story.totalAlerts)}</B>{scope ? ` touched ${scope}` : ''}{span ? ` over about ${span}` : ''}.</React.Fragment>);
-  if (hostNode && story.distinct.host > 1) {
-    parts.push(<React.Fragment key="h"> <B>{hostNode.label}</B> took the most activity ({hostNode.alertCount} of {story.totalAlerts}){userNode ? <>, and <B>{userNode.label}</B> was the most involved account</> : null}.</React.Fragment>);
-  } else if (userNode && story.distinct.user > 1) {
-    parts.push(<React.Fragment key="u"> <B>{userNode.label}</B> was the most involved account ({userNode.alertCount} of {story.totalAlerts}).</React.Fragment>);
-  }
-  parts.push(<React.Fragment key="c"> Click any box for details.</React.Fragment>);
-  return <>{parts}</>;
+  const pair = hostNode && userNode ? story.edges.find((e) => e.source === hostNode.id && e.target === userNode.id) : undefined;
+  return (
+    <>
+      <B>{alertsText(story.totalAlerts)}</B>{scope ? ` across ${scope}` : ''}{span ? ` over about ${span}` : ''}.
+      {pair && story.distinct.host > 1
+        ? <> One host, <B>{hostNode!.label}</B>, and one account, <B>{userNode!.label}</B>, account for {pair.alertCount} of the {story.totalAlerts} alerts.</>
+        : hostNode && story.distinct.host > 1
+          ? <> <B>{hostNode.label}</B> took the most activity ({hostNode.alertCount} of {story.totalAlerts}).</>
+          : null}
+      {' '}Click any box for details.
+    </>
+  );
 }
 
 interface Point { x: number; y: number }
@@ -181,11 +189,14 @@ interface Props {
   storageKey: string;
   selection: StorySelection;
   onSelectionChange: (selection: StorySelection) => void;
-  onSelectAlert?: (alertId: string) => void;
+  /** Every hop of the graph, so a selection can preview its linked alerts. */
+  hops: AttackGraphHop[];
+  /** Opens the Linked Alerts tab filtered to these alerts. */
+  onOpenLinked?: (alertIds: string[], label: string) => void;
   headerActions?: React.ReactNode;
 }
 
-export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selection, onSelectionChange, onSelectAlert, headerActions }) => {
+export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selection, onSelectionChange, hops, onOpenLinked, headerActions }) => {
   const wrapRef = useRef<HTMLDivElement>(null);
   const markerId = useMemo(() => `wamAg${++markerSeq}`, []);
   // base fits the stage to the container; zoom and pan are the viewer's own.
@@ -206,7 +217,8 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
 
   const layout = useMemo(() => {
     const cols = story.columns;
-    const colX = (i: number) => (cols.length > 1 ? 110 + i * ((STAGE_W - 110 - 132) / (cols.length - 1)) : STAGE_W / 2);
+    const [left, right] = cols.length >= 4 ? [110, 132] : [170, 190];
+    const colX = (i: number) => (cols.length > 1 ? left + i * ((STAGE_W - left - right) / (cols.length - 1)) : STAGE_W / 2);
     const perCol = cols.map((c) => story.nodes.filter((n) => n.column === c));
     const maxRows = Math.max(1, ...perCol.map((list) => list.length));
     const height = Math.max(420, TOP + (maxRows - 1) * ROW_GAP + NODE_H + BOTTOM_PAD);
@@ -265,18 +277,6 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
     setZoom(target);
   }, []);
   const resetView = useCallback(() => { setZoom(1); setPan({ x: 0, y: 0 }); }, []);
-
-  useEffect(() => {
-    const el = wrapRef.current;
-    if (!el) return undefined;
-    const onWheel = (ev: WheelEvent) => {
-      ev.preventDefault();
-      const r = el.getBoundingClientRect();
-      zoomAt(view.current.zoom * Math.exp(-ev.deltaY * 0.0015), ev.clientX - r.left, ev.clientY - r.top);
-    };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, [zoomAt]);
 
   const onWrapPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -406,28 +406,37 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
     : selectedEdge
       ? describeEdge(selectedEdge, byId.get(selectedEdge.source)!, byId.get(selectedEdge.target)!)
       : summaryOf(story);
-  const infoAlerts = selectedNode?.alertIds || selectedEdge?.alertIds || [];
+  const hopById = useMemo(() => new Map(hops.map((h) => [h.alertId, h])), [hops]);
+  const linkedIds = selectedNode?.alertIds || selectedEdge?.alertIds || [];
+  const linkedLabel = selectedNode
+    ? selectedNode.label
+    : selectedEdge
+      ? `${byId.get(selectedEdge.source)!.label} → ${byId.get(selectedEdge.target)!.label}`
+      : '';
+  const linkedPreview = useMemo(() => linkedIds
+    .map((id) => hopById.get(id))
+    .filter((h): h is AttackGraphHop => Boolean(h))
+    .sort((a, b) => (a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0)), [linkedIds, hopById]);
   const tones = Array.from(new Set(story.edges.map((e) => storyTone(e.maxLevel)).concat(story.nodes.map((n) => storyTone(n.maxLevel)))));
   const legendTones = (['high', 'med', 'low'] as StoryTone[]).filter((t) => tones.includes(t));
-  const sourceNodes = story.nodes.filter((n) => n.column === 'source');
   const columnSub = (c: StoryColumn) => {
     const n = story.distinct[c];
-    if (c === 'source') return sourceNodes.length === 1 && sourceNodes[0].synthetic ? `source of all ${alertsText(story.totalAlerts)}` : `${n} source${n === 1 ? '' : 's'}`;
+    if (c === 'source') return `${n} source address${n === 1 ? '' : 'es'}`;
     if (c === 'host') return `${n} host${n === 1 ? '' : 's'}`;
     if (c === 'user') return `${n} username${n === 1 ? '' : 's'}`;
     return `${n} MITRE ATT&CK technique${n === 1 ? '' : 's'}`;
   };
-  const columnTitle = (c: StoryColumn) => (c === 'source' && !(sourceNodes.length === 1 && sourceNodes[0].synthetic) ? 'Where it came from' : COLUMN_TITLE[c]);
+  const columnTitle = (c: StoryColumn) => COLUMN_TITLE[c];
 
   return (
     <div className="wamAg__panel">
       <div className="wamAg__ptop">
         <div>
-          <h2 className="wamAg__h2">Who was attacked, and how</h2>
+          <h2 className="wamAg__h2">Which hosts and accounts were targeted, and how</h2>
           <p className="wamAg__lede">
-            Read it left to right like a sentence: the attacker <b>targeted</b> a host, <b>as</b> a user account, <b>using</b> a method.
-            Arrows show direction and each line shows how many alerts it covers. Thicker lines mean more alerts; warmer colors mean higher rule severity.
-            Drag any box to rearrange it. Click a box or a line to see what happened.
+            Read it left to right, starting from the {story.columns[0] === 'source' ? <>source addresses: a <b>source</b> targeted a host, and a </> : 'hosts: a '}<b>host</b> saw activity as an <b>account</b>, which was targeted using a <b>technique</b>.
+            Arrows show direction, and each line shows how many alerts it covers. Thicker, warmer lines mean more alerts.
+            Drag any box to rearrange it. Click a box or a line to see its linked alerts.
           </p>
         </div>
         <div className="wamAg__actions">
@@ -549,27 +558,50 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
           </button>
         </div>
-        <div className="wamAg__hint">Drag boxes to move · drag empty space to pan · scroll or use buttons to zoom · click to focus</div>
+        <div className="wamAg__hint">Drag boxes to move · drag empty space to pan · use + and − to zoom · click to focus</div>
       </div>
 
       <div className="wamAg__info" aria-live="polite">
         <div>
           <div className="wamAg__k">{infoKey}</div>
           <div className="wamAg__v">{infoValue}</div>
-          {onSelectAlert && infoAlerts.length > 0 && (
-            <div className="wamAg__alerts">
-              <span>Source alerts:</span>
-              {infoAlerts.slice(0, 12).map((id) => (
-                <button type="button" key={id} className="wamAg__chip" onClick={() => onSelectAlert(id)} title={`Open alert ${id}`}>{id.slice(0, 8)}</button>
-              ))}
-              {infoAlerts.length > 12 && <span>+{(infoAlerts.length - 12).toLocaleString()} more in Linked Alerts</span>}
-            </div>
-          )}
         </div>
         <div className="wamAg__legend">
           {legendTones.map((t) => <span key={t}><i style={{ background: TONE_HEX[t] }} />{TONE_LABEL[t]}</span>)}
         </div>
       </div>
+
+      {linkedPreview.length > 0 && (
+        <div className="wamAg__la">
+          <div className="wamAg__lah">
+            <b>{alertsText(linkedPreview.length).replace('alert', 'linked alert')} · {linkedLabel}</b>
+            {onOpenLinked && (
+              <button type="button" className="wamAg__btn" onClick={() => onOpenLinked(linkedPreview.map((h) => h.alertId), linkedLabel)}>
+                Open in Linked Alerts
+              </button>
+            )}
+          </div>
+          <div className="wamAg__tw">
+            <table className="wamAg__at wamAg__at--mini">
+              <thead>
+                <tr><th>Timestamp</th><th>Rule ID</th><th>Agent</th><th>Level</th><th className="wamAg__desc">Description</th></tr>
+              </thead>
+              <tbody>
+                {linkedPreview.slice(0, 5).map((h) => (
+                  <tr key={h.alertId}>
+                    <td className="wamAg__ts">{formatAbsolute(h.timestamp)}</td>
+                    <td>{h.ruleId ? <span className="wamAg__rid" title="Wazuh rule ID">{h.ruleId}</span> : '—'}</td>
+                    <td>{h.host || '—'}</td>
+                    <td><span className="wamAg__lv" style={{ '--c': TONE_HEX[storyTone(h.level)] } as React.CSSProperties}>{h.level}</span></td>
+                    <td className="wamAg__desc">{h.ruleDescription || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {linkedPreview.length > 5 && <div className="wamAg__lamore">+ {(linkedPreview.length - 5).toLocaleString()} more in Linked Alerts</div>}
+        </div>
+      )}
     </div>
   );
 };

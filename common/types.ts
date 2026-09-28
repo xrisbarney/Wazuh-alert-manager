@@ -178,8 +178,18 @@ export interface AttackGraphHop {
   techniqueIds?: string[];
   techniques: string[];
   tactics: string[];
+  /** Wazuh rule ID (rule.id). Optional so payloads from older builds still render. */
+  ruleId?: string;
   ruleDescription: string;
   level: number;
+  /** Alert lifecycle status (open / in_progress / closed) when known. */
+  status?: string | null;
+  /** Case evidence relationship for this alert, so filtered Linked Alerts views can act on it. */
+  evidence?: {
+    relationship_state: string | null;
+    hold_reason: string | null;
+    archive_index: string | null;
+  };
 }
 
 export interface AttackGraph {
