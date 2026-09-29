@@ -1,13 +1,13 @@
 .wamApp {
-  background: linear-gradient(180deg, var(--euiColorLightestShade, var(--ouiColorLightestShade, rgba(0, 119, 204, 0.035))), transparent 240px);
+  background: linear-gradient(180deg, rgba($euiColorPrimary, 0.035), transparent 240px);
   min-height: 100%;
 }
 
 .wamPageIntro__icon {
   align-items: center;
-  background: var(--euiColorLightestShade, var(--ouiColorLightestShade, rgba(0, 119, 204, 0.1)));
+  background: rgba($euiColorPrimary, 0.1);
   border-radius: 12px;
-  color: var(--euiColorPrimary, var(--ouiColorPrimary, #0077cc));
+  color: $euiColorPrimary;
   display: inline-flex;
   height: 48px;
   justify-content: center;
@@ -21,7 +21,11 @@
 .wamWorkbenchHeader {
   // Empty-shade is the theme-aware content surface. Wazuh's page-background
   // token can remain dark in light mode, which makes inherited text illegible.
-  background: var(--euiColorEmptyShade, var(--ouiColorEmptyShade, #fff));
+  // Use the Sass theme variable: the dashboard compiles this file once per
+  // theme with that theme's EUI colours prepended. The previous
+  // var(--euiColorEmptyShade, …) form never resolved (OUI emits no CSS custom
+  // properties), so it always fell back to #fff - a white header in dark mode.
+  background: $euiColorEmptyShade;
   position: sticky;
   top: 48px;
   z-index: 20;
@@ -33,7 +37,7 @@
 
 .wamPageContent {
   border-radius: 12px;
-  box-shadow: 0 8px 28px var(--euiShadowColor, var(--ouiShadowColor, rgba(20, 30, 55, 0.08)));
+  box-shadow: 0 8px 28px rgba($euiShadowColor, 0.08);
 }
 
 .wamQueueStats .euiPanel {
@@ -66,7 +70,7 @@
 }
 
 .wamAlertRow:hover {
-  background-color: var(--euiColorLightestShade, var(--ouiColorLightestShade, rgba(0, 119, 204, 0.045)));
+  background-color: rgba($euiColorPrimary, 0.045);
 }
 
 .wamClickableRow {
@@ -74,11 +78,11 @@
 }
 
 .wamClickableRow:hover {
-  background-color: var(--euiColorLightestShade, var(--ouiColorLightestShade, rgba(0, 119, 204, 0.045)));
+  background-color: rgba($euiColorPrimary, 0.045);
 }
 
 .wamClickableRow:focus {
-  outline: 2px solid var(--euiColorPrimary, var(--ouiColorPrimary, #0077cc));
+  outline: 2px solid $euiColorPrimary;
   outline-offset: -2px;
 }
 
@@ -204,9 +208,9 @@
 
 .wamSettingsIcon {
   align-items: center;
-  background: var(--euiColorLightestShade, var(--ouiColorLightestShade, rgba(0, 119, 204, 0.1)));
+  background: rgba($euiColorPrimary, 0.1);
   border-radius: 8px;
-  color: var(--euiColorPrimary, var(--ouiColorPrimary, #0077cc));
+  color: $euiColorPrimary;
   display: inline-flex;
   height: 40px;
   justify-content: center;
@@ -226,15 +230,15 @@
 }
 
 .wamDonut__value {
-  fill: var(--euiTextColor, var(--ouiTextColor, #1d1e24));
+  fill: $euiTextColor;
 }
 
 .wamDonut__label {
-  fill: var(--euiColorDarkShade, var(--ouiColorDarkShade, #69707d));
+  fill: $euiColorDarkShade;
 }
 
 .wamDonut__empty {
-  stroke: var(--euiColorLightShade, var(--ouiColorLightShade, #d3dae6));
+  stroke: $euiColorLightShade;
 }
 
 .wamAutomationHealth {
@@ -250,7 +254,7 @@
 }
 
 .wamEntityGroup {
-  border-left: 4px solid var(--euiColorPrimary, var(--ouiColorPrimary, #0077cc));
+  border-left: 4px solid $euiColorPrimary;
 }
 
 .wamRuleOperator {
@@ -274,7 +278,7 @@
 }
 
 .wamHelpText {
-  color: var(--euiColorPrimary, var(--ouiColorPrimary, #0077cc));
+  color: $euiColorPrimary;
   cursor: help;
   font-size: 0.75rem;
   text-decoration: underline dotted;
@@ -301,10 +305,11 @@
   min-width: 180px;
 }
 
-.wamAlertRow--critical { border-left-color: var(--euiColorDanger, var(--ouiColorDanger, #bd271e)); }
-.wamAlertRow--high { border-left-color: var(--euiColorWarning, var(--ouiColorWarning, #f5892e)); }
-.wamAlertRow--medium { border-left-color: var(--euiColorAccent, var(--ouiColorAccent, #fec514)); }
-.wamAlertRow--low { border-left-color: var(--euiColorMediumShade, var(--ouiColorMediumShade, #98a2b3)); }
+// Same ramp as SEVERITY_HEX in public/design.ts; mid-tones that read on both themes.
+.wamAlertRow--critical { border-left-color: #bd271e; }
+.wamAlertRow--high { border-left-color: #f5892e; }
+.wamAlertRow--medium { border-left-color: #fec514; }
+.wamAlertRow--low { border-left-color: #98a2b3; }
 
 @media (min-width: 769px) and (max-width: 1100px) {
   .wamQueryRow__query {
