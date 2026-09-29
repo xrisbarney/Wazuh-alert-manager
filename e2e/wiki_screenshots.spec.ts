@@ -50,7 +50,7 @@ test('capture public wiki screenshots', async ({ page }) => {
   await expect(caseFlyout.getByRole('heading', { name: 'Kill-chain phases' })).toBeVisible({ timeout: 180_000 });
   await captureElement(page, '.wamCaseFlyout', 'case-attack-graph.png');
   await caseFlyout.getByText('Alert timeline', { exact: true }).click({ force: true });
-  await expect(caseFlyout.getByRole('radio', { name: 'Alert timeline' })).toBeChecked();
+  await expect(caseFlyout.getByRole('button', { name: 'Alert timeline', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await captureElement(page, '.wamCaseFlyout', 'case-alert-timeline.png');
   await caseFlyout.getByRole('button', { name: 'Collapse' }).click();
   await caseFlyout.getByRole('button', { name: 'Close' }).click().catch(() => undefined);
