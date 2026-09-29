@@ -7,7 +7,8 @@ import { EDGE_HEX, storyTone, StoryTone, TONE_HEX, TONE_LABEL } from './attack_s
 // top of that - the same model as the design, so node spacing and edge labels
 // keep their proportions at any flyout size.
 const STAGE_W = 1200;
-const NODE_W = 214;
+// Sized so a ~21-character name fits in the dashboard's code font at 12px.
+const NODE_W = 224;
 const SOURCE_W = 190;
 const NODE_H = 54;
 const TOP = 112;
@@ -175,6 +176,19 @@ const widthOf = (node: StoryNode) => (node.column === 'source' ? SOURCE_W : NODE
 
 let markerSeq = 0;
 
+// Edge-count pills are sized to their text. The label font is the dashboard
+// theme's code font (it differs between theme versions), so measure it rather
+// than assume a fixed character width.
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+const measureLabel = (text: string, family: string) => {
+  if (measureCtx === undefined) {
+    try { measureCtx = document.createElement('canvas').getContext('2d'); } catch (e) { measureCtx = null; }
+  }
+  if (!measureCtx || !family) return text.length * 7.4;
+  measureCtx.font = `700 12px ${family}`;
+  return measureCtx.measureText(text).width;
+};
+
 const readSaved = (key: string): Record<string, Point> => {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(key) || '{}');
@@ -200,6 +214,19 @@ interface Props {
 
 export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selection, onSelectionChange, hops, onOpenLinked, headerActions, dark = false }) => {
   const wrapRef = useRef<HTMLDivElement>(null);
+  // The resolved code-font stack, and a tick that re-measures labels once web fonts finish loading.
+  const [labelFont, setLabelFont] = useState({ family: '', loaded: 0 });
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    let live = true;
+    const read = () => {
+      if (live) setLabelFont((f) => ({ family: getComputedStyle(el).getPropertyValue('--ag-mono').trim(), loaded: f.loaded + 1 }));
+    };
+    read();
+    (document as any).fonts?.ready?.then(read);
+    return () => { live = false; };
+  }, []);
   const markerId = useMemo(() => `wamAg${++markerSeq}`, []);
   // base fits the stage to the container; zoom and pan are the viewer's own.
   const [base, setBase] = useState(1);
@@ -387,7 +414,7 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
       const p2 = { x: p3.x - k, y: p3.y };
       const d = `M${p0.x},${p0.y} C${p1.x},${p1.y} ${p2.x},${p2.y} ${p3.x},${p3.y}`;
       const text = focus?.edges.has(e.id) ? `${verbFor(a.column, b.column)} · ${e.alertCount.toLocaleString()}` : e.alertCount.toLocaleString();
-      const w = Math.max(22, text.length * 7 + 14);
+      const w = Math.max(22, Math.ceil(measureLabel(text, labelFont.family)) + 14);
       let label = bezier(p0, p1, p2, p3, 0.5);
       for (const t of [0.5, 0.4, 0.6, 0.33, 0.67, 0.27, 0.73]) {
         label = bezier(p0, p1, p2, p3, t);
@@ -398,7 +425,7 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
       out.set(e.id, { d, label, w, text });
     }
     return out;
-  }, [story.edges, byId, nodePos, focus]);
+  }, [story.edges, byId, nodePos, focus, labelFont]);
 
   const selectedNode = selection?.kind === 'node' ? byId.get(selection.id) : undefined;
   const selectedEdge = selection?.kind === 'edge' ? story.edges.find((e) => e.id === selection.id) : undefined;

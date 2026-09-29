@@ -413,25 +413,9 @@
 
 // ---- Attack graph (Wazuh console design: "SSH Attack Graph v2") ----
 // Light by default; the Entity graph canvas can opt into the dark theme
-// (.wamAg--dark), matching the
-// design's two token sets. Manrope and Inconsolata are bundled (SIL OFL 1.1,
-// licences next to the files) because the dashboard CSP blocks Google Fonts.
-@font-face {
-  font-family: 'WAM Manrope';
-  font-style: normal;
-  font-weight: 200 800;
-  font-display: swap;
-  src: url('./assets/fonts/manrope-latin.woff2') format('woff2');
-}
-
-@font-face {
-  font-family: 'WAM Inconsolata';
-  font-style: normal;
-  font-weight: 200 900;
-  font-display: swap;
-  src: url('./assets/fonts/inconsolata-latin.woff2') format('woff2');
-}
-
+// (.wamAg--dark), matching the design's two token sets. Typography uses the
+// dashboard theme's own font stacks so these views match the rest of the
+// Security operations workbench in every theme.
 .wamAg,
 .wamAgTokens {
   --ag-bg: #ffffff;
@@ -466,8 +450,12 @@
   --ag-sevbg: #fdedea;
   --ag-medbg: #fefce8;
   --ag-medline: #fde68a;
-  --ag-sans: 'WAM Manrope', 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --ag-mono: 'WAM Inconsolata', 'Inconsolata', 'Roboto Mono', Menlo, Consolas, monospace;
+  // Sass theme variables, prepended per theme by the dashboard build.
+  --ag-sans: #{$euiFontFamily};
+  --ag-mono: #{$euiCodeFontFamily};
+  // Dates and times use the workbench's text font (as in its alert table),
+  // with tabular digits so columns of times still line up.
+  --ag-num: #{$euiFontFamily};
 }
 
 .wamAg {
@@ -714,7 +702,7 @@
 }
 
 .wamAg__t { min-width: 0; }
-.wamAg__n { font: 600 13px var(--ag-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wamAg__n { font: 600 12px var(--ag-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wamAg__s { font-size: 11.5px; margin-top: 1px; opacity: 0.85; white-space: nowrap; }
 
 .wamAg__node--high {
@@ -863,7 +851,7 @@
   > span { color: var(--ag-mute); font-size: 12px; }
 }
 
-.wamAg__mono { font-family: var(--ag-mono); }
+.wamAg__mono { font-family: var(--ag-num); font-variant-numeric: tabular-nums; }
 .wamAg__empty { color: var(--ag-mute); font-size: 13px; margin: 0; }
 
 .wamAg__tech {
@@ -999,7 +987,8 @@
 .wamAg__sev--low { background: var(--ag-info); border-color: var(--ag-line); color: var(--ag-mute); &::before { background: var(--ag-low); } }
 .wamAg__when {
   color: var(--ag-mute);
-  font: 12px var(--ag-mono);
+  font: 12px var(--ag-num);
+  font-variant-numeric: tabular-nums;
   text-align: right;
   b { color: var(--ag-ink); display: block; font: 700 14px var(--ag-sans); margin-bottom: 2px; }
 }
@@ -1039,7 +1028,7 @@
   td { border-bottom: 1px solid var(--ag-line); color: var(--ag-ink); padding: 12px 10px; vertical-align: middle; }
   tbody tr:hover td { background: var(--ag-info); }
   .wamAg__desc { min-width: 220px; width: 34%; }
-  td.wamAg__ts { font-family: var(--ag-mono); font-size: 14px; white-space: nowrap; }
+  td.wamAg__ts { font-family: var(--ag-num); font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .wamAg__r { text-align: right; }
   td.wamAg__none { color: var(--ag-mute); text-align: center; }
 }
@@ -1180,7 +1169,7 @@
   padding: 8px 0;
   div { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; }
   dt { color: var(--ag-mute); font-size: 12px; }
-  dd { font: 600 13px var(--ag-mono); margin: 0; }
+  dd { font: 600 13px var(--ag-num); font-variant-numeric: tabular-nums; margin: 0; }
 }
 
 // ---- Theme + host segmented controls ----
@@ -1214,7 +1203,7 @@
   align-items: center;
   display: grid;
   gap: 8px;
-  grid-template-columns: 180px minmax(0, 1fr);
+  grid-template-columns: 210px minmax(0, 1fr);
   height: 46px;
   b { align-items: center; display: flex; font: 600 13px var(--ag-mono); gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   b svg { fill: none; flex: none; height: 15px; stroke: var(--ag-mute); stroke-width: 1.8; width: 15px; }
@@ -1238,24 +1227,24 @@
   &.wamAg__on { box-shadow: 0 0 0 3px var(--ag-blue); z-index: 3; }
 }
 .wamAg__strip--has .wamAg__pt:not(.wamAg__on) { opacity: 0.35; }
-.wamAg__axis { border-top: 1px solid var(--ag-line); display: grid; gap: 8px; grid-template-columns: 180px minmax(0, 1fr); height: 24px; }
+.wamAg__axis { border-top: 1px solid var(--ag-line); display: grid; gap: 8px; grid-template-columns: 210px minmax(0, 1fr); height: 24px; }
 .wamAg__ticks {
   position: relative;
-  span { color: var(--ag-mute); font: 12px var(--ag-mono); position: absolute; top: 5px; transform: translateX(-50%); white-space: nowrap; }
+  span { color: var(--ag-mute); font: 12px var(--ag-num); font-variant-numeric: tabular-nums; position: absolute; top: 5px; transform: translateX(-50%); white-space: nowrap; }
   span::before { background: var(--ag-line); content: ''; height: 4px; left: 50%; position: absolute; top: -6px; width: 1px; }
 }
 .wamAg__tl { display: flex; flex-direction: column; margin-top: 18px; position: relative; }
 .wamAg__tr {
   display: grid;
   gap: 0 10px;
-  grid-template-columns: 74px 28px minmax(0, 1fr);
+  grid-template-columns: 96px 28px minmax(0, 1fr);
   padding-bottom: 10px;
   position: relative;
-  &::before { background: var(--ag-line); bottom: 0; content: ''; left: 97px; position: absolute; top: 0; width: 2px; }
+  &::before { background: var(--ag-line); bottom: 0; content: ''; left: 119px; position: absolute; top: 0; width: 2px; }
   &:first-child::before { top: 22px; }
   &:last-child::before { bottom: calc(100% - 22px); }
 }
-.wamAg__tt { color: var(--ag-mute); font: 600 13px var(--ag-mono); padding-top: 14px; text-align: right; }
+.wamAg__tt { color: var(--ag-mute); font: 600 13px var(--ag-num); font-variant-numeric: tabular-nums; padding-top: 14px; text-align: right; white-space: nowrap; }
 .wamAg__rd {
   background: var(--c);
   border: 3px solid var(--ag-panel);
@@ -1322,20 +1311,20 @@
   flex-wrap: wrap;
   gap: 5px;
   padding-top: 8px;
-  span { background: var(--ag-info); border-radius: 4px; color: var(--ag-sub); font: 12px var(--ag-mono); padding: 2px 6px; }
+  span { background: var(--ag-info); border-radius: 4px; color: var(--ag-sub); font: 12px var(--ag-num); font-variant-numeric: tabular-nums; padding: 2px 6px; }
   span.wamAg__on { background: var(--ag-blue); color: #fff; }
 }
 .wamAg__gap {
   align-items: center;
   display: grid;
   gap: 0 10px;
-  grid-template-columns: 74px 28px minmax(0, 1fr);
+  grid-template-columns: 96px 28px minmax(0, 1fr);
   height: 30px;
   position: relative;
-  &::before { border-left: 2px dashed var(--ag-line); bottom: 0; content: ''; left: 97px; position: absolute; top: 0; }
+  &::before { border-left: 2px dashed var(--ag-line); bottom: 0; content: ''; left: 119px; position: absolute; top: 0; }
   span { color: var(--ag-mute); font-size: 12px; font-style: italic; grid-column: 3; }
 }
-.wamAg__more { margin: 4px 0 0 112px; }
+.wamAg__more { margin: 4px 0 0 134px; }
 
 @media (max-width: 760px) {
   .wamAg__lane, .wamAg__axis { grid-template-columns: 90px minmax(0, 1fr); }
