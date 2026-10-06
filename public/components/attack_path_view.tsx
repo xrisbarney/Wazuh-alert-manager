@@ -5,24 +5,14 @@ import { formatAbsolute, formatDuration } from '../design';
 import { AttackGraphCanvas, StorySelection } from './attack_graph_canvas';
 import { AttackTimeline } from './attack_timeline';
 import { storyTone, TONE_HEX } from './attack_story_tone';
-import { CaseTheme } from './case_theme';
 
 interface Props {
   caseId: string;
   graph: AttackGraph | null;
   loading: boolean;
-  theme: CaseTheme;
-  onThemeChange: (theme: CaseTheme) => void;
   /** Opens the Linked Alerts tab filtered to these alerts. */
   onOpenLinked?: (alertIds: string[], label: string) => void;
 }
-
-const SunIcon = () => (
-  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
-);
-const MoonIcon = () => (
-  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>
-);
 
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
 
@@ -40,7 +30,7 @@ function timeRange(first: string | null, last: string | null): string | null {
     : `${day(a)} ${time(a)} → ${day(b)} ${time(b)}${span}`;
 }
 
-export const AttackPathView: React.FC<Props> = ({ caseId, graph, loading, theme, onThemeChange, onOpenLinked }) => {
+export const AttackPathView: React.FC<Props> = ({ caseId, graph, loading, onOpenLinked }) => {
   const [mode, setMode] = useState<'graph' | 'timeline'>('graph');
   const [selection, setSelection] = useState<StorySelection>(null);
   const graphRef = useRef<HTMLDivElement>(null);
@@ -99,13 +89,6 @@ export const AttackPathView: React.FC<Props> = ({ caseId, graph, loading, theme,
               onSelectionChange={setSelection}
               hops={graph.hops}
               onOpenLinked={onOpenLinked}
-              dark={theme === 'dark'}
-              headerActions={
-                <div className="wamAg__seg wamAg__seg--icons" role="group" aria-label="Theme">
-                  <button type="button" title="Light mode" aria-label="Light mode" className={theme === 'light' ? 'wamAg__on' : ''} aria-pressed={theme === 'light'} onClick={() => onThemeChange('light')}><SunIcon /></button>
-                  <button type="button" title="Dark mode" aria-label="Dark mode" className={theme === 'dark' ? 'wamAg__on' : ''} aria-pressed={theme === 'dark'} onClick={() => onThemeChange('dark')}><MoonIcon /></button>
-                </div>
-              }
             />
           )
         ) : (

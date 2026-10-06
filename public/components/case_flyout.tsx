@@ -3,6 +3,7 @@ import {
   EuiFlyout,
   EuiFlyoutHeader,
   EuiFlyoutBody,
+  EuiTitle,
   EuiTabbedContent,
   EuiDescriptionList,
   EuiDescriptionListTitle,
@@ -10,12 +11,15 @@ import {
   EuiSpacer,
   EuiButtonGroup,
   EuiLoadingSpinner,
+  EuiBasicTable,
   EuiButtonIcon,
   EuiText,
   EuiTextArea,
   EuiFieldText,
   EuiButton,
   EuiFormRow,
+  EuiFlexGroup,
+  EuiFlexItem,
   EuiToolTip,
   EuiModal,
   EuiModalHeader,
@@ -25,6 +29,7 @@ import {
   EuiCallOut,
   EuiCheckbox,
   EuiButtonEmpty,
+  EuiBadge,
 } from '@elastic/eui';
 import { Alert, Case, AiAnalysis, AttackGraph } from '../../common';
 import { AlertsApiService } from '../services/api';
@@ -35,8 +40,6 @@ import { HistoryList } from './history_list';
 import { AssigneePicker } from './assignee_picker';
 import { AttackPathView } from './attack_path_view';
 import { AlertMultiPicker } from './alert_multi_picker';
-import { LinkedAlertsTable, LinkedAlert } from './linked_alerts_table';
-import { useCaseTheme } from './case_theme';
 import { AiAnalysisTab } from './ai_analysis_tab';
 
 interface Props {
@@ -51,17 +54,7 @@ interface Props {
 
 const FILTER_PAGE = 25;
 
-function headerRange(graph: AttackGraph | null) {
-  const times = (graph?.hops || []).map((h) => Date.parse(h.timestamp)).filter(Number.isFinite);
-  if (!times.length) return null;
-  const a = new Date(Math.min(...times));
-  const b = new Date(Math.max(...times));
-  const day = (d: Date) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-  const time = (d: Date) => d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  return day(a) === day(b)
-    ? { day: day(a), times: `${time(a)} – ${time(b)}` }
-    : { day: `${day(a)} – ${day(b)}`, times: `${time(a)} – ${time(b)}` };
-}
+type LinkedAlert = Alert & { _evidence?: any };
 
 // A graph hop carries enough of the alert (and its case relationship) for the
 // Linked Alerts table and its actions when the alert isn't on the loaded page.
@@ -111,9 +104,8 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
   const [evidencePages, setEvidencePages] = useState<Array<Array<Alert & { _evidence?: any }>>>([]);
   const [evidencePageCursors, setEvidencePageCursors] = useState<Array<string | null>>([null]);
   const [activeTab, setActiveTab] = useState('overview');
-  const [theme, setTheme] = useCaseTheme();
-  // Attack graph data, shared by the header's date range, the Attack Graph
-  // tab and graph-filtered Linked Alerts. Reloaded after every case load.
+  // Attack graph data, shared by the Attack Graph tab and graph-filtered
+  // Linked Alerts. Reloaded after every case load.
   const [graph, setGraph] = useState<AttackGraph | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
   const [graphVersion, setGraphVersion] = useState(0);
@@ -223,6 +215,13 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
       .map((id) => loaded.get(id) || (hops.has(id) ? hopToLinkedAlert(hops.get(id)!) : null))
       .filter((a): a is LinkedAlert => Boolean(a));
   }, [linkedFilter, alerts, graph]);
+
+  // Removing alerts can shrink the filtered list below the current page.
+  const filterPageCount = filteredAlerts ? Math.max(1, Math.ceil(filteredAlerts.length / FILTER_PAGE)) : 1;
+  const safeFilterPage = Math.min(filterPage, filterPageCount - 1);
+  useEffect(() => {
+    if (filterPage !== safeFilterPage) setFilterPage(safeFilterPage);
+  }, [filterPage, safeFilterPage]);
 
   const openLinked = (ids: string[], label: string) => {
     setLinkedFilter({ ids, label });
@@ -359,34 +358,17 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
     );
   }
 
-  const range = headerRange(graph);
-
   return (
     <>
-    <EuiFlyout
-      onClose={onClose}
-      size={isExpanded ? '95vw' : 'l'}
-      aria-labelledby="case-details-flyout"
-      className="wamCaseFlyout wamAgTokens"
-    >
-      <EuiFlyoutHeader className="wamCaseHead">
-        <div className="wamAg wamAg__head">
-          <div className="wamAg__headL">
-            <div className="wamAg__eyebrow">Security case</div>
-            <h2 id="case-details-flyout" className="wamAg__h1">
-              <span>{caseDoc.title}</span>
-              <span className={`wamAg__sev wamAg__sev--${caseDoc.severity}`}>
-                {caseDoc.severity ? `${caseDoc.severity.charAt(0).toUpperCase()}${caseDoc.severity.slice(1)}` : 'Unknown'} severity
-              </span>
-            </h2>
-          </div>
-          <div className="wamAg__headR">
-            {range && (
-              <div className="wamAg__when">
-                <b>{range.day}</b>
-                {range.times} · {evidenceTotal.toLocaleString()} alert{evidenceTotal === 1 ? '' : 's'}
-              </div>
-            )}
+    <EuiFlyout onClose={onClose} size={isExpanded ? '95vw' : 'l'} aria-labelledby="case-details-flyout" className="wamCaseFlyout">
+      <EuiFlyoutHeader hasBorder>
+        <EuiFlexGroup alignItems="center" gutterSize="s" responsive={false}>
+          <EuiFlexItem>
+            <EuiTitle size="m">
+              <h2 id="case-details-flyout">{caseDoc.title}</h2>
+            </EuiTitle>
+          </EuiFlexItem>
+          <EuiFlexItem grow={false}>
             <EuiToolTip content={isExpanded ? 'Collapse' : 'Expand to full screen'}>
               <EuiButtonIcon
                 iconType={isExpanded ? 'minimize' : 'expand'}
@@ -395,8 +377,8 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
                 display="empty"
               />
             </EuiToolTip>
-          </div>
-        </div>
+          </EuiFlexItem>
+        </EuiFlexGroup>
       </EuiFlyoutHeader>
       <EuiFlyoutBody>
         {(() => {
@@ -480,48 +462,143 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
               id: 'alerts',
               name: `Linked Alerts (${evidenceTotal})`,
               content: (
-                <div className="wamAg wamAg__page">
+                <div>
+                  <EuiSpacer size="m" />
                   {linkedFilter && filteredAlerts && (
-                    <div className="wamAg__fchip">
-                      <span>
-                        Showing <b>{filteredAlerts.length.toLocaleString()}</b> of {evidenceTotal.toLocaleString()} alerts linked to <b>{linkedFilter.label}</b>
-                      </span>
-                      <button type="button" onClick={() => setLinkedFilter(null)}>Clear filter</button>
-                    </div>
+                    <>
+                      <EuiCallOut size="s" iconType="filter" title={`Showing ${filteredAlerts.length.toLocaleString()} of ${evidenceTotal.toLocaleString()} alerts linked to ${linkedFilter.label}`}>
+                        <EuiButtonEmpty size="xs" flush="left" onClick={() => setLinkedFilter(null)}>
+                          Clear filter
+                        </EuiButtonEmpty>
+                      </EuiCallOut>
+                      <EuiSpacer size="s" />
+                    </>
                   )}
-                  <LinkedAlertsTable
-                    alerts={filteredAlerts ? filteredAlerts.slice(filterPage * FILTER_PAGE, (filterPage + 1) * FILTER_PAGE) : alerts}
-                    canManageLifecycle={canManageLifecycle}
-                    onView={viewEvidence}
-                    onSetHold={setHoldAlert}
-                    onReleaseHold={releaseHold}
-                    onRemove={(alert) => update({ removeAlertIds: [alert._id] })}
+                  <EuiBasicTable
+                    items={filteredAlerts ? filteredAlerts.slice(safeFilterPage * FILTER_PAGE, (safeFilterPage + 1) * FILTER_PAGE) : alerts}
+                    columns={[
+                      {
+                        field: '_source',
+                        name: 'Timestamp',
+                        render: (v: Alert['_source']) => formatAbsolute(v['@timestamp']),
+                      },
+                      { field: '_source', name: 'Rule ID', width: '90px', render: (v: Alert['_source']) => v.rule?.id || '—' },
+                      { field: '_source', name: 'Rule', render: (v: Alert['_source']) => v.rule?.description || '—' },
+                      { field: '_source', name: 'Agent', render: (v: Alert['_source']) => v.agent?.name || '—' },
+                      {
+                        field: '_source',
+                        name: 'Status',
+                        render: (v: Alert['_source']) => <StatusBadge status={v.status} />,
+                      },
+                      {
+                        field: '_evidence',
+                        name: 'Evidence',
+                        render: (v: any) => v ? (
+                          <EuiToolTip content={v.hold_reason || (v.archive_index ? `Trusted archive: ${v.archive_index}` : 'Live relationship snapshot')}>
+                            <EuiBadge color={v.hold_reason ? 'warning' : v.relationship_state === 'archived' ? 'primary' : v.relationship_state === 'purged' ? 'danger' : 'hollow'}>
+                              {v.hold_reason ? 'Held' : v.relationship_state === 'archived' ? 'Archived' : v.relationship_state === 'purged' ? 'Purged snapshot' : v.relationship_state === 'legacy' ? 'Legacy link' : 'Live'}
+                            </EuiBadge>
+                          </EuiToolTip>
+                        ) : <EuiBadge color="hollow">Legacy link</EuiBadge>,
+                      },
+                      {
+                        name: 'Actions',
+                        actions: [
+                          {
+                            render: (alert: LinkedAlert) => (
+                              <>
+                                <EuiButtonIcon iconType="eye" aria-label="View evidence" onClick={() => viewEvidence(alert)} />
+                                {alert._evidence && canManageLifecycle && (
+                                  <EuiButtonIcon
+                                    iconType={alert._evidence.hold_reason ? 'lockOpen' : 'lock'}
+                                    aria-label={alert._evidence.hold_reason ? 'Release evidence hold' : 'Set evidence hold'}
+                                    onClick={() => alert._evidence.hold_reason ? releaseHold(alert) : setHoldAlert(alert)}
+                                  />
+                                )}
+                                <EuiButtonIcon
+                                  iconType="unlink"
+                                  aria-label="Remove from case"
+                                  onClick={() => update({ removeAlertIds: [alert._id] })}
+                                />
+                              </>
+                            ),
+                          },
+                        ],
+                      },
+                    ]}
                   />
                   {filteredAlerts ? (
                     filteredAlerts.length > FILTER_PAGE && (
-                      <div className="wamAg__pager">
-                        <button type="button" className="wamAg__btn" disabled={filterPage === 0} onClick={() => setFilterPage((p) => p - 1)}>← Previous</button>
-                        <span>
-                          Page {filterPage + 1} · showing {filterPage * FILTER_PAGE + 1}–{Math.min((filterPage + 1) * FILTER_PAGE, filteredAlerts.length)} of {filteredAlerts.length}
-                        </span>
-                        <button type="button" className="wamAg__btn" disabled={(filterPage + 1) * FILTER_PAGE >= filteredAlerts.length} onClick={() => setFilterPage((p) => p + 1)}>Next →</button>
-                      </div>
+                      <>
+                        <EuiSpacer size="s" />
+                        <EuiFlexGroup alignItems="center" justifyContent="spaceBetween" gutterSize="s" responsive={false}>
+                          <EuiFlexItem grow={false}>
+                            <EuiButtonEmpty
+                              size="s"
+                              iconType="arrowLeft"
+                              isDisabled={safeFilterPage === 0}
+                              onClick={() => setFilterPage(safeFilterPage - 1)}
+                            >
+                              Previous
+                            </EuiButtonEmpty>
+                          </EuiFlexItem>
+                          <EuiFlexItem grow={false}>
+                            <EuiText size="s" color="subdued">
+                              Page {safeFilterPage + 1} · showing {safeFilterPage * FILTER_PAGE + 1}–{Math.min((safeFilterPage + 1) * FILTER_PAGE, filteredAlerts.length)} of {filteredAlerts.length}
+                            </EuiText>
+                          </EuiFlexItem>
+                          <EuiFlexItem grow={false}>
+                            <EuiButtonEmpty
+                              size="s"
+                              iconType="arrowRight"
+                              iconSide="right"
+                              isDisabled={safeFilterPage + 1 >= filterPageCount}
+                              onClick={() => setFilterPage((p) => p + 1)}
+                            >
+                              Next
+                            </EuiButtonEmpty>
+                          </EuiFlexItem>
+                        </EuiFlexGroup>
+                      </>
                     )
                   ) : (
                     evidenceTotal > 25 && (
-                      <div className="wamAg__pager">
-                        <button type="button" className="wamAg__btn" disabled={evidencePageIndex === 0 || loadingMoreEvidence} onClick={() => changeEvidencePage(evidencePageIndex - 1)}>← Previous</button>
-                        <span>
-                          Page {evidencePageIndex + 1} · showing {evidencePageIndex * 25 + 1}–{Math.min((evidencePageIndex + 1) * 25, evidenceTotal)} of {evidenceTotal}
-                        </span>
-                        <button type="button" className="wamAg__btn" disabled={!evidenceNextCursor || loadingMoreEvidence} onClick={() => changeEvidencePage(evidencePageIndex + 1)}>
-                          {loadingMoreEvidence ? 'Loading…' : 'Next →'}
-                        </button>
-                      </div>
+                      <>
+                        <EuiSpacer size="s" />
+                        <EuiFlexGroup alignItems="center" justifyContent="spaceBetween" gutterSize="s" responsive={false}>
+                          <EuiFlexItem grow={false}>
+                            <EuiButtonEmpty
+                              size="s"
+                              iconType="arrowLeft"
+                              isDisabled={evidencePageIndex === 0 || loadingMoreEvidence}
+                              onClick={() => changeEvidencePage(evidencePageIndex - 1)}
+                            >
+                              Previous
+                            </EuiButtonEmpty>
+                          </EuiFlexItem>
+                          <EuiFlexItem grow={false}>
+                            <EuiText size="s" color="subdued">
+                              Page {evidencePageIndex + 1} · showing {evidencePageIndex * 25 + 1}–{Math.min((evidencePageIndex + 1) * 25, evidenceTotal)} of {evidenceTotal}
+                            </EuiText>
+                          </EuiFlexItem>
+                          <EuiFlexItem grow={false}>
+                            <EuiButtonEmpty
+                              size="s"
+                              iconType="arrowRight"
+                              iconSide="right"
+                              isLoading={loadingMoreEvidence}
+                              isDisabled={!evidenceNextCursor}
+                              onClick={() => changeEvidencePage(evidencePageIndex + 1)}
+                            >
+                              Next
+                            </EuiButtonEmpty>
+                          </EuiFlexItem>
+                        </EuiFlexGroup>
+                      </>
                     )
                   )}
+                  <EuiSpacer size="l" />
                   <AlertMultiPicker
-                    variant="console"
                     apiService={apiService}
                     excludeIds={Array.from(new Set([...(caseDoc.alert_ids || []), ...alerts.map((alert) => alert._id)]))}
                     onLinkSelected={(ids) => update({ addAlertIds: ids })}
@@ -542,8 +619,6 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
                     caseId={caseId}
                     graph={graph}
                     loading={graphLoading}
-                    theme={theme}
-                    onThemeChange={setTheme}
                     onOpenLinked={openLinked}
                   />
                 </div>

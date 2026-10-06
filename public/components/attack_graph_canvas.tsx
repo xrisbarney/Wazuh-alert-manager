@@ -208,11 +208,9 @@ interface Props {
   /** Opens the Linked Alerts tab filtered to these alerts. */
   onOpenLinked?: (alertIds: string[], label: string) => void;
   headerActions?: React.ReactNode;
-  /** Dark console theme for this canvas only; the rest of the case stays light. */
-  dark?: boolean;
 }
 
-export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selection, onSelectionChange, hops, onOpenLinked, headerActions, dark = false }) => {
+export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selection, onSelectionChange, hops, onOpenLinked, headerActions }) => {
   const wrapRef = useRef<HTMLDivElement>(null);
   // The resolved code-font stack, and a tick that re-measures labels once web fonts finish loading.
   const [labelFont, setLabelFont] = useState({ family: '', loaded: 0 });
@@ -458,7 +456,7 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
   const columnTitle = (c: StoryColumn) => COLUMN_TITLE[c];
 
   return (
-    <div className={`wamAg__panel${dark ? ' wamAg wamAg--dark' : ''}`}>
+    <div className="wamAg__panel">
       <div className="wamAg__ptop">
         <div>
           <h2 className="wamAg__h2">Which hosts and accounts were targeted, and how</h2>
