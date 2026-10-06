@@ -30,6 +30,7 @@ import {
   EuiCheckbox,
   EuiButtonEmpty,
   EuiBadge,
+  EuiCodeBlock,
 } from '@elastic/eui';
 import { Alert, Case, AiAnalysis, AttackGraph } from '../../common';
 import { AlertsApiService } from '../services/api';
@@ -460,7 +461,7 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
             },
             {
               id: 'alerts',
-              name: `Linked Alerts (${evidenceTotal})`,
+              name: `Linked alerts (${evidenceTotal})`,
               content: (
                 <div>
                   <EuiSpacer size="m" />
@@ -483,7 +484,6 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
                         render: (v: Alert['_source']) => formatAbsolute(v['@timestamp']),
                       },
                       { field: '_source', name: 'Rule ID', width: '90px', render: (v: Alert['_source']) => v.rule?.id || '—' },
-                      { field: '_source', name: 'Rule', render: (v: Alert['_source']) => v.rule?.description || '—' },
                       { field: '_source', name: 'Agent', render: (v: Alert['_source']) => v.agent?.name || '—' },
                       {
                         field: '_source',
@@ -501,6 +501,7 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
                           </EuiToolTip>
                         ) : <EuiBadge color="hollow">Legacy link</EuiBadge>,
                       },
+                      { field: '_source', name: 'Description', render: (v: Alert['_source']) => v.rule?.description || '—' },
                       {
                         name: 'Actions',
                         actions: [
@@ -611,7 +612,7 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
             },
             {
               id: 'attack-path',
-              name: 'Attack Graph',
+              name: 'Attack graph',
               content: (
                 <div>
                   <EuiSpacer size="m" />
@@ -626,7 +627,7 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
             },
             {
               id: 'ai',
-              name: 'AI Analysis',
+              name: 'AI analysis',
               content: (
                 <div>
                   <EuiSpacer size="m" />
@@ -757,9 +758,9 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
             </EuiDescriptionList>
             <EuiSpacer size="m" />
             <EuiText size="s"><h4>Resolved full alert or retained snapshot</h4></EuiText>
-            <pre style={{ maxHeight: 360, overflow: 'auto', whiteSpace: 'pre-wrap' }}>
+            <EuiCodeBlock language="json" isCopyable overflowHeight={360}>
               {JSON.stringify(evidenceDetail.alert?._source || evidenceDetail.evidence?.snapshot || {}, null, 2)}
-            </pre>
+            </EuiCodeBlock>
           </EuiModalBody>
           <EuiModalFooter><EuiButton onClick={() => setEvidenceDetail(null)}>Close</EuiButton></EuiModalFooter>
         </EuiModal>

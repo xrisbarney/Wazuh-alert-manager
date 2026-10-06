@@ -95,8 +95,8 @@ export const AlertMultiPicker: React.FC<Props> = ({
               },
               { field: '_source', name: 'Timestamp', render: (v: Alert['_source']) => formatAbsolute(v['@timestamp']) },
               { field: '_source', name: 'Rule ID', width: '90px', render: (v: Alert['_source']) => v.rule?.id || '—' },
-              { field: '_source', name: 'Rule', render: (v: Alert['_source']) => v.rule?.description || '—' },
               { field: '_source', name: 'Agent', render: (v: Alert['_source']) => v.agent?.name || '—' },
+              { field: '_source', name: 'Description', render: (v: Alert['_source']) => v.rule?.description || '—' },
             ]}
           />
           <EuiSpacer size="s" />
