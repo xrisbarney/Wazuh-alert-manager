@@ -106,9 +106,8 @@
 }
 
 .wamTableSecondary {
-  color: inherit;
-  font-size: 0.75rem;
-  opacity: 0.7;
+  @include euiFontSizeXS;
+  color: $euiTextSubduedColor;
 }
 
 .wamAlertId,
@@ -116,10 +115,6 @@
 .wamFieldValue {
   overflow-wrap: anywhere;
   word-break: break-word;
-}
-
-.wamFieldName {
-  font-size: 0.75rem;
 }
 
 .wamDocumentFields .euiTableRowCell {
@@ -230,11 +225,35 @@
 }
 
 .wamDonut__value {
+  @include euiTitle('m');
+  @include euiNumberFormat;
   fill: $euiTextColor;
 }
 
 .wamDonut__label {
+  @include euiFontSizeXS;
   fill: $euiColorDarkShade;
+}
+
+.wamDonut__swatch {
+  border-radius: 2px;
+  display: inline-block;
+  height: 10px;
+  width: 10px;
+}
+
+.wamDonut__count {
+  @include euiNumberFormat;
+  font-weight: $euiFontWeightSemiBold;
+}
+
+.wamDonut__pct {
+  @include euiNumberFormat;
+}
+
+.wamDeltaChip {
+  @include euiNumberFormat;
+  font-weight: $euiFontWeightSemiBold;
 }
 
 .wamDonut__empty {
@@ -279,19 +298,13 @@
 
 .wamHelpText {
   color: $euiColorPrimary;
+  @include euiFontSizeXS;
   cursor: help;
-  font-size: 0.75rem;
   text-decoration: underline dotted;
 }
 
 .wamPreviewStats > .euiFlexItem {
   flex-basis: 140px;
-}
-
-.wamPreviewJson {
-  max-height: 180px;
-  overflow: auto;
-  white-space: pre-wrap;
 }
 
 .wamRepresentativeAlerts {
@@ -417,91 +430,68 @@
 }
 
 // ---- Attack graph (Wazuh console design: "SSH Attack Graph v2") ----
-// Light by default; the Entity graph canvas can opt into the dark theme
-// (.wamAg--dark), matching the design's two token sets. Typography uses the
-// dashboard theme's own font stacks so these views match the rest of the
-// Security operations workbench in every theme.
-.wamAg,
-.wamAgTokens {
-  --ag-bg: #ffffff;
-  --ag-panel: #fdfdfd;
-  --ag-card: #ffffff;
-  --ag-line: #ededed;
-  --ag-ink: #0b0b0e;
-  --ag-mute: #5f6166;
-  --ag-sub: #3f4147;
-  --ag-faint: #808080;
-  --ag-stage: #f7f6f7;
-  --ag-dotc: #dcdcdf;
-  --ag-vbg: #eaf2fe;
-  --ag-vink: #1d4ed8;
-  --ag-vline: #c9dcfc;
-  --ag-info: #f7f6f7;
-  --ag-bar: #ededed;
-  --ag-hotbg: #fef6f4;
-  --ag-hotline: #f6c0b5;
-  --ag-lowbg: #d4d4d8;
-  --ag-attbg: #ffffff;
-  --ag-erect: #ffffff;
-  --ag-medink: #a16207;
-  --ag-lowink: #52525b;
-  --ag-ring: #ffffff;
-  --ag-shadow: rgba(0, 0, 0, 0.08);
+// Colours and type follow the active dashboard theme. The dashboard compiles
+// this file once per theme with that theme's EUI Sass variables prepended, so
+// surfaces, text and borders come straight from those variables, and the
+// design's accent tints switch to their dark-theme set when the theme is dark.
+//
+// Typography is the dashboard's own, as on every other Wazuh page: one text
+// font (the theme's, never the code font), the EUI type scale and weights
+// (euiTitle / euiFontSize* mixins), and sentence case - no uppercase or
+// letter-spaced labels.
+.wamAg {
+  --ag-panel: #{$euiColorEmptyShade};
+  --ag-card: #{$euiColorEmptyShade};
+  --ag-line: #{$euiBorderColor};
+  --ag-ink: #{$euiTextColor};
+  --ag-sub: #{$euiTextColor};
+  --ag-mute: #{$euiColorDarkShade};
+  --ag-faint: #{$euiColorDarkShade};
+  --ag-stage: #{$euiColorLightestShade};
+  --ag-dotc: #{$euiColorLightShade};
+  --ag-info: #{$euiColorLightestShade};
+  --ag-bar: #{$euiColorLightShade};
+  --ag-erect: #{$euiColorEmptyShade};
+  --ag-ring: #{$euiColorEmptyShade};
   --ag-high: #ea2d0d; // --color-danger-500
   --ag-med: #facc15; // --color-warning-400
-  --ag-low: #808080; // --color-neutral-550
   --ag-blue: #3b82f6; // --color-primary-500
-  --ag-sevink: #b32308;
-  --ag-sevbg: #fdedea;
-  --ag-medbg: #fefce8;
-  --ag-medline: #fde68a;
-  // Sass theme variables, prepended per theme by the dashboard build.
-  --ag-sans: #{$euiFontFamily};
-  --ag-mono: #{$euiCodeFontFamily};
-  // Dates and times use the workbench's text font (as in its alert table),
-  // with tabular digits so columns of times still line up.
-  --ag-num: #{$euiFontFamily};
+  // The font EUI's own components use (falls back to the theme's Sass stack).
+  --ag-sans: var(--oui-font-family, #{$euiFontFamily});
+
+  @if lightness($euiColorEmptyShade) < 50% {
+    --ag-vbg: #1c2a44;
+    --ag-vink: #a9c8fb;
+    --ag-vline: #2b4270;
+    --ag-hotbg: #2a1a18;
+    --ag-hotline: #6e2415;
+    --ag-lowbg: #a1a1aa;
+    --ag-attbg: #2a1414;
+    --ag-medink: #facc15;
+    --ag-lowink: #c4c4cc;
+    --ag-shadow: rgba(0, 0, 0, 0.4);
+  } @else {
+    --ag-vbg: #eaf2fe;
+    --ag-vink: #1d4ed8;
+    --ag-vline: #c9dcfc;
+    --ag-hotbg: #fef6f4;
+    --ag-hotline: #f6c0b5;
+    --ag-lowbg: #d4d4d8;
+    --ag-attbg: #ffffff;
+    --ag-medink: #a16207;
+    --ag-lowink: #52525b;
+    --ag-shadow: rgba(0, 0, 0, 0.08);
+  }
 }
 
 .wamAg {
+  @include euiFontSizeS;
   color: var(--ag-ink);
   font-family: var(--ag-sans);
+  font-weight: $euiFontWeightRegular;
   transition: background 0.15s, color 0.15s;
 
-  b { font-weight: 700; }
-}
-
-// Nested .wamAg blocks re-declare the light tokens, so dark must reach them too.
-.wamAg--dark,
-.wamAg--dark .wamAg {
-  --ag-bg: #121417;
-  --ag-panel: #1a1d22;
-  --ag-card: #22262d;
-  --ag-line: #2e333b;
-  --ag-ink: #f2f3f5;
-  --ag-mute: #9aa1ac;
-  --ag-sub: #c9ced6;
-  --ag-faint: #7c838e;
-  --ag-stage: #15181c;
-  --ag-dotc: #262a31;
-  --ag-vbg: #1c2a44;
-  --ag-vink: #a9c8fb;
-  --ag-vline: #2b4270;
-  --ag-info: #22262d;
-  --ag-bar: #2e333b;
-  --ag-hotbg: #2a1a18;
-  --ag-hotline: #6e2415;
-  --ag-lowbg: #a1a1aa;
-  --ag-attbg: #2a1414;
-  --ag-erect: #15181c;
-  --ag-medink: #facc15;
-  --ag-lowink: #c4c4cc;
-  --ag-ring: #15181c;
-  --ag-shadow: rgba(0, 0, 0, 0.4);
-  --ag-sevink: #ff8a6b;
-  --ag-sevbg: #3a1a14;
-  --ag-medbg: #2e2810;
-  --ag-medline: #5c4a10;
+  b { font-weight: $euiFontWeightBold; }
 }
 
 .wamAg__viewbar {
@@ -511,42 +501,6 @@
   gap: 12px;
   justify-content: space-between;
   margin-bottom: 12px;
-  p { color: var(--ag-mute); font-size: 13px; margin: 0; }
-}
-
-.wamAg__seg {
-  background: var(--ag-info);
-  border-radius: 9px;
-  box-shadow: inset 0 0 0 1px var(--ag-line);
-  display: flex;
-  gap: 2px;
-  padding: 3px;
-
-  button {
-    align-items: center;
-    background: transparent;
-    border: 0;
-    border-radius: 7px;
-    color: var(--ag-mute);
-    cursor: pointer;
-    display: flex;
-    font: 600 12px var(--ag-sans);
-    gap: 6px;
-    padding: 5px 10px;
-    &:focus-visible { outline: 2px solid var(--ag-blue); outline-offset: 1px; }
-  }
-
-  button.wamAg__on { background: var(--ag-blue); color: #fff; }
-
-  svg {
-    fill: none;
-    height: 14px;
-    stroke: currentColor;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    stroke-width: 2;
-    width: 14px;
-  }
 }
 
 .wamAg__panel {
@@ -558,13 +512,8 @@
 
 .wamAg__sec { margin-top: 16px; }
 
-.wamAg__h2 {
-  color: var(--ag-ink);
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  margin: 0 0 4px;
-}
+// Typography comes from the EuiTitle around each heading.
+.wamAg__h2 { margin: 0 0 4px; }
 
 .wamAg__ptop {
   align-items: flex-start;
@@ -575,27 +524,14 @@
 }
 
 .wamAg__lede {
-  color: var(--ag-mute);
-  font-size: 13px;
-  line-height: 1.5;
-  margin: 0;
   max-width: 640px;
   b { color: var(--ag-ink); }
 }
 
 .wamAg__actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
-
-.wamAg__btn {
-  background: var(--ag-card);
-  border: 1px solid var(--ag-line);
-  border-radius: 7px;
-  color: var(--ag-ink);
-  cursor: pointer;
-  font: 500 12px var(--ag-sans);
-  padding: 7px 12px;
-  &:hover { border-color: var(--ag-blue); color: var(--ag-blue); }
-  &:focus-visible { outline: 2px solid var(--ag-blue); outline-offset: 2px; }
-}
+// Fixed basis for the timeline host select: EuiSelect's layout is width:100%, so
+// without this it fills the actions row and pushes "Group repeats" onto a new line.
+.wamAg__host { flex: 0 1 240px; min-width: 160px; }
 
 .wamAg__stageWrap {
   background: var(--ag-stage) radial-gradient(var(--ag-dotc) 1px, transparent 1px) 0 0 / 22px 22px;
@@ -626,25 +562,19 @@
   top: 18px;
   transform: translateX(-50%);
   width: 220px;
-  b {
-    color: var(--ag-mute);
-    display: block;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-  }
-  i { color: var(--ag-faint); font-size: 12px; font-style: normal; }
 }
 
+.wamAg__colt { @include euiTitle("xxs"); }
+.wamAg__colsub { @include euiFontSizeXS; color: var(--ag-mute); }
+
 .wamAg__verb {
+  @include euiFontSizeXS;
   background: var(--ag-vbg);
   border: 1px solid var(--ag-vline);
   border-radius: 999px;
   color: var(--ag-vink);
-  font-size: 12px;
-  font-weight: 600;
-  padding: 3px 10px;
+  font-weight: $euiFontWeightMedium;
+  padding: 1px 10px;
   position: absolute;
   top: 22px;
   transform: translateX(-50%);
@@ -664,7 +594,14 @@
 .wamAg__edge { fill: none; stroke-linecap: round; transition: opacity 0.15s; }
 .wamAg__ehit { fill: none; stroke: transparent; stroke-width: 18; }
 .wamAg__erect { fill: var(--ag-erect); pointer-events: none; stroke-width: 1.5; }
-.wamAg__elabel { font: 700 12px var(--ag-mono); pointer-events: none; }
+// Edge-count pills read like an EuiBadge. measureLabel() in
+// attack_graph_canvas.tsx reads this computed font to size the pills.
+.wamAg__elabel {
+  @include euiFontSizeXS;
+  font-family: var(--ag-sans);
+  font-weight: $euiFontWeightMedium;
+  pointer-events: none;
+}
 .wamAg__elabel--med { fill: var(--ag-medink); }
 .wamAg__elabel--low { fill: var(--ag-lowink); }
 
@@ -707,8 +644,8 @@
 }
 
 .wamAg__t { min-width: 0; }
-.wamAg__n { font: 600 12px var(--ag-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wamAg__s { font-size: 11.5px; margin-top: 1px; opacity: 0.85; white-space: nowrap; }
+.wamAg__n { @include euiFontSizeS; @include euiTextTruncate; font-weight: $euiFontWeightSemiBold; }
+.wamAg__s { @include euiFontSizeXS; @include euiTextTruncate; opacity: 0.85; }
 
 .wamAg__node--high {
   background: var(--ag-high);
@@ -733,6 +670,7 @@
 
 .wamAg__dim { opacity: 0.18; }
 
+// Floating zoom bar; its buttons are EuiButtonIcon / EuiButtonEmpty.
 .wamAg__zoom {
   align-items: center;
   background: var(--ag-card);
@@ -746,40 +684,16 @@
   padding: 3px;
   position: absolute;
   z-index: 10;
-
-  button {
-    background: transparent;
-    border: 0;
-    border-radius: 7px;
-    color: var(--ag-ink);
-    cursor: pointer;
-    display: grid;
-    height: 30px;
-    place-items: center;
-    width: 30px;
-    &:hover { background: var(--ag-info); color: var(--ag-blue); }
-    &:focus-visible { outline: 2px solid var(--ag-blue); outline-offset: 1px; }
-  }
-
-  svg {
-    fill: none;
-    height: 16px;
-    stroke: currentColor;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    stroke-width: 2;
-    width: 16px;
-  }
-
-  .wamAg__pct { font: 700 12px var(--ag-mono); min-width: 46px; width: auto; }
 }
+
+.wamAg__pct { @include euiNumberFormat; min-width: 52px; }
 
 .wamAg__sep { background: var(--ag-line); height: 18px; margin: 0 3px; width: 1px; }
 
 .wamAg__hint {
+  @include euiFontSizeXS;
   bottom: 10px;
   color: var(--ag-faint);
-  font-size: 11.5px;
   pointer-events: none;
   position: absolute;
   right: 12px;
@@ -799,47 +713,19 @@
 }
 
 .wamAg__k {
-  color: var(--ag-mute);
-  font-size: 11px;
-  letter-spacing: 0.12em;
-  margin-bottom: 3px;
+  @include euiTitle("xxs");
+  margin-bottom: 2px;
   overflow-wrap: anywhere;
-  text-transform: uppercase;
 }
 
-.wamAg__v {
-  font-size: 14.5px;
-  line-height: 1.5;
-  b { font-family: var(--ag-mono); font-weight: 600; }
-}
-
-.wamAg__alerts {
-  align-items: center;
-  color: var(--ag-mute);
-  display: flex;
-  flex-wrap: wrap;
-  font-size: 12px;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.wamAg__chip {
-  background: var(--ag-card);
-  border: 1px solid var(--ag-line);
-  border-radius: 5px;
-  color: var(--ag-blue);
-  cursor: pointer;
-  font: 12px var(--ag-mono);
-  padding: 2px 7px;
-  &:hover { border-color: var(--ag-blue); }
-}
+.wamAg__v { @include euiFontSizeS; }
 
 .wamAg__legend {
+  @include euiFontSizeXS;
   align-items: center;
   color: var(--ag-mute);
   display: flex;
   flex-wrap: wrap;
-  font-size: 12px;
   gap: 16px;
   span { align-items: center; display: flex; gap: 6px; }
   i { border-radius: 2px; display: inline-block; height: 4px; width: 18px; }
@@ -853,11 +739,10 @@
   justify-content: space-between;
   margin-bottom: 12px;
   .wamAg__h2 { margin: 0; }
-  > span { color: var(--ag-mute); font-size: 12px; }
+  > span { @include euiFontSizeXS; @include euiNumberFormat; color: var(--ag-mute); }
 }
 
-.wamAg__mono { font-family: var(--ag-num); font-variant-numeric: tabular-nums; }
-.wamAg__empty { color: var(--ag-mute); font-size: 13px; margin: 0; }
+.wamAg__empty { @include euiFontSizeS; color: var(--ag-mute); margin: 0; }
 
 .wamAg__tech {
   display: grid;
@@ -866,6 +751,7 @@
 }
 
 .wamAg__tc {
+  @include euiFontSizeS;
   background: var(--ag-card);
   border: 1px solid var(--ag-line);
   border-radius: 10px;
@@ -875,22 +761,22 @@
   display: flex;
   flex-direction: column;
   font-family: var(--ag-sans);
+  font-weight: $euiFontWeightRegular;
   gap: 3px;
   padding: 12px 14px;
   text-align: left;
   &:hover { border-color: var(--ag-blue); }
   &:focus-visible { outline: 2px solid var(--ag-blue); outline-offset: 2px; }
-  code { background: none; color: var(--ag-mute); font: 13px var(--ag-mono); padding: 0; }
-  p { color: var(--ag-sub); flex: 1; font-size: 12.5px; line-height: 1.4; margin: 4px 0 10px; }
+  p { color: var(--ag-sub); flex: 1; margin: 4px 0 10px; }
 }
 
+.wamAg__tid { @include euiFontSizeXS; color: var(--ag-mute); }
+
+// Typography comes from the EuiTitle around each card heading.
 .wamAg__tc h3,
 .wamAg__ph h3 {
   align-items: center;
-  color: var(--ag-ink);
   display: flex;
-  font-size: 13.5px;
-  font-weight: 700;
   gap: 8px;
   margin: 0;
 }
@@ -898,9 +784,9 @@
 .wamAg__dot { border-radius: 50%; flex: none; height: 8px; width: 8px; }
 
 .wamAg__bar {
+  @include euiNumberFormat;
   align-items: center;
   display: flex;
-  font: 700 13px var(--ag-mono);
   gap: 10px;
   > div { background: var(--ag-bar); border-radius: 3px; flex: 1; height: 5px; overflow: hidden; }
   i { border-radius: 3px; display: block; height: 100%; }
@@ -908,7 +794,7 @@
 
 .wamAg__phases { align-items: stretch; display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
 
-.wamAg__chev { color: var(--ag-faint); display: grid; flex: none; font-size: 20px; place-items: center; width: 20px; }
+.wamAg__chev { display: grid; flex: none; place-items: center; width: 20px; }
 
 .wamAg__ph {
   background: var(--ag-card);
@@ -921,25 +807,34 @@
   gap: 8px;
   min-width: 160px;
   padding: 14px;
-  p { color: var(--ag-sub); font-size: 12.5px; margin: 0; }
+  p { color: var(--ag-sub); margin: 0; }
 }
 
 .wamAg__ph--hot { background: var(--ag-hotbg); border-color: var(--ag-hotline); }
 
 .wamAg__num {
+  @include euiFontSizeXS;
+  @include euiNumberFormat;
   border: 1.5px solid;
   border-radius: 50%;
   display: grid;
   flex: none;
-  font: 700 12px var(--ag-mono);
+  font-weight: $euiFontWeightMedium;
   height: 22px;
   place-items: center;
   width: 22px;
 }
 
 .wamAg__tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.wamAg__tag { background: var(--ag-vbg); border-radius: 5px; color: var(--ag-vink); font-size: 11.5px; font-weight: 600; padding: 3px 8px; }
-.wamAg__cnt { align-items: center; color: var(--ag-sub); display: flex; font: 13px var(--ag-mono); gap: 7px; }
+.wamAg__cnt { align-items: center; color: var(--ag-sub); display: flex; gap: 7px; }
+
+// Tinted EuiBadges (color="hollow", which styles through a class only) for
+// MITRE tactics and technique chips; the flex gap replaces EUI's sibling margin.
+.wamAg .wamAg__tags > .wamAg__tag,
+.wamAg .wamAg__tmeta > .wamAg__ch { margin-left: 0; }
+.wamAg .wamAg__tags > .wamAg__tag,
+.wamAg .wamAg__tmeta > .wamAg__ch--tac { background-color: var(--ag-vbg); border-color: var(--ag-vline); color: var(--ag-vink); }
+.wamAg .wamAg__tmeta > .wamAg__ch--tec { background-color: var(--ag-info); }
 
 @media (max-width: 760px) {
   .wamAg__phases { flex-direction: column; }
@@ -948,145 +843,7 @@
   .wamAg__info { grid-template-columns: 1fr; }
 }
 
-// ---- Case flyout chrome (header + tabs) in the console design ----
-.wamCaseFlyout .wamCaseHead { padding-bottom: 0; }
-
-.wamAg__head {
-  align-items: flex-end;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  justify-content: space-between;
-}
-.wamAg__headL { min-width: 0; }
-.wamAg__headR { align-items: flex-start; display: flex; gap: 12px; }
-.wamAg__eyebrow { color: var(--ag-mute); font-size: 11px; letter-spacing: 0.14em; margin-bottom: 4px; text-transform: uppercase; }
-.wamAg__h1 {
-  align-items: center;
-  color: var(--ag-ink);
-  display: flex;
-  flex-wrap: wrap;
-  font-family: var(--ag-sans);
-  font-size: 26px;
-  font-weight: 700;
-  gap: 12px;
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-  margin: 0;
-}
-.wamAg__sev {
-  align-items: center;
-  background: var(--ag-sevbg);
-  border: 1px solid var(--ag-hotline);
-  border-radius: 999px;
-  color: var(--ag-sevink);
-  display: flex;
-  font-size: 12px;
-  font-weight: 600;
-  gap: 6px;
-  letter-spacing: 0;
-  padding: 3px 10px;
-  &::before { background: var(--ag-high); border-radius: 50%; content: ''; height: 7px; width: 7px; }
-}
-.wamAg__sev--medium { background: var(--ag-medbg); border-color: var(--ag-medline); color: var(--ag-medink); &::before { background: var(--ag-med); } }
-.wamAg__sev--low { background: var(--ag-info); border-color: var(--ag-line); color: var(--ag-mute); &::before { background: var(--ag-low); } }
-.wamAg__when {
-  color: var(--ag-mute);
-  font: 12px var(--ag-num);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  b { color: var(--ag-ink); display: block; font: 700 14px var(--ag-sans); margin-bottom: 2px; }
-}
-
-// EUI tabs restyled to the design's tab bar (all case tabs share it).
-.wamCaseFlyout .euiTabs {
-  box-shadow: inset 0 -1px 0 var(--ag-line);
-  gap: 4px;
-  margin-top: 4px;
-}
-.wamCaseFlyout .euiTab {
-  color: var(--ag-mute);
-  font-family: var(--ag-sans);
-  font-size: 14px;
-  font-weight: 500;
-  padding: 8px 12px;
-  &:hover { color: var(--ag-blue); text-decoration: none; }
-  .euiTab__content { font-size: 14px; }
-}
-.wamCaseFlyout .euiTab.euiTab-isSelected {
-  background: transparent;
-  box-shadow: inset 0 -2px 0 var(--ag-blue);
-  color: var(--ag-blue);
-  .euiTab__content { font-weight: 700; }
-  &::after { display: none; }
-}
-
-.wamAg__page { margin-top: 16px; }
-
-// ---- Linked alerts tables ----
-.wamAg__tw { overflow-x: auto; }
-.wamAg__at {
-  border-collapse: collapse;
-  font-size: 14px;
-  width: 100%;
-  th { border-bottom: 1px solid var(--ag-line); color: var(--ag-ink); font-size: 12.5px; font-weight: 700; padding: 10px; text-align: left; white-space: nowrap; }
-  td { border-bottom: 1px solid var(--ag-line); color: var(--ag-ink); padding: 12px 10px; vertical-align: middle; }
-  tbody tr:hover td { background: var(--ag-info); }
-  .wamAg__desc { min-width: 220px; width: 34%; }
-  td.wamAg__ts { font-family: var(--ag-num); font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .wamAg__r { text-align: right; }
-  td.wamAg__none { color: var(--ag-mute); text-align: center; }
-}
-.wamAg__at--mini {
-  font-size: 13px;
-  td { padding: 9px 10px; }
-  td.wamAg__ts { font-size: 13px; }
-  tr:last-child td { border-bottom: 0; }
-}
-.wamAg__rid {
-  background: var(--ag-vbg);
-  border: 1px solid var(--ag-vline);
-  border-radius: 5px;
-  color: var(--ag-vink);
-  font: 700 13px var(--ag-mono);
-  padding: 2px 7px;
-  white-space: nowrap;
-}
-.wamAg__st {
-  align-items: center;
-  display: flex;
-  gap: 7px;
-  white-space: nowrap;
-  &::before { background: var(--c, var(--ag-blue)); border-radius: 50%; content: ''; height: 7px; width: 7px; }
-}
-.wamAg__ev {
-  background: var(--ag-card);
-  border: 1px solid var(--ag-line);
-  border-radius: 4px;
-  font-size: 12.5px;
-  padding: 2px 8px;
-  white-space: nowrap;
-}
-.wamAg__ev--held { background: var(--ag-medbg); border-color: var(--ag-medline); color: var(--ag-medink); }
-.wamAg__ev--archived { background: var(--ag-vbg); border-color: var(--ag-vline); color: var(--ag-vink); }
-.wamAg__ev--purged { background: var(--ag-sevbg); border-color: var(--ag-hotline); color: var(--ag-sevink); }
-.wamAg__acts {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
-  button { background: transparent; border: 0; border-radius: 5px; cursor: pointer; display: grid; padding: 3px; place-items: center; }
-  button:hover svg, button:focus-visible svg { stroke: var(--ag-blue); }
-  button:focus-visible { outline: 2px solid var(--ag-blue); }
-  svg { fill: none; height: 17px; stroke: var(--ag-mute); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; width: 17px; }
-}
-.wamAg__lv {
-  align-items: center;
-  display: inline-flex;
-  font: 700 13px var(--ag-mono);
-  gap: 6px;
-  white-space: nowrap;
-  &::before { background: var(--c); border-radius: 50%; content: ''; height: 7px; width: 7px; }
-}
+// ---- Linked-alert previews in the Attack Graph ----
 .wamAg__la {
   background: var(--ag-card);
   border: 1px solid var(--ag-line);
@@ -1101,68 +858,8 @@
   gap: 12px;
   justify-content: space-between;
   margin-bottom: 6px;
-  b { font-size: 14px; }
 }
-.wamAg__lamore { color: var(--ag-mute); font-size: 12.5px; padding: 6px 10px 8px; }
-.wamAg__fchip {
-  align-items: center;
-  background: var(--ag-vbg);
-  border: 1px solid var(--ag-vline);
-  border-radius: 8px;
-  color: var(--ag-vink);
-  display: flex;
-  flex-wrap: wrap;
-  font-size: 13px;
-  gap: 10px;
-  margin-bottom: 10px;
-  padding: 8px 12px;
-  b { font-family: var(--ag-mono); }
-  button { background: transparent; border: 0; color: var(--ag-vink); cursor: pointer; font: 600 12.5px var(--ag-sans); margin-left: auto; text-decoration: underline; }
-}
-.wamAg__pager {
-  align-items: center;
-  color: var(--ag-mute);
-  display: flex;
-  font-size: 13px;
-  gap: 12px;
-  justify-content: space-between;
-  margin-top: 12px;
-  .wamAg__btn:disabled { cursor: default; opacity: 0.45; }
-}
-.wamAg__addh { color: var(--ag-ink); font-size: 16px; font-weight: 700; letter-spacing: -0.02em; margin: 28px 0 10px; }
-.wamAg__srch {
-  align-items: center;
-  background: var(--ag-card);
-  border: 1px solid var(--ag-line);
-  border-radius: 8px;
-  display: flex;
-  gap: 8px;
-  max-width: 440px;
-  padding: 8px 12px;
-  svg { fill: none; flex: none; height: 16px; stroke: var(--ag-mute); stroke-width: 2; width: 16px; }
-  input { background: transparent; border: 0; color: var(--ag-ink); font: 14px var(--ag-sans); outline: 0; width: 100%; }
-  input::placeholder { color: var(--ag-faint); }
-  &:focus-within { border-color: var(--ag-blue); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15); }
-}
-.wamAg__spin {
-  animation: wamAgSpin 0.8s linear infinite;
-  border: 2px solid var(--ag-line);
-  border-radius: 50%;
-  border-top-color: var(--ag-blue);
-  flex: none;
-  height: 14px;
-  width: 14px;
-}
-@keyframes wamAgSpin { to { transform: rotate(360deg); } }
-.wamAg__pick { margin: 10px 0; max-width: 900px; }
-.wamAg__pickmsg { margin-top: 8px; }
-.wamAg__btn--primary {
-  background: var(--ag-blue);
-  border-color: var(--ag-blue);
-  color: #fff;
-  &:hover { background: #2f6fe0; color: #fff; }
-  &:disabled { cursor: default; opacity: 0.5; }
-}
+.wamAg__lamore { @include euiFontSizeXS; color: var(--ag-mute); padding: 6px 8px 8px; }
 
 // ---- Kill-chain phase first/last seen ----
 .wamAg__pts {
@@ -1173,27 +870,8 @@
   margin: 0;
   padding: 8px 0;
   div { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; }
-  dt { color: var(--ag-mute); font-size: 12px; }
-  dd { font: 600 13px var(--ag-num); font-variant-numeric: tabular-nums; margin: 0; }
-}
-
-// ---- Theme + host segmented controls ----
-.wamAg__seg--icons button { padding: 6px 8px; }
-.wamAg__seg--icons svg { height: 16px; width: 16px; }
-.wamAg__seg--wrap { flex-wrap: wrap; }
-.wamAg__tog {
-  align-items: center;
-  color: var(--ag-mute);
-  cursor: pointer;
-  display: flex;
-  font: 600 12px var(--ag-sans);
-  gap: 8px;
-  input { height: 1px; opacity: 0; position: absolute; width: 1px; }
-  span { background: var(--ag-line); border-radius: 9px; height: 18px; position: relative; transition: background 0.12s; width: 30px; }
-  span::after { background: #fff; border-radius: 50%; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); content: ''; height: 14px; left: 2px; position: absolute; top: 2px; transition: left 0.12s; width: 14px; }
-  input:checked + span { background: var(--ag-blue); }
-  input:checked + span::after { left: 14px; }
-  input:focus-visible + span { outline: 2px solid var(--ag-blue); outline-offset: 2px; }
+  dt { @include euiFontSizeXS; color: var(--ag-mute); }
+  dd { @include euiFontSizeXS; @include euiNumberFormat; margin: 0; }
 }
 
 // ---- Alert timeline ----
@@ -1210,10 +888,16 @@
   gap: 8px;
   grid-template-columns: 210px minmax(0, 1fr);
   height: 46px;
-  b { align-items: center; display: flex; font: 600 13px var(--ag-mono); gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  b svg { fill: none; flex: none; height: 15px; stroke: var(--ag-mute); stroke-width: 1.8; width: 15px; }
-  b i { color: var(--ag-mute); font: 12px var(--ag-sans); font-style: normal; }
 }
+.wamAg__lanel {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  svg { fill: none; flex: none; height: 15px; stroke: var(--ag-mute); stroke-width: 1.8; width: 15px; }
+}
+.wamAg__lanen { @include euiTextTruncate; min-width: 0; }
+.wamAg__lanec { @include euiFontSizeXS; @include euiNumberFormat; color: var(--ag-mute); flex: none; }
 .wamAg__track { background: linear-gradient(var(--ag-line), var(--ag-line)) 0 50% / 100% 1px no-repeat; height: 100%; position: relative; }
 .wamAg__pt {
   background: var(--c);
@@ -1235,8 +919,8 @@
 .wamAg__axis { border-top: 1px solid var(--ag-line); display: grid; gap: 8px; grid-template-columns: 210px minmax(0, 1fr); height: 24px; }
 .wamAg__ticks {
   position: relative;
-  span { color: var(--ag-mute); font: 12px var(--ag-num); font-variant-numeric: tabular-nums; position: absolute; top: 5px; transform: translateX(-50%); white-space: nowrap; }
-  span::before { background: var(--ag-line); content: ''; height: 4px; left: 50%; position: absolute; top: -6px; width: 1px; }
+  span { @include euiFontSizeXS; @include euiNumberFormat; color: var(--ag-mute); position: absolute; top: 3px; transform: translateX(-50%); white-space: nowrap; }
+  span::before { background: var(--ag-line); content: ''; height: 4px; left: 50%; position: absolute; top: -4px; width: 1px; }
 }
 .wamAg__tl { display: flex; flex-direction: column; margin-top: 18px; position: relative; }
 .wamAg__tr {
@@ -1246,17 +930,17 @@
   padding-bottom: 10px;
   position: relative;
   &::before { background: var(--ag-line); bottom: 0; content: ''; left: 119px; position: absolute; top: 0; width: 2px; }
-  &:first-child::before { top: 22px; }
-  &:last-child::before { bottom: calc(100% - 22px); }
+  &:first-child::before { top: 23px; }
+  &:last-child::before { bottom: calc(100% - 23px); }
 }
-.wamAg__tt { color: var(--ag-mute); font: 600 13px var(--ag-num); font-variant-numeric: tabular-nums; padding-top: 14px; text-align: right; white-space: nowrap; }
+.wamAg__tt { @include euiFontSizeS; @include euiNumberFormat; color: var(--ag-mute); padding-top: 12px; text-align: right; white-space: nowrap; }
 .wamAg__rd {
   background: var(--c);
   border: 3px solid var(--ag-panel);
   border-radius: 50%;
   box-shadow: 0 0 0 1px var(--ag-line);
   height: 14px;
-  margin: 12px auto 0;
+  margin: 16px auto 0;
   position: relative;
   width: 14px;
   z-index: 1;
@@ -1281,42 +965,18 @@
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  b { font-size: 14px; font-weight: 700; }
-  .wamAg__lv { font-size: 12.5px; }
+  b { @include euiTitle("xxs"); }
 }
-.wamAg__cntb { background: var(--ag-blue); border-radius: 999px; color: #fff; font: 700 12px var(--ag-mono); padding: 2px 8px; }
-.wamAg__span { color: var(--ag-mute); font-size: 12.5px; }
+.wamAg__span { @include euiFontSizeXS; @include euiNumberFormat; color: var(--ag-mute); }
 .wamAg__tmeta { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; }
-.wamAg__ch {
-  background: var(--ag-card);
-  border: 1px solid var(--ag-line);
-  border-radius: 5px;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 3px 8px;
-  white-space: nowrap;
-}
-.wamAg__ch--tac { background: var(--ag-vbg); border-color: var(--ag-vline); color: var(--ag-vink); }
-.wamAg__ch--tec { background: var(--ag-info); }
-.wamAg__ch--host { font-family: var(--ag-mono); font-size: 12.5px; }
-.wamAg__oa {
-  background: transparent;
-  border: 1px solid var(--ag-line);
-  border-radius: 5px;
-  color: var(--ag-blue);
-  cursor: pointer;
-  font: 600 12px var(--ag-sans);
-  margin-left: auto;
-  padding: 3px 8px;
-  &:hover, &:focus-visible { border-color: var(--ag-blue); }
-}
+.wamAg .wamAg__tmeta > .wamAg__oa { margin-left: auto; }
 .wamAg__reps {
   border-top: 1px dashed var(--ag-line);
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
   padding-top: 8px;
-  span { background: var(--ag-info); border-radius: 4px; color: var(--ag-sub); font: 12px var(--ag-num); font-variant-numeric: tabular-nums; padding: 2px 6px; }
+  span { @include euiFontSizeXS; @include euiNumberFormat; background: var(--ag-info); border-radius: 4px; color: var(--ag-sub); padding: 1px 6px; }
   span.wamAg__on { background: var(--ag-blue); color: #fff; }
 }
 .wamAg__gap {
@@ -1327,13 +987,13 @@
   height: 30px;
   position: relative;
   &::before { border-left: 2px dashed var(--ag-line); bottom: 0; content: ''; left: 119px; position: absolute; top: 0; }
-  span { color: var(--ag-mute); font-size: 12px; font-style: italic; grid-column: 3; }
+  span { @include euiFontSizeXS; color: var(--ag-mute); grid-column: 3; }
 }
 .wamAg__more { margin: 4px 0 0 134px; }
 
 @media (max-width: 760px) {
   .wamAg__lane, .wamAg__axis { grid-template-columns: 90px minmax(0, 1fr); }
-  .wamAg__lane b i { display: none; }
+  .wamAg__lanec { display: none; }
   .wamAg__tr, .wamAg__gap { grid-template-columns: 0 20px minmax(0, 1fr); }
   .wamAg__tt { display: none; }
   .wamAg__tr::before, .wamAg__gap::before { left: 9px; }

@@ -43,14 +43,14 @@ test('capture public wiki screenshots', async ({ page }) => {
   await expect(caseFlyout.getByRole('tab', { name: 'Overview' })).toBeVisible({ timeout: 120_000 });
   await caseFlyout.getByRole('button', { name: 'Expand to full screen' }).click();
   await captureElement(page, '.wamCaseFlyout', 'case-overview.png');
-  await caseFlyout.getByRole('tab', { name: /^Linked Alerts/ }).click();
+  await caseFlyout.getByRole('tab', { name: /^Linked alerts/ }).click();
   await expect(caseFlyout.getByRole('columnheader', { name: 'Evidence' })).toBeVisible({ timeout: 120_000 });
   await captureElement(page, '.wamCaseFlyout', 'case-linked-evidence.png');
-  await caseFlyout.getByRole('tab', { name: 'Attack Graph' }).click();
+  await caseFlyout.getByRole('tab', { name: 'Attack graph' }).click();
   await expect(caseFlyout.getByRole('heading', { name: 'Kill-chain phases' })).toBeVisible({ timeout: 180_000 });
   await captureElement(page, '.wamCaseFlyout', 'case-attack-graph.png');
   await caseFlyout.getByText('Alert timeline', { exact: true }).click({ force: true });
-  await expect(caseFlyout.getByRole('button', { name: 'Alert timeline', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(caseFlyout.getByRole('radio', { name: 'Alert timeline', exact: true })).toBeChecked();
   await captureElement(page, '.wamCaseFlyout', 'case-alert-timeline.png');
   await caseFlyout.getByRole('button', { name: 'Collapse' }).click();
   await caseFlyout.getByRole('button', { name: 'Close' }).click().catch(() => undefined);

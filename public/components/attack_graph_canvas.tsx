@@ -1,13 +1,16 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { EuiBasicTable, EuiButton, EuiButtonEmpty, EuiButtonIcon, EuiText, EuiTitle } from '@elastic/eui';
 import { AttackGraphHop, AttackStory, StoryColumn, StoryEdge, StoryNode, storyPathOf, TECHNIQUE_PLAIN } from '../../common';
 import { formatAbsolute, formatDuration } from '../design';
 import { EDGE_HEX, storyTone, StoryTone, TONE_HEX, TONE_LABEL } from './attack_story_tone';
+import { SeverityBadge } from './status_badge';
 
 // Fixed logical stage, fitted to the container width and then zoomed/panned on
 // top of that - the same model as the design, so node spacing and edge labels
 // keep their proportions at any flyout size.
 const STAGE_W = 1200;
-// Sized so a ~21-character name fits in the dashboard's code font at 12px.
+// Sized so a ~19-character name fits in the dashboard's text font at the
+// EUI small size; longer names truncate (the full name is in the tooltip).
 const NODE_W = 224;
 const SOURCE_W = 190;
 const NODE_H = 54;
@@ -176,16 +179,16 @@ const widthOf = (node: StoryNode) => (node.column === 'source' ? SOURCE_W : NODE
 
 let markerSeq = 0;
 
-// Edge-count pills are sized to their text. The label font is the dashboard
-// theme's code font (it differs between theme versions), so measure it rather
-// than assume a fixed character width.
+// Edge-count pills are sized to their text. The label uses the dashboard
+// theme's text font (it differs between theme versions), so measure it with the
+// label's own computed font rather than assume a fixed character width.
 let measureCtx: CanvasRenderingContext2D | null | undefined;
-const measureLabel = (text: string, family: string) => {
+const measureLabel = (text: string, font: string) => {
   if (measureCtx === undefined) {
     try { measureCtx = document.createElement('canvas').getContext('2d'); } catch (e) { measureCtx = null; }
   }
-  if (!measureCtx || !family) return text.length * 7.4;
-  measureCtx.font = `700 12px ${family}`;
+  if (!measureCtx || !font) return text.length * 7;
+  measureCtx.font = font;
   return measureCtx.measureText(text).width;
 };
 
@@ -208,25 +211,30 @@ interface Props {
   /** Opens the Linked Alerts tab filtered to these alerts. */
   onOpenLinked?: (alertIds: string[], label: string) => void;
   headerActions?: React.ReactNode;
-  /** Dark console theme for this canvas only; the rest of the case stays light. */
-  dark?: boolean;
 }
 
-export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selection, onSelectionChange, hops, onOpenLinked, headerActions, dark = false }) => {
+export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selection, onSelectionChange, hops, onOpenLinked, headerActions }) => {
   const wrapRef = useRef<HTMLDivElement>(null);
-  // The resolved code-font stack, and a tick that re-measures labels once web fonts finish loading.
-  const [labelFont, setLabelFont] = useState({ family: '', loaded: 0 });
+  // The edge labels' computed font (the theme's family, size and weight), and a
+  // tick that re-measures them once web fonts finish loading.
+  const [labelFont, setLabelFont] = useState({ font: '', loaded: 0 });
+  const hasEdges = story.edges.length > 0;
   useEffect(() => {
     const el = wrapRef.current;
-    if (!el) return undefined;
+    if (!el || !hasEdges) return undefined;
     let live = true;
     const read = () => {
-      if (live) setLabelFont((f) => ({ family: getComputedStyle(el).getPropertyValue('--ag-mono').trim(), loaded: f.loaded + 1 }));
+      if (!live) return;
+      const label = el.querySelector('.wamAg__elabel');
+      if (!label) return;
+      const cs = getComputedStyle(label);
+      const font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+      setLabelFont((f) => ({ font, loaded: f.loaded + 1 }));
     };
     read();
     (document as any).fonts?.ready?.then(read);
     return () => { live = false; };
-  }, []);
+  }, [hasEdges]);
   const markerId = useMemo(() => `wamAg${++markerSeq}`, []);
   // base fits the stage to the container; zoom and pan are the viewer's own.
   const [base, setBase] = useState(1);
@@ -414,7 +422,7 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
       const p2 = { x: p3.x - k, y: p3.y };
       const d = `M${p0.x},${p0.y} C${p1.x},${p1.y} ${p2.x},${p2.y} ${p3.x},${p3.y}`;
       const text = focus?.edges.has(e.id) ? `${verbFor(a.column, b.column)} · ${e.alertCount.toLocaleString()}` : e.alertCount.toLocaleString();
-      const w = Math.max(22, Math.ceil(measureLabel(text, labelFont.family)) + 14);
+      const w = Math.max(22, Math.ceil(measureLabel(text, labelFont.font)) + 14);
       let label = bezier(p0, p1, p2, p3, 0.5);
       for (const t of [0.5, 0.4, 0.6, 0.33, 0.67, 0.27, 0.73]) {
         label = bezier(p0, p1, p2, p3, t);
@@ -458,19 +466,21 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
   const columnTitle = (c: StoryColumn) => COLUMN_TITLE[c];
 
   return (
-    <div className={`wamAg__panel${dark ? ' wamAg wamAg--dark' : ''}`}>
+    <div className="wamAg__panel">
       <div className="wamAg__ptop">
         <div>
-          <h2 className="wamAg__h2">Which hosts and accounts were targeted, and how</h2>
-          <p className="wamAg__lede">
-            Read it left to right, starting from the {story.columns[0] === 'source' ? <>source addresses: a <b>source</b> targeted a host, and a </> : 'hosts: a '}<b>host</b> saw activity as an <b>account</b>, which was targeted using a <b>technique</b>.
-            Arrows show direction, and each line shows how many alerts it covers. Thicker, warmer lines mean more alerts.
-            Drag any box to rearrange it. Click a box or a line to see its linked alerts.
-          </p>
+          <EuiTitle size="xs"><h2 className="wamAg__h2">Which hosts and accounts were targeted, and how</h2></EuiTitle>
+          <EuiText size="s" color="subdued" className="wamAg__lede">
+            <p>
+              Read it left to right, starting from the {story.columns[0] === 'source' ? <>source addresses: a <b>source</b> targeted a host, and a </> : 'hosts: a '}<b>host</b> saw activity as an <b>account</b>, which was targeted using a <b>technique</b>.
+              Arrows show direction, and each line shows how many alerts it covers. Thicker, warmer lines mean more alerts.
+              Drag any box to rearrange it. Click a box or a line to see its linked alerts.
+            </p>
+          </EuiText>
         </div>
         <div className="wamAg__actions">
           {headerActions}
-          <button type="button" className="wamAg__btn" onClick={reset}>Reset layout</button>
+          <EuiButtonEmpty size="s" iconType="refresh" onClick={reset}>Reset layout</EuiButtonEmpty>
         </div>
       </div>
 
@@ -487,8 +497,8 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
           <div className="wamAg__cols" aria-hidden="true">
             {story.columns.map((c, i) => (
               <div key={c} className="wamAg__col" style={{ left: layout.colX(i) }}>
-                <b>{columnTitle(c)}</b>
-                <i>{columnSub(c)}</i>
+                <div className="wamAg__colt">{columnTitle(c)}</div>
+                <div className="wamAg__colsub">{columnSub(c)}</div>
               </div>
             ))}
             {story.columns.slice(1).map((c, i) => (
@@ -575,17 +585,11 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
           })}
         </div>
         <div className="wamAg__zoom" onPointerDown={(ev) => ev.stopPropagation()}>
-          <button type="button" title="Zoom out" aria-label="Zoom out" onClick={() => zoomAt(zoom / 1.2)}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M8 11h6M21 21l-4.3-4.3" /></svg>
-          </button>
-          <button type="button" className="wamAg__pct" title="Reset zoom" onClick={resetView}>{Math.round(zoom * 100)}%</button>
-          <button type="button" title="Zoom in" aria-label="Zoom in" onClick={() => zoomAt(zoom * 1.2)}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M8 11h6M11 8v6M21 21l-4.3-4.3" /></svg>
-          </button>
+          <EuiButtonIcon iconType="magnifyWithMinus" color="text" size="s" title="Zoom out" aria-label="Zoom out" onClick={() => zoomAt(zoom / 1.2)} />
+          <EuiButtonEmpty size="xs" color="text" className="wamAg__pct" title="Reset zoom" onClick={resetView}>{Math.round(zoom * 100)}%</EuiButtonEmpty>
+          <EuiButtonIcon iconType="magnifyWithPlus" color="text" size="s" title="Zoom in" aria-label="Zoom in" onClick={() => zoomAt(zoom * 1.2)} />
           <span className="wamAg__sep" />
-          <button type="button" title="Fit to view" aria-label="Fit to view" onClick={resetView}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
-          </button>
+          <EuiButtonIcon iconType="expand" color="text" size="s" title="Fit to view" aria-label="Fit to view" onClick={resetView} />
         </div>
         <div className="wamAg__hint">Drag boxes to move · drag empty space to pan · use + and − to zoom · click to focus</div>
       </div>
@@ -603,32 +607,26 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
       {linkedPreview.length > 0 && (
         <div className="wamAg__la">
           <div className="wamAg__lah">
-            <b>{alertsText(linkedPreview.length).replace('alert', 'linked alert')} · {linkedLabel}</b>
+            <EuiTitle size="xxs"><h3>{alertsText(linkedPreview.length).replace('alert', 'linked alert')} · {linkedLabel}</h3></EuiTitle>
             {onOpenLinked && (
-              <button type="button" className="wamAg__btn" onClick={() => onOpenLinked(linkedPreview.map((h) => h.alertId), linkedLabel)}>
-                Open in Linked Alerts
-              </button>
+              <EuiButton size="s" onClick={() => onOpenLinked(linkedPreview.map((h) => h.alertId), linkedLabel)}>
+                Open in Linked alerts
+              </EuiButton>
             )}
           </div>
-          <div className="wamAg__tw">
-            <table className="wamAg__at wamAg__at--mini">
-              <thead>
-                <tr><th>Timestamp</th><th>Rule ID</th><th>Agent</th><th>Level</th><th className="wamAg__desc">Description</th></tr>
-              </thead>
-              <tbody>
-                {linkedPreview.slice(0, 5).map((h) => (
-                  <tr key={h.alertId}>
-                    <td className="wamAg__ts">{formatAbsolute(h.timestamp)}</td>
-                    <td>{h.ruleId ? <span className="wamAg__rid" title="Wazuh rule ID">{h.ruleId}</span> : '—'}</td>
-                    <td>{h.host || '—'}</td>
-                    <td><span className="wamAg__lv" style={{ '--c': TONE_HEX[storyTone(h.level)] } as React.CSSProperties}>{h.level}</span></td>
-                    <td className="wamAg__desc">{h.ruleDescription || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {linkedPreview.length > 5 && <div className="wamAg__lamore">+ {(linkedPreview.length - 5).toLocaleString()} more in Linked Alerts</div>}
+          <EuiBasicTable
+            tableCaption={`Linked alerts for ${linkedLabel}`}
+            items={linkedPreview.slice(0, 5)}
+            itemId="alertId"
+            columns={[
+              { field: 'timestamp', name: 'Timestamp', width: '190px', render: (ts: string) => formatAbsolute(ts) },
+              { field: 'ruleId', name: 'Rule ID', width: '90px', render: (id?: string) => id || '—' },
+              { field: 'host', name: 'Agent', truncateText: true, render: (host: string | null) => host || '—' },
+              { field: 'level', name: 'Severity', width: '120px', render: (level: number) => <SeverityBadge level={level} /> },
+              { field: 'ruleDescription', name: 'Description', width: '34%', render: (description: string) => description || '—' },
+            ] as any}
+          />
+          {linkedPreview.length > 5 && <div className="wamAg__lamore">+ {(linkedPreview.length - 5).toLocaleString()} more in Linked alerts</div>}
         </div>
       )}
     </div>
