@@ -1,5 +1,15 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { EuiLoadingSpinner, EuiText, EuiSpacer, EuiCallOut } from '@elastic/eui';
+import {
+  EuiBadge,
+  EuiButtonGroup,
+  EuiCallOut,
+  EuiIcon,
+  EuiLoadingSpinner,
+  EuiSpacer,
+  EuiText,
+  EuiTitle,
+  htmlIdGenerator,
+} from '@elastic/eui';
 import { AttackGraph, buildAttackStory, TACTIC_PLAIN, TECHNIQUE_PLAIN } from '../../common';
 import { formatAbsolute, formatDuration } from '../design';
 import { AttackGraphCanvas, StorySelection } from './attack_graph_canvas';
@@ -34,6 +44,11 @@ export const AttackPathView: React.FC<Props> = ({ caseId, graph, loading, onOpen
   const [mode, setMode] = useState<'graph' | 'timeline'>('graph');
   const [selection, setSelection] = useState<StorySelection>(null);
   const graphRef = useRef<HTMLDivElement>(null);
+  // EuiButtonGroup option ids become DOM ids, so keep them unique per instance.
+  const viewIds = useMemo(() => {
+    const id = htmlIdGenerator('wamAgView')();
+    return { graph: `${id}-graph`, timeline: `${id}-timeline` };
+  }, []);
 
   const story = useMemo(() => (graph ? buildAttackStory(graph) : null), [graph]);
   useEffect(() => setSelection(null), [graph]);
@@ -53,14 +68,19 @@ export const AttackPathView: React.FC<Props> = ({ caseId, graph, loading, onOpen
   return (
     <div className="wamAg">
       <div className="wamAg__viewbar">
-        <p>Entity relationships and MITRE ATT&amp;CK context derived from this case's linked alerts.</p>
-        <div className="wamAg__seg" role="group" aria-label="View">
-          {([['graph', 'Entity graph'], ['timeline', 'Alert timeline']] as const).map(([id, label]) => (
-            <button type="button" key={id} className={mode === id ? 'wamAg__on' : ''} aria-pressed={mode === id} onClick={() => setMode(id)}>
-              {label}
-            </button>
-          ))}
-        </div>
+        <EuiText size="s" color="subdued">
+          <p>Entity relationships and MITRE ATT&amp;CK context derived from this case's linked alerts.</p>
+        </EuiText>
+        <EuiButtonGroup
+          legend="View"
+          buttonSize="compressed"
+          options={[
+            { id: viewIds.graph, label: 'Entity graph' },
+            { id: viewIds.timeline, label: 'Alert timeline' },
+          ]}
+          idSelected={mode === 'timeline' ? viewIds.timeline : viewIds.graph}
+          onChange={(id: string) => setMode(id === viewIds.timeline ? 'timeline' : 'graph')}
+        />
       </div>
 
       {(graph as any).truncated && (
@@ -98,7 +118,7 @@ export const AttackPathView: React.FC<Props> = ({ caseId, graph, loading, onOpen
 
       <div className="wamAg__panel wamAg__sec">
         <div className="wamAg__sech">
-          <h2 className="wamAg__h2">How the attacker tried to get in</h2>
+          <EuiTitle size="xs"><h2 className="wamAg__h2">How the attacker tried to get in</h2></EuiTitle>
           {story.techniques.length > 0 && (
             <span>MITRE ATT&amp;CK · {plural(story.techniques.length, 'technique')} · click to show in graph</span>
           )}
@@ -112,8 +132,8 @@ export const AttackPathView: React.FC<Props> = ({ caseId, graph, loading, onOpen
               const plain = TECHNIQUE_PLAIN[t.id];
               return (
                 <button type="button" key={t.id} className="wamAg__tc" onClick={() => showInGraph(t.nodeId)} aria-label={`${t.label}, ${plural(t.alertCount, 'alert')}. Show in graph.`}>
-                  <h3><span className="wamAg__dot" style={{ background: color }} />{t.label}</h3>
-                  {t.id !== t.label && <code>{t.id}</code>}
+                  <EuiTitle size="xxs"><h3><span className="wamAg__dot" style={{ background: color }} />{t.label}</h3></EuiTitle>
+                  {t.id !== t.label && <span className="wamAg__tid">{t.id}</span>}
                   <p>{plain || ' '}</p>
                   <div className="wamAg__bar">
                     <div><i style={{ width: `${(t.alertCount / maxTechnique) * 100}%`, background: color }} /></div>
@@ -128,8 +148,8 @@ export const AttackPathView: React.FC<Props> = ({ caseId, graph, loading, onOpen
 
       <div className="wamAg__panel wamAg__sec">
         <div className="wamAg__sech">
-          <h2 className="wamAg__h2">Kill-chain phases</h2>
-          {range && <span className="wamAg__mono">{range}</span>}
+          <EuiTitle size="xs"><h2 className="wamAg__h2">Kill-chain phases</h2></EuiTitle>
+          {range && <span>{range}</span>}
         </div>
         {story.phases.length === 0 ? (
           <p className="wamAg__empty">{noMitre}</p>
@@ -140,12 +160,14 @@ export const AttackPathView: React.FC<Props> = ({ caseId, graph, loading, onOpen
               const color = TONE_HEX[tone];
               return (
                 <React.Fragment key={p.tactic}>
-                  {i > 0 && <div className="wamAg__chev" aria-hidden="true">›</div>}
+                  {i > 0 && <div className="wamAg__chev" aria-hidden="true"><EuiIcon type="arrowRight" color="subdued" /></div>}
                   <div className={`wamAg__ph${tone === 'high' ? ' wamAg__ph--hot' : ''}`}>
-                    <h3><span className="wamAg__num" style={{ borderColor: color, color: tone === 'med' ? 'var(--ag-medink)' : tone === 'low' ? 'var(--ag-lowink)' : color }}>{i + 1}</span>{p.tactic}</h3>
+                    <EuiTitle size="xxs">
+                      <h3><span className="wamAg__num" style={{ borderColor: color, color: tone === 'med' ? 'var(--ag-medink)' : tone === 'low' ? 'var(--ag-lowink)' : color }}>{i + 1}</span>{p.tactic}</h3>
+                    </EuiTitle>
                     {TACTIC_PLAIN[p.tactic] && <p>{TACTIC_PLAIN[p.tactic]}</p>}
                     <div className="wamAg__tags">
-                      {p.techniques.map((t) => <span key={t} className="wamAg__tag">{t}</span>)}
+                      {p.techniques.map((t) => <EuiBadge key={t} color="hollow" className="wamAg__tag">{t}</EuiBadge>)}
                     </div>
                     <dl className="wamAg__pts">
                       <div><dt>First seen</dt><dd>{formatAbsolute(p.firstSeen)}</dd></div>

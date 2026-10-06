@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { EuiBadge, EuiButtonEmpty, EuiSelect, EuiSwitch, EuiText, EuiTitle } from '@elastic/eui';
 import { AttackGraphHop } from '../../common';
 import { severityBand } from '../design';
 import { storyTone, TONE_HEX } from './attack_story_tone';
+import { SeverityBadge } from './status_badge';
 
 // The case's alerts in time order: a per-host strip of dots (one per alert) and
 // a rail of alert cards below it, with consecutive repeats of the same rule on
@@ -140,7 +142,7 @@ export const AttackTimeline: React.FC<Props> = ({ hops, onOpenLinked }) => {
   if (!sorted.length || !domain) {
     return (
       <div className="wamAg__panel">
-        <h2 className="wamAg__h2">Alert chronology</h2>
+        <EuiTitle size="xs"><h2 className="wamAg__h2">Alert chronology</h2></EuiTitle>
         <p className="wamAg__empty">No hops to show.</p>
       </div>
     );
@@ -154,25 +156,28 @@ export const AttackTimeline: React.FC<Props> = ({ hops, onOpenLinked }) => {
     <div className="wamAg__panel">
       <div className="wamAg__ptop">
         <div>
-          <h2 className="wamAg__h2">Alert chronology</h2>
-          <p className="wamAg__lede">
-            Every linked alert in time order. Each dot on the strip is one alert, placed by time and grouped by host.
-            Bigger, warmer dots are higher level. Click a dot or a row to highlight it in both places.
-            Repeated alerts are grouped so the pattern is easy to spot.
-          </p>
+          <EuiTitle size="xs"><h2 className="wamAg__h2">Alert chronology</h2></EuiTitle>
+          <EuiText size="s" color="subdued" className="wamAg__lede">
+            <p>
+              Every linked alert in time order. Each dot on the strip is one alert, placed by time and grouped by host.
+              Bigger, warmer dots are higher level. Click a dot or a row to highlight it in both places.
+              Repeated alerts are grouped so the pattern is easy to spot.
+            </p>
+          </EuiText>
         </div>
         <div className="wamAg__actions">
-          <div className="wamAg__seg wamAg__seg--wrap" role="group" aria-label="Filter by host">
-            <button type="button" className={host === 'all' ? 'wamAg__on' : ''} aria-pressed={host === 'all'} onClick={() => setHost('all')}>All hosts</button>
-            {hosts.map((name) => (
-              <button type="button" key={name} className={host === name ? 'wamAg__on' : ''} aria-pressed={host === name} onClick={() => setHost(name)}>{name}</button>
-            ))}
+          {/* A select rather than a button group: a case can span many hosts with long names. */}
+          <div className="wamAg__host">
+            <EuiSelect
+              compressed
+              prepend="Host"
+              aria-label="Filter by host"
+              options={[{ value: 'all', text: 'All hosts' }, ...hosts.map((name) => ({ value: name, text: name }))]}
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+            />
           </div>
-          <label className="wamAg__tog">
-            <input type="checkbox" checked={group} onChange={(e) => setGroup(e.target.checked)} />
-            <span aria-hidden="true" />
-            Group repeats
-          </label>
+          <EuiSwitch compressed label="Group repeats" checked={group} onChange={(e) => setGroup(e.target.checked)} />
         </div>
       </div>
 
@@ -181,7 +186,11 @@ export const AttackTimeline: React.FC<Props> = ({ hops, onOpenLinked }) => {
           const laneHops = visible.filter((h) => hostOf(h) === name);
           return (
             <div className="wamAg__lane" key={name}>
-              <b title={name}><ServerIcon />{name} <i>{laneHops.length.toLocaleString()}</i></b>
+              <div className="wamAg__lanel" title={name}>
+                <ServerIcon />
+                <span className="wamAg__lanen">{name}</span>
+                <span className="wamAg__lanec">{laneHops.length.toLocaleString()}</span>
+              </div>
               <div className="wamAg__track">
                 {laneHops.map((h) => {
                   const band = severityBand(h.level);
@@ -251,26 +260,26 @@ export const AttackTimeline: React.FC<Props> = ({ hops, onOpenLinked }) => {
                     aria-pressed={isSel}
                     onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); selectRow(row); } }}
                   >
-                    <span className="wamAg__lv" style={{ '--c': TONE_HEX[storyTone(level)] } as React.CSSProperties}>Level {level}</span>
+                    <SeverityBadge level={level} />
                     <b>{head.ruleDescription || 'Alert'}</b>
                     {row.hops.length > 1 && (
                       <>
-                        <span className="wamAg__cntb">×{row.hops.length}</span>
+                        <EuiBadge color="primary">×{row.hops.length.toLocaleString()}</EuiBadge>
                         <span className="wamAg__span">{clockOf(start)} → {clockOf(end)} · over {duration((end - start) / 1000)}</span>
                       </>
                     )}
                   </div>
                   <div className="wamAg__tmeta">
-                    <span className="wamAg__ch wamAg__ch--host">{hostOf(head)}</span>
-                    {sources.map((ip) => <span className="wamAg__ch" key={`s-${ip}`}>source: {ip}</span>)}
-                    {users.map((u) => <span className="wamAg__ch" key={`u-${u}`}>user: {u}</span>)}
-                    {head.ruleId && <span className="wamAg__rid" title="Wazuh rule ID">{head.ruleId}</span>}
-                    {tactics.map((t) => <span className="wamAg__ch wamAg__ch--tac" key={`t-${t}`}>{t}</span>)}
-                    {techniques.map((t) => <span className="wamAg__ch wamAg__ch--tec" key={`q-${t}`}>{t}</span>)}
+                    <EuiBadge color="hollow" className="wamAg__ch">{hostOf(head)}</EuiBadge>
+                    {sources.map((ip) => <EuiBadge color="hollow" className="wamAg__ch" key={`s-${ip}`}>Source: {ip}</EuiBadge>)}
+                    {users.map((u) => <EuiBadge color="hollow" className="wamAg__ch" key={`u-${u}`}>User: {u}</EuiBadge>)}
+                    {head.ruleId && <EuiBadge color="hollow" className="wamAg__ch" title="Wazuh rule ID">Rule {head.ruleId}</EuiBadge>}
+                    {tactics.map((t) => <EuiBadge color="hollow" className="wamAg__ch wamAg__ch--tac" key={`t-${t}`}>{t}</EuiBadge>)}
+                    {techniques.map((t) => <EuiBadge color="hollow" className="wamAg__ch wamAg__ch--tec" key={`q-${t}`}>{t}</EuiBadge>)}
                     {onOpenLinked && (
-                      <button type="button" className="wamAg__oa" onClick={() => openRow(row)}>
+                      <EuiButtonEmpty size="xs" className="wamAg__oa" onClick={() => openRow(row)}>
                         Open {row.hops.length > 1 ? `${row.hops.length.toLocaleString()} alerts` : 'alert'}
-                      </button>
+                      </EuiButtonEmpty>
                     )}
                   </div>
                   {row.hops.length > 1 && isSel && (
@@ -287,9 +296,9 @@ export const AttackTimeline: React.FC<Props> = ({ hops, onOpenLinked }) => {
         })}
       </div>
       {rows.length > limit && (
-        <button type="button" className="wamAg__btn wamAg__more" onClick={() => setLimit((n) => n + ROW_PAGE)}>
+        <EuiButtonEmpty size="s" className="wamAg__more" onClick={() => setLimit((n) => n + ROW_PAGE)}>
           Show {Math.min(ROW_PAGE, rows.length - limit).toLocaleString()} more of {(rows.length - limit).toLocaleString()} remaining
-        </button>
+        </EuiButtonEmpty>
       )}
     </div>
   );

@@ -279,7 +279,7 @@ export const FilterBar: React.FC<Props> = ({
         </EuiFlexItem>
 
         <EuiFlexItem style={{ minWidth: 150 }}>
-          <EuiFormRow label="Alert Type" display="rowCompressed">
+          <EuiFormRow label="Alert type" display="rowCompressed">
             <EuiComboBox
               placeholder="Any type"
               options={alertTypeOptions}
