@@ -3,6 +3,8 @@ import { EuiComboBox, EuiComboBoxOptionOption } from '@elastic/eui';
 import { AlertsApiService } from '../services/api';
 
 interface Props {
+  /** Set by a wrapping EuiFormRow so its label targets the combo box input. */
+  id?: string;
   apiService: AlertsApiService;
   value?: string | null;
   valueLabel?: string;
@@ -19,6 +21,7 @@ interface Props {
  * from a link/ticket" without needing two separate controls.
  */
 export const CasePicker: React.FC<Props> = ({
+  id,
   apiService,
   value,
   valueLabel,
@@ -88,6 +91,7 @@ export const CasePicker: React.FC<Props> = ({
 
   return (
     <EuiComboBox
+      id={id}
       placeholder={placeholder}
       async
       isLoading={loading}

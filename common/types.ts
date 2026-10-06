@@ -170,11 +170,26 @@ export interface AttackGraphHop {
   timestamp: string;
   alertId: string;
   host: string | null;
+  // Source addresses (data.srcip) - the "who" behind the alert when the decoder
+  // records one. Optional so graphs cached/served by older builds still render.
+  sources?: string[];
   users: string[];
+  // MITRE technique ids aligned index-for-index with `techniques` (labels).
+  techniqueIds?: string[];
   techniques: string[];
   tactics: string[];
+  /** Wazuh rule ID (rule.id). Optional so payloads from older builds still render. */
+  ruleId?: string;
   ruleDescription: string;
   level: number;
+  /** Alert lifecycle status (open / in_progress / closed) when known. */
+  status?: string | null;
+  /** Case evidence relationship for this alert, so filtered Linked Alerts views can act on it. */
+  evidence?: {
+    relationship_state: string | null;
+    hold_reason: string | null;
+    archive_index: string | null;
+  };
 }
 
 export interface AttackGraph {
