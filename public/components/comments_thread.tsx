@@ -84,7 +84,7 @@ export const CommentsThread: React.FC<Props> = ({ apiService, target, onError, o
               timestamp={new Date(c.created_at).toLocaleString()}
               event="commented"
             >
-              {c.text}
+              <EuiText size="s">{c.text}</EuiText>
             </EuiComment>
           ))}
         </EuiCommentList>

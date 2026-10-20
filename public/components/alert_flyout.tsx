@@ -142,7 +142,7 @@ export const AlertFlyout: React.FC<Props> = ({
                   <EuiSpacer size="s" />
                   <EuiDescriptionList type="column" compressed>
                     <EuiDescriptionListTitle>Alert ID</EuiDescriptionListTitle>
-                    <EuiDescriptionListDescription className="wamAlertId"><code>{alert._id}</code></EuiDescriptionListDescription>
+                    <EuiDescriptionListDescription className="wamAlertId">{alert._id}</EuiDescriptionListDescription>
 
                     <EuiDescriptionListTitle>Timestamp</EuiDescriptionListTitle>
                     <EuiDescriptionListDescription>{formatAbsolute(alert._source['@timestamp'])}</EuiDescriptionListDescription>
@@ -204,16 +204,15 @@ export const AlertFlyout: React.FC<Props> = ({
                   <EuiSpacer size="m" />
                   <EuiFlexGroup gutterSize="s" alignItems="flexEnd" wrap style={isExpanded ? { maxWidth: 600 } : undefined}>
                     <EuiFlexItem>
-                      <EuiText size="xs" color="subdued">
-                        Case
-                      </EuiText>
-                      <CasePicker
-                        apiService={apiService}
-                        value={alert._source.case_id}
-                        onChange={(caseId) => onCaseChange(caseId)}
-                        fullWidth
-                        compressed={false}
-                      />
+                      <EuiFormRow label="Case" display="rowCompressed" fullWidth>
+                        <CasePicker
+                          apiService={apiService}
+                          value={alert._source.case_id}
+                          onChange={(caseId) => onCaseChange(caseId)}
+                          fullWidth
+                          compressed={false}
+                        />
+                      </EuiFormRow>
                     </EuiFlexItem>
                     {alert._source.case_id && (
                       <EuiFlexItem grow={false}>
@@ -247,7 +246,7 @@ export const AlertFlyout: React.FC<Props> = ({
             },
             {
               id: 'related',
-              name: 'Related Alerts',
+              name: 'Related alerts',
               content: (
                 <div>
                   <EuiSpacer size="m" />
@@ -263,7 +262,7 @@ export const AlertFlyout: React.FC<Props> = ({
             },
             {
               id: 'ai',
-              name: 'AI Analysis',
+              name: 'AI analysis',
               content: (
                 <div>
                   <EuiSpacer size="m" />
@@ -313,7 +312,7 @@ export const AlertFlyout: React.FC<Props> = ({
                     tableCaption="Alert document fields"
                     items={fieldRows}
                     columns={[
-                      { field: 'field', name: 'Field', width: '38%', render: (value: string) => <code className="wamFieldName">{value}</code> },
+                      { field: 'field', name: 'Field', width: '38%', render: (value: string) => <span className="wamFieldName">{value}</span> },
                       { field: 'display', name: 'Value', render: (value: string) => <span className="wamFieldValue">{value}</span> },
                       { field: 'operational', name: 'Source', width: '105px', render: (value: boolean) => <EuiBadge color={value ? 'primary' : 'hollow'}>{value ? 'Operational' : 'Raw only'}</EuiBadge> },
                       {

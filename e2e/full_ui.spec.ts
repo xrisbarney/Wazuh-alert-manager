@@ -161,6 +161,12 @@ test.describe('full workbench UI bench', () => {
   test('manual case creation, evidence, comments, graph, and close work through the UI', async ({ page }) => {
     test.setTimeout(300_000);
     await signIn(page);
+    let attackGraphRequests = 0;
+    page.on('request', (request) => {
+      if (/\/api\/wazuh_alert_manager\/cases\/[^/]+\/attack-path(?:\?|$)/.test(request.url())) {
+        attackGraphRequests += 1;
+      }
+    });
     const title = `E2E manual case ${Date.now()}`;
 
     const firstRow = page.locator('.wamAlertTable tbody tr').first();
@@ -181,7 +187,7 @@ test.describe('full workbench UI bench', () => {
     await flyout.getByRole('button', { name: 'Add comment' }).click();
     await expect(flyout.getByText('E2E analyst investigation note')).toBeVisible({ timeout: 30_000 });
 
-    await flyout.getByRole('tab', { name: /Linked Alerts/ }).click();
+    await flyout.getByRole('tab', { name: /Linked alerts/ }).click();
     const holdButton = flyout.getByRole('button', { name: 'Set evidence hold' }).first();
     await expect(holdButton).toBeVisible({ timeout: 30_000 });
     await holdButton.click();
@@ -190,8 +196,13 @@ test.describe('full workbench UI bench', () => {
     await expect(flyout.getByText('Held', { exact: true })).toBeVisible({ timeout: 30_000 });
     await flyout.getByRole('button', { name: 'Release evidence hold' }).first().click();
 
-    await flyout.getByRole('tab', { name: 'Attack Graph' }).click();
-    await expect(flyout.getByText('Entity co-occurrence and MITRE ATT&CK context derived from this case\'s linked alerts.')).toBeVisible({ timeout: 60_000 });
+    // Opening and working in a case must not resolve up to 5,000 evidence
+    // relationships merely to render Overview, Comments, or Linked alerts.
+    expect(attackGraphRequests).toBe(0);
+    await flyout.getByRole('tab', { name: 'Attack graph' }).click();
+    await expect(flyout.getByText('Entity relationships and MITRE ATT&CK context derived from this case\'s linked alerts.')).toBeVisible({ timeout: 60_000 });
+    await expect.poll(() => attackGraphRequests).toBe(1);
+    await expect(flyout.getByRole('heading', { name: 'Observed entities and mapped techniques' })).toBeVisible();
     await flyout.getByText('Alert timeline', { exact: true }).click();
     await expect(flyout.getByRole('heading', { name: 'Alert chronology' })).toBeVisible();
 
@@ -343,7 +354,7 @@ test.describe('full workbench UI bench', () => {
     await page.getByRole('button', { name: 'Refresh' }).click();
     await expect(page.getByText('E2E burst entity rule: automated incident', { exact: true })).toHaveCount(2, { timeout: 60_000 });
     await page.getByRole('button', { name: 'E2E burst entity rule: automated incident', exact: true }).first().click();
-    await expect(page.locator('.wamCaseFlyout').getByRole('tab', { name: /Linked Alerts/ })).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('.wamCaseFlyout').getByRole('tab', { name: /Linked alerts/ })).toBeVisible({ timeout: 60_000 });
 
     // Disable/delete fixtures after observing their effects; existing cases remain
     // as auditable closed work and no future incoming alert is affected.
@@ -399,7 +410,7 @@ test.describe('full workbench UI bench', () => {
     await expect(page.getByLabel('Sync interval')).toBeVisible();
 
     await page.getByRole('tab', { name: 'AI analysis' }).click();
-    await expect(page.getByRole('heading', { name: 'AI Analysis Integration' })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole('heading', { name: 'AI analysis integration' })).toBeVisible({ timeout: 60_000 });
     await expect(page.getByLabel('Provider')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Save AI settings' })).toBeVisible();
 

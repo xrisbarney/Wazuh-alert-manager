@@ -37,15 +37,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - wazuhVersion: "4.12"
+          - wazuhVersion: "4.12.0"
             osdVersion: "2.19.1"
             dashboardRef: "v4.12.0"
-          - wazuhVersion: "4.13"
+          - wazuhVersion: "4.13.1"
             osdVersion: "2.19.2"
             dashboardRef: "v4.13.1"
-          - wazuhVersion: "4.14"
+          - wazuhVersion: "4.14.1"
+            osdVersion: "2.19.3"
+            dashboardRef: "v4.14.1"
+          - wazuhVersion: "4.14.4"
+            osdVersion: "2.19.4"
+            dashboardRef: "v4.14.4"
+          - wazuhVersion: "4.14.7"
             osdVersion: "2.19.5"
             dashboardRef: "v4.14.7"
+          - wazuhVersion: "4.14.9"
+            osdVersion: "2.19.6"
+            dashboardRef: "v4.14.9"
 
     steps:
       - name: Checkout plugin source
@@ -90,7 +99,7 @@ jobs:
       - name: Install yarn
         # Just enable corepack rather than pinning a yarn version here:
         # wazuh-dashboard's own package.json declares its own
-        # "packageManager" (yarn@1.22.19 as of 4.14.7), and corepack
+        # "packageManager" (yarn@1.22.19 across the supported 4.x tags), and corepack
         # honors the nearest package.json's pin for any yarn invocation
         # inside that tree - an explicit pin here could silently disagree
         # with it and make troubleshooting misleading.

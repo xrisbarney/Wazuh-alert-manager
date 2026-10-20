@@ -7,6 +7,7 @@ import {
   EuiButtonIcon,
   EuiCallOut,
   EuiCheckbox,
+  EuiCodeBlock,
   EuiComboBox,
   EuiConfirmModal,
   EuiFieldNumber,
@@ -1052,7 +1053,7 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
                     <EuiFlexItem><EuiStat titleSize="s" title={(preview.conflicts || []).length.toLocaleString()} description="Conflicts" titleColor={preview.conflicts?.length ? 'warning' : 'default'} /></EuiFlexItem>
                   </EuiFlexGroup>
                   {preview.rateLimited && <EuiCallOut size="s" color="warning" title="Rate cap reached">Some otherwise eligible executions are omitted by the configured rate limit.</EuiCallOut>}
-                  {!!preview.conflicts?.length && <EuiCallOut size="s" color="warning" title="Representative conflicts"><pre className="wamPreviewJson">{JSON.stringify(preview.conflicts.slice(0, 5), null, 2)}</pre></EuiCallOut>}
+                  {!!preview.conflicts?.length && <EuiCallOut size="s" color="warning" title="Representative conflicts"><EuiCodeBlock language="json" fontSize="s" paddingSize="s" overflowHeight={180} transparentBackground>{JSON.stringify(preview.conflicts.slice(0, 5), null, 2)}</EuiCodeBlock></EuiCallOut>}
                   <EuiSpacer size="m" />
                   <EuiTitle size="xxs"><h4>Representative alerts</h4></EuiTitle>
                   {preview.representativeAlerts?.length ? <div className="wamRepresentativeAlerts">{preview.representativeAlerts.map((alert) => <EuiBadge key={alert.id} color="hollow">{alert.id} · {alert.timestamp || 'timestamp unavailable'}</EuiBadge>)}</div> : <EuiText size="xs" color="subdued"><p>No representative alerts were returned.</p></EuiText>}

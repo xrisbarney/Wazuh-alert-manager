@@ -59,7 +59,7 @@ export const AiAnalysisTab: React.FC<Props> = ({
     <div>
       {!aiEnabled && (
         <EuiCallOut title="AI analysis is not configured" color="warning" iconType="alert">
-          Set up an AI provider and API key under the AI Settings tab to enable this feature.
+          Set up an AI provider and API key under Settings &gt; AI analysis to enable this feature.
         </EuiCallOut>
       )}
 

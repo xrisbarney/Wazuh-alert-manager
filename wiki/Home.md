@@ -17,13 +17,16 @@
 
 ## Supported versions
 
-| Wazuh | OpenSearch Dashboards | Plugin build |
-|-------|-----------------------|--------------|
-| 4.12  | 2.19.1                | `wazuhAlertManager-2.19.1.zip` |
-| 4.13  | 2.19.2                | `wazuhAlertManager-2.19.2.zip` |
-| 4.14  | 2.19.5                | `wazuhAlertManager-2.19.5.zip` |
+| Wazuh release(s) | OpenSearch Dashboards | Plugin build |
+|------------------|-----------------------|--------------|
+| 4.12.0 | 2.19.1 | `wazuhAlertManager-2.19.1.zip` |
+| 4.13.0–4.13.1 | 2.19.2 | `wazuhAlertManager-2.19.2.zip` |
+| 4.14.0–4.14.1 | 2.19.3 | `wazuhAlertManager-2.19.3.zip` |
+| 4.14.2–4.14.4 | 2.19.4 | `wazuhAlertManager-2.19.4.zip` |
+| 4.14.5–4.14.7 | 2.19.5 | `wazuhAlertManager-2.19.5.zip` |
+| 4.14.8–4.14.9 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` |
 
-Download the zip for your version from the **[Releases page](https://github.com/xrisbarney/Wazuh-alert-manager/releases)**. The server code is identical across builds; only the target-version stamp differs.
+Download the zip matching the exact dashboard version from the **[Releases page](https://github.com/xrisbarney/Wazuh-alert-manager/releases)**. The server code is identical across builds, but each ZIP is compiled and stamped for one exact OSD version.
 
 ## Where to next
 

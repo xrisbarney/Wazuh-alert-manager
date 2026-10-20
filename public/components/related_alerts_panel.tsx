@@ -113,7 +113,7 @@ export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onErr
           items={related}
           columns={[
             { field: '_source', name: 'Timestamp', render: (v: Alert['_source']) => formatAbsolute(v['@timestamp']) },
-            { field: '_source', name: 'Rule', render: (v: Alert['_source']) => v.rule?.description || '—' },
+            { field: '_source', name: 'Description', render: (v: Alert['_source']) => v.rule?.description || '—' },
             { field: '_source', name: 'Agent', render: (v: Alert['_source']) => v.agent?.name || '—' },
             {
               name: 'Actions',
@@ -142,7 +142,7 @@ export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onErr
             items={suggested}
             columns={[
               { field: '_source', name: 'Timestamp', render: (v: any) => formatAbsolute(v['@timestamp']) },
-              { field: '_source', name: 'Rule', render: (v: any) => v.rule?.description || '—' },
+              { field: '_source', name: 'Description', render: (v: any) => v.rule?.description || '—' },
               {
                 name: 'Shared',
                 render: (s: Suggested) => (

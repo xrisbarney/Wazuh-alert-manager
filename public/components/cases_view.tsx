@@ -18,6 +18,7 @@ import {
   EuiLoadingSpinner,
   EuiTitle,
   EuiButtonEmpty,
+  EuiLink,
 } from '@elastic/eui';
 import { Case, CaseSeverity, CaseStatus } from '../../common';
 import { AlertsApiService, CaseListSortField } from '../services/api';
@@ -199,9 +200,9 @@ export const CasesView: React.FC<Props> = ({ apiService, onToast, openCaseId, on
       render: (identity: string) => {
         const [caseId, title] = JSON.parse(identity);
         return (
-          <EuiButtonEmpty size="xs" flush="left" onClick={(event) => navigateToCase(event, caseId)}>
+          <EuiLink onClick={(event: React.MouseEvent) => navigateToCase(event, caseId)}>
             {title}
-          </EuiButtonEmpty>
+          </EuiLink>
         );
       },
     },

@@ -8,8 +8,8 @@ case management with multi-alert bulk actions, dropdown-based filtering,
 and optional AI-assisted analysis via OpenAI, DeepSeek, Gemini or Claude.
 
 Release artifacts are built against official Wazuh Dashboard source for
-**Wazuh 4.12–4.14**; the full browser bench runs on **Wazuh 4.14.7 / OSD
-2.19.5**. See [SUPPORTED_VERSIONS.md](./SUPPORTED_VERSIONS.md) for the exact
+**Wazuh 4.12.0–4.14.9**; the full browser bench runs on **Wazuh 4.14.9 / OSD
+2.19.6**. See [SUPPORTED_VERSIONS.md](./SUPPORTED_VERSIONS.md) for the exact
 version-to-artifact matrix.
 
 ---
@@ -224,7 +224,8 @@ checksum/signature tooling (`scripts/make-release-artifacts.sh`).
    ```bash
    sudo systemctl stop wazuh-dashboard
    sudo /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin remove wazuhAlertManager --allow-root   # if upgrading
-   sudo /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin install file:///path/to/wazuhAlertManager-2.19.5.zip --allow-root
+   # Use the ZIP mapped to your exact dashboard version in SUPPORTED_VERSIONS.md.
+   sudo /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin install file:///path/to/wazuhAlertManager-2.19.6.zip --allow-root
    sudo systemctl start wazuh-dashboard
    ```
 
@@ -366,12 +367,12 @@ This plugin follows the standard OpenSearch Dashboards plugin layout and
 must be built from inside a `wazuh-dashboard` checkout:
 
 ```bash
-git clone --branch v4.14.7 https://github.com/wazuh/wazuh-dashboard.git
+git clone --branch v4.14.9 https://github.com/wazuh/wazuh-dashboard.git
 cd wazuh-dashboard
 git clone <this repo> plugins/wazuhAlertManager
 yarn osd bootstrap
 cd plugins/wazuhAlertManager
-node scripts/set-target-version.js --osd-version 2.19.5   # already the checked-in default
+node scripts/set-target-version.js --osd-version 2.19.6
 yarn build
 ```
 
@@ -410,9 +411,9 @@ result to your registry, and swap the image reference. Everything else
 Build a custom image:
 
 ```dockerfile
-FROM wazuh/wazuh-dashboard:4.14.7
+FROM wazuh/wazuh-dashboard:4.14.9
 
-COPY wazuhAlertManager-2.19.5.zip /tmp/wazuhAlertManager.zip
+COPY wazuhAlertManager-2.19.6.zip /tmp/wazuhAlertManager.zip
 
 RUN /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin install \
       file:///tmp/wazuhAlertManager.zip --allow-root
@@ -477,16 +478,16 @@ alert whose timestamp falls into a later run's window gets overwritten.
 ## CI: automated builds and releases
 
 `.github/workflows/build-and-release.yml` builds this plugin against the
-*real* wazuh-dashboard source tree for all three supported versions
-(4.12/2.19.1, 4.13/2.19.2, 4.14/2.19.5) - the same process documented
+*real* wazuh-dashboard source tree for all six OSD versions used by supported
+Wazuh patches (2.19.1 through 2.19.6) - the same process documented
 under **Building from source**, not just a relabeled manifest. Building
 this way is the point: it catches real API incompatibilities between OSD
 releases, not just a version-string mismatch.
 
 - **Manual run**: use the "Run workflow" button on the Actions tab for a
-  one-off build of all three versions (e.g. to sanity-check a branch)
+  one-off build of all six versions (e.g. to sanity-check a branch)
   without cutting a release. Zips land as downloadable workflow artifacts.
-- **Release**: push a tag matching `v*` to build all three versions and
+- **Release**: push a tag matching `v*` to build all six versions and
   attach the zips to a GitHub Release automatically.
 
 The workflow bakes in every gotcha this session hit doing the same build

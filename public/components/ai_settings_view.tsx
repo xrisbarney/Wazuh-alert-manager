@@ -15,6 +15,7 @@ import {
   EuiLoadingSpinner,
   EuiCallOut,
   EuiCodeBlock,
+  EuiTitle,
 } from '@elastic/eui';
 import { AiProvider } from '../../common';
 import { AlertsApiService } from '../services/api';
@@ -75,9 +76,9 @@ export const AiSettingsView: React.FC<Props> = ({ apiService, onToast }) => {
 
   return (
     <EuiPanel paddingSize="l" style={{ maxWidth: 640 }}>
-      <EuiText>
-        <h2>AI Analysis Integration</h2>
-      </EuiText>
+      <EuiTitle size="s">
+        <h3>AI analysis integration</h3>
+      </EuiTitle>
       <EuiText size="s" color="subdued">
         Connect an LLM provider so analysts can generate an AI-assisted summary and next-step suggestions when an alert is opened.
         The API key is encrypted before it is stored and is never sent back to the browser.

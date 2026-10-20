@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Chart,
   Settings,
@@ -61,10 +61,45 @@ function useChartTheme() {
     };
   }, []);
 
-  return dark ? EUI_CHARTS_THEME_DARK.theme : EUI_CHARTS_THEME_LIGHT.theme;
+  // Canvas text can't inherit CSS, and OUI's chart themes never set a font (they
+  // pass `ouiFontFamily` where @elastic/charts reads `fontFamily`), so axis and
+  // value labels fall back to plain sans-serif. Use the dashboard's text font,
+  // and redraw once its web font has loaded.
+  const [fontsLoaded, setFontsLoaded] = useState(0);
+  useEffect(() => {
+    let live = true;
+    (document as any).fonts?.ready?.then(() => { if (live) setFontsLoaded((n) => n + 1); });
+    return () => { live = false; };
+  }, []);
+
+  return useMemo(() => {
+    const base: any = dark ? EUI_CHARTS_THEME_DARK.theme : EUI_CHARTS_THEME_LIGHT.theme;
+    const fontFamily = dashboardFont();
+    return {
+      ...base,
+      axes: {
+        ...base.axes,
+        axisTitle: { ...base.axes?.axisTitle, fontFamily },
+        axisPanelTitle: { ...base.axes?.axisPanelTitle, fontFamily },
+        tickLabel: { ...base.axes?.tickLabel, fontFamily },
+      },
+      barSeriesStyle: {
+        ...base.barSeriesStyle,
+        displayValue: { ...base.barSeriesStyle?.displayValue, fontFamily },
+      },
+      partition: { ...base.partition, fontFamily },
+    };
+  }, [dark, fontsLoaded]);
 }
 
-function cssColor(names: string[], fallback: string): string {
+// The dashboard publishes its active text font (Inter UI, Source Sans 3 or
+// Rubik, by theme version) as CSS custom properties on :root.
+function dashboardFont(): string {
+  const fallback = "'Inter UI', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
+  return cssVar(['--font-text', '--oui-font-family', '--eui-font-family'], fallback);
+}
+
+function cssVar(names: string[], fallback: string): string {
   if (typeof document === 'undefined') return fallback;
   const styles = getComputedStyle(document.documentElement);
   for (const name of names) {
@@ -112,9 +147,9 @@ export const StatusTrendChart: React.FC<{ data: Array<{ date: string; open: numb
   }
   const points = data.map((d) => ({ t: new Date(d.date).getTime(), open: d.open, in_progress: d.in_progress, closed: d.closed }));
   const series: Array<{ key: 'open' | 'in_progress' | 'closed'; name: string; color: string }> = [
-    { key: 'open', name: 'Open', color: cssColor(['--euiColorPrimary', '--ouiColorPrimary'], '#0077CC') },
-    { key: 'in_progress', name: 'In progress', color: cssColor(['--euiColorAccent', '--ouiColorAccent'], '#9170B8') },
-    { key: 'closed', name: 'Closed', color: cssColor(['--euiColorMediumShade', '--ouiColorMediumShade'], '#98A2B3') },
+    { key: 'open', name: 'Open', color: cssVar(['--euiColorPrimary', '--ouiColorPrimary'], '#0077CC') },
+    { key: 'in_progress', name: 'In progress', color: cssVar(['--euiColorAccent', '--ouiColorAccent'], '#9170B8') },
+    { key: 'closed', name: 'Closed', color: cssVar(['--euiColorMediumShade', '--ouiColorMediumShade'], '#98A2B3') },
   ];
   return (
     <Chart size={{ height: 230 }}>

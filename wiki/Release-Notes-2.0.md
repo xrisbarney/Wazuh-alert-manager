@@ -10,11 +10,14 @@ keeping Wazuh's native `wazuh-alerts-*` indices read-only.
 
 ## Supported releases
 
-| Wazuh | OpenSearch Dashboards | Release asset |
-|-------|-----------------------|---------------|
-| 4.12.x | 2.19.1 | `wazuhAlertManager-2.19.1.zip` |
-| 4.13.x | 2.19.2 | `wazuhAlertManager-2.19.2.zip` |
-| 4.14.x | 2.19.5 | `wazuhAlertManager-2.19.5.zip` |
+| Wazuh release(s) | OpenSearch Dashboards | Release asset |
+|------------------|-----------------------|---------------|
+| 4.12.0 | 2.19.1 | `wazuhAlertManager-2.19.1.zip` |
+| 4.13.0–4.13.1 | 2.19.2 | `wazuhAlertManager-2.19.2.zip` |
+| 4.14.0–4.14.1 | 2.19.3 | `wazuhAlertManager-2.19.3.zip` |
+| 4.14.2–4.14.4 | 2.19.4 | `wazuhAlertManager-2.19.4.zip` |
+| 4.14.5–4.14.7 | 2.19.5 | `wazuhAlertManager-2.19.5.zip` |
+| 4.14.8–4.14.9 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` |
 
 Each ZIP is built inside the matching official Wazuh Dashboard source tree. The
 installer detects the dashboard version and refuses to guess when it is not in
@@ -51,7 +54,7 @@ retention, and [[Automation Rules]] before enabling production actions.
 ## Validation
 
 The release gate includes unit/integration tests, production builds in the
-three-version compatibility matrix, a 4.14 browser workflow bench, lifecycle
+six-version compatibility matrix, a 4.14.9 browser workflow bench, lifecycle
 retire/restore tests, and a clean installer/runtime smoke test against the
 published release assets. The release page records the final outcome and
 checksums.

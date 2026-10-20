@@ -21,7 +21,7 @@ export const DeltaChip: React.FC<Props> = ({ current, previous, higherIsBetter =
   if (current == null || previous == null || !isFinite(current) || !isFinite(previous) || previous === 0) {
     return (
       <EuiText size="xs" color="subdued">
-        no prior data
+        No prior data
       </EuiText>
     );
   }
@@ -30,19 +30,22 @@ export const DeltaChip: React.FC<Props> = ({ current, previous, higherIsBetter =
   if (rounded === 0) {
     return (
       <EuiText size="xs" color="subdued">
-        no change
+        No change
       </EuiText>
     );
   }
   const up = pct > 0;
   const good = up === higherIsBetter;
-  const color = good ? '#00A65A' : '#BD271E';
+  // The theme's success/danger text colours, so the chip reads in light and dark.
+  const color = good ? 'success' : 'danger';
   const arrow = up ? '▲' : '▼';
   const fmt = format || ((n: number) => n.toLocaleString());
   return (
     <EuiToolTip content={`${label}: ${fmt(previous)}`}>
-      <EuiText size="xs" style={{ color, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
-        {arrow} {Math.abs(rounded)}%
+      <EuiText size="xs" color={color}>
+        <span className="wamDeltaChip">
+          {arrow} {Math.abs(rounded)}%
+        </span>
       </EuiText>
     </EuiToolTip>
   );
