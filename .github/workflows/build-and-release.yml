@@ -214,7 +214,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
-          body_path: RELEASE_NOTES_v2.0.2.md
+          body_path: RELEASE_NOTES_v2.0.3.md
           files: |
             dist/*.zip
             dist/*.sha256

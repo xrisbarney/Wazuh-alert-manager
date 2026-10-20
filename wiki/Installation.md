@@ -59,7 +59,7 @@ four rows. Check this table again after upgrading Wazuh.
 curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash
 
 # Pinned release (recommended)
-curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash -s -- --version 2.0.2
+curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash -s -- --version 2.0.3
 
 # Local / offline artifact
 sudo ./install.sh --artifact ./wazuhAlertManager-2.19.6.zip \
@@ -70,10 +70,10 @@ For stronger supply-chain safety, download and verify the installer before
 running it:
 
 ```bash
-curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.2/install.sh
-curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.2/install.sh.sha256
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.3/install.sh
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.3/install.sh.sha256
 sha256sum -c install.sh.sha256
-sudo bash install.sh --version 2.0.2
+sudo bash install.sh --version 2.0.3
 ```
 
 The default release host is GitHub Releases (override with `--base-url` or the
@@ -113,7 +113,7 @@ migrates its own indices using the dashboard service identity.
 
 | Command | Effect |
 |---------|--------|
-| `install.sh --version 2.0.2` | Fresh install, v2 upgrade, or same-version reinstall |
+| `install.sh --version 2.0.3` | Fresh install, v2 upgrade, or same-version reinstall |
 | `install.sh --dry-run` | Resolve versions/artifacts and print the plan without changing anything |
 | `install.sh --no-restart` | Install but leave the dashboard stopped |
 | `install.sh --rollback` | Restore the most recent backup |
