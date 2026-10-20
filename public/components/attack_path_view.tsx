@@ -118,7 +118,7 @@ export const AttackPathView: React.FC<Props> = ({ caseId, graph, loading, onOpen
 
       <div className="wamAg__panel wamAg__sec">
         <div className="wamAg__sech">
-          <EuiTitle size="xs"><h2 className="wamAg__h2">How the attacker tried to get in</h2></EuiTitle>
+          <EuiTitle size="xs"><h2 className="wamAg__h2">Mapped techniques</h2></EuiTitle>
           {story.techniques.length > 0 && (
             <span>MITRE ATT&amp;CK · {plural(story.techniques.length, 'technique')} · click to show in graph</span>
           )}

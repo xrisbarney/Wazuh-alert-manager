@@ -32,16 +32,16 @@ const COLUMN_TITLE: Record<StoryColumn, string> = {
 // Pills between adjacent columns, read left to right. Kept generic (the design's
 // "login attempts as" only fits authentication cases).
 const verbFor = (from: StoryColumn, to: StoryColumn) => {
-  if (to === 'host') return 'targeted';
-  if (to === 'user') return 'as account';
-  return 'targeted using';
+  if (to === 'host') return 'observed on';
+  if (to === 'user') return 'associated with';
+  return 'mapped to';
 };
 
 // The same relationships as full sentences, for the info panel.
 const sentenceVerb = (from: StoryColumn, to: StoryColumn) => {
-  if (to === 'host') return 'targeted';
-  if (to === 'user') return from === 'host' ? 'saw activity as' : 'acted as';
-  return from === 'user' ? 'was targeted using' : 'was hit using';
+  if (to === 'host') return 'was observed on';
+  if (to === 'user') return 'was associated with';
+  return 'was mapped to';
 };
 
 const ICON: Record<string, React.ReactNode> = {
@@ -89,7 +89,7 @@ const subtitleFor = (node: StoryNode, story: AttackStory) => {
   if (node.column === 'technique') return `${node.techniqueId && node.techniqueId !== node.label ? `${node.techniqueId} · ` : ''}${count}`;
   if (node.column === 'user' && ADMIN_ACCOUNTS.has(node.label.toLowerCase())) return `${count} · admin account`;
   if (node.rank === 0 && columnSize > 1 && (node.column === 'host' || node.column === 'user')) {
-    return `${count} · ${node.column === 'host' ? 'main target' : 'most targeted'}`;
+    return `${count} · ${node.column === 'host' ? 'most frequent host' : 'most frequent account'}`;
   }
   return count;
 };
@@ -111,12 +111,12 @@ function describeNode(node: StoryNode, story: AttackStory): React.ReactNode {
       ? <>{count} had no recorded source address.</>
       : <><B>{node.label}</B> is recorded as the source of {count}.</>;
   } else if (node.column === 'host') {
-    lead = top ? <><B>{node.label}</B> was the main target, with {count}.</> : <><B>{node.label}</B> saw {count}.</>;
+    lead = top ? <><B>{node.label}</B> was the most frequent reporting host, with {count}.</> : <><B>{node.label}</B> reported {count}.</>;
   } else if (node.column === 'user') {
     lead = ADMIN_ACCOUNTS.has(node.label.toLowerCase())
-      ? <><B>{node.label}</B> is the all-powerful admin account. It appeared in {count}.</>
+      ? <><B>{node.label}</B> is a commonly privileged account label. It appeared in {count}.</>
       : top
-        ? <><B>{node.label}</B> was the most targeted account ({count}).</>
+        ? <><B>{node.label}</B> was the most frequent recorded account ({count}).</>
         : <>The account <B>{node.label}</B> appeared in {count}.</>;
   } else {
     const plain = node.techniqueId ? TECHNIQUE_PLAIN[node.techniqueId] : undefined;
@@ -421,7 +421,7 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
       const p1 = { x: p0.x + k, y: p0.y };
       const p2 = { x: p3.x - k, y: p3.y };
       const d = `M${p0.x},${p0.y} C${p1.x},${p1.y} ${p2.x},${p2.y} ${p3.x},${p3.y}`;
-      const text = focus?.edges.has(e.id) ? `${verbFor(a.column, b.column)} · ${e.alertCount.toLocaleString()}` : e.alertCount.toLocaleString();
+      const text = `${verbFor(a.column, b.column)} · ${e.alertCount.toLocaleString()}`;
       const w = Math.max(22, Math.ceil(measureLabel(text, labelFont.font)) + 14);
       let label = bezier(p0, p1, p2, p3, 0.5);
       for (const t of [0.5, 0.4, 0.6, 0.33, 0.67, 0.27, 0.73]) {
@@ -469,10 +469,10 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
     <div className="wamAg__panel">
       <div className="wamAg__ptop">
         <div>
-          <EuiTitle size="xs"><h2 className="wamAg__h2">Which hosts and accounts were targeted, and how</h2></EuiTitle>
+          <EuiTitle size="xs"><h2 className="wamAg__h2">Observed entities and mapped techniques</h2></EuiTitle>
           <EuiText size="s" color="subdued" className="wamAg__lede">
             <p>
-              Read it left to right, starting from the {story.columns[0] === 'source' ? <>source addresses: a <b>source</b> targeted a host, and a </> : 'hosts: a '}<b>host</b> saw activity as an <b>account</b>, which was targeted using a <b>technique</b>.
+              Read it left to right, starting from the {story.columns[0] === 'source' ? <>source addresses: a <b>source</b> was observed on a host, and a </> : 'hosts: a '}<b>host</b> was associated with an <b>account</b>, which was mapped to a <b>technique</b>.
               Arrows show direction, and each line shows how many alerts it covers. Thicker, warmer lines mean more alerts.
               Drag any box to rearrange it. Click a box or a line to see its linked alerts.
             </p>

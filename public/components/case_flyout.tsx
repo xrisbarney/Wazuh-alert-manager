@@ -105,11 +105,12 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
   const [evidencePages, setEvidencePages] = useState<Array<Array<Alert & { _evidence?: any }>>>([]);
   const [evidencePageCursors, setEvidencePageCursors] = useState<Array<string | null>>([null]);
   const [activeTab, setActiveTab] = useState('overview');
-  // Attack graph data, shared by the Attack Graph tab and graph-filtered
-  // Linked Alerts. Reloaded after every case load.
+  // Attack graph data is fetched only when the analyst opens the tab. Building
+  // it can resolve thousands of evidence relationships, so opening a case's
+  // Overview must not pay that cost.
   const [graph, setGraph] = useState<AttackGraph | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
-  const [graphVersion, setGraphVersion] = useState(0);
+  const [graphStale, setGraphStale] = useState(true);
   const [linkedFilter, setLinkedFilter] = useState<{ ids: string[]; label: string } | null>(null);
   const [filterPage, setFilterPage] = useState(0);
 
@@ -146,7 +147,10 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
       setCanManageLifecycle(Boolean(capabilities?.canManageLifecycle));
       setTitle(res.case.title);
       setDescription(res.case.description || '');
-      setGraphVersion((v) => v + 1);
+      // A case reload may follow an evidence-link mutation. Mark an already
+      // loaded graph stale; the tab effect refreshes it now only when visible,
+      // or defers that work until the next visit.
+      setGraphStale(true);
     } catch (e) {
       onError('Failed to load case');
     } finally {
@@ -198,15 +202,27 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
   }, [load]);
 
   useEffect(() => {
-    if (!graphVersion) return undefined;
+    setGraph(null);
+    setGraphStale(true);
+    setLinkedFilter(null);
+    setActiveTab('overview');
+  }, [caseId]);
+
+  useEffect(() => {
+    if (activeTab !== 'attack-path' || !graphStale) return undefined;
     let cancelled = false;
     setGraphLoading(true);
     apiService.fetchAttackPath(caseId)
-      .then((res) => { if (!cancelled) setGraph(res); })
+      .then((res) => {
+        if (!cancelled) {
+          setGraph(res);
+          setGraphStale(false);
+        }
+      })
       .catch(() => { if (!cancelled) onError('Failed to load attack path'); })
       .finally(() => { if (!cancelled) setGraphLoading(false); });
     return () => { cancelled = true; };
-  }, [caseId, graphVersion]);
+  }, [activeTab, caseId, graphStale]);
 
   const filteredAlerts = useMemo(() => {
     if (!linkedFilter) return null;
