@@ -21,11 +21,23 @@ for a containerized deployment (see **Deploying on Docker / Kubernetes**
 in README.md) - the plugin zip `COPY`'d into the image must match the
 `wazuh-dashboard` base image tag's version, same as any other install.
 
-| Wazuh version | wazuh-dashboard / OSD version | Status |
-|---|---|---|
-| 4.12 | 2.19.1 | v2.0 release target; built against official `v4.12.0` dashboard source |
-| 4.13 | 2.19.2 | v2.0 release target; built against official `v4.13.1` dashboard source |
-| 4.14 | 2.19.5 | v2.0 release target; built and browser-tested on Wazuh 4.14.7 |
+| Wazuh release(s) | wazuh-dashboard / OSD version | Release artifact | CI build source |
+|---|---|---|---|
+| 4.12.0 | 2.19.1 | `wazuhAlertManager-2.19.1.zip` | `v4.12.0` |
+| 4.13.0–4.13.1 | 2.19.2 | `wazuhAlertManager-2.19.2.zip` | `v4.13.1` |
+| 4.14.0–4.14.1 | 2.19.3 | `wazuhAlertManager-2.19.3.zip` | `v4.14.1` |
+| 4.14.2–4.14.4 | 2.19.4 | `wazuhAlertManager-2.19.4.zip` | `v4.14.4` |
+| 4.14.5–4.14.7 | 2.19.5 | `wazuhAlertManager-2.19.5.zip` | `v4.14.7` |
+| 4.14.8–4.14.9 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` | `v4.14.9`; browser-tested on 4.14.9 |
+
+These mappings come from each official `wazuh/wazuh-dashboard` release tag.
+The one-line installer reads the installed dashboard's `package.json` and
+selects the artifact by its exact OSD version; it does not guess from the Wazuh
+minor version. When Wazuh publishes another patch, its dashboard tag must be
+checked before that patch is claimed as supported. If it introduces a new OSD
+version, add a CI target and release ZIP first. If it retains an OSD version
+already listed above, the existing exact-version ZIP remains compatible, but
+the new Wazuh patch must still be smoke-tested and added to this table.
 
 APIs this plugin relies on (all stable across the 2.19.x line, and
 unlikely to move soon):
