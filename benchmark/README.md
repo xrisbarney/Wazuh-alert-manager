@@ -1,9 +1,29 @@
-# Wazuh Alert Manager v2.0.2 volume benchmark
+# Wazuh Alert Manager 100,000-document volume benchmark
 
 This reproducibility kit evaluates the real Wazuh Alert Manager pipeline at
 **100,000 synthetic alerts**: native-format source index, bounded v2 projection,
 durable automation queue, lifecycle actions, deduplicated cases, and evidence
 links. It measures exact outcomes; it does not sample.
+
+## Recorded v2.0.3 result
+
+One warm-up and three measured 23 October 2026 trials used Wazuh Alert Manager
+v2.0.3, Wazuh 4.14.9, and OpenSearch Dashboards 2.19.6 on the single-node VM.
+The benchmark tree is identical in tags v2.0.2 and v2.0.3. Trial 3 deliberately
+restarted Wazuh Dashboard with 11,133 active durable admissions.
+
+| Trial | Injection | Post-injection drain | Whole-run wall | Queue high-water | Result |
+|---|---:|---:|---:|---:|---|
+| 1 | 3,285.4 documents/s | 218.208 s | 253 s | 10,240 | Pass |
+| 2 | 3,154.1 documents/s | 251.241 s | 288 s | 10,945 | Pass |
+| 3, restart | 2,956.4 documents/s | 369.732 s | 411 s | 11,133 | Pass |
+
+The median post-injection drain was **251.241 s** (range
+218.208–369.732 s). Every trial produced the exact expected outcomes and empty
+final queues. Trial 3 includes service interruption and durable lease recovery,
+so it is a reliability condition rather than a steady-state performance
+replicate. Sanitized evidence and exact measurement definitions are in
+[`evidence/v2.0.3-100k`](evidence/v2.0.3-100k/).
 
 ## Recorded v2.0.2 result
 
@@ -13,13 +33,13 @@ restarted Wazuh Dashboard with 9,232 durable admissions active; leased work was
 recovered and the final result still contained no retry, deferred or failed
 entries and no duplicate actions.
 
-| Trial | Injection | End-to-end | Queue high-water | Result |
+| Trial | Injection | Post-injection drain | Queue high-water | Result |
 |---|---:|---:|---:|---|
 | 26 | 5,270.4/s | 246.181 s | 11,988 | Pass |
 | 27 | 5,573.3/s | 219.596 s | 11,276 | Pass |
 | 28, restart | 5,001.6/s | 238.081 s | 11,264 | Pass |
 
-The median end-to-end time was **238.081 s** (range 219.596–246.181 s). Every
+The median post-injection drain was **238.081 s** (range 219.596–246.181 s). Every
 trial ended with 100,000 projected alerts, 42 deduplicated cases, 5,300 exact
 evidence links, 5,000 closed alerts, 2,500 assigned/in-progress alerts, zero
 false actions across 87,200 controls, and a fully empty durable queue. Case
