@@ -1,0 +1,19 @@
+run_id=20261023T100159Z
+started_at_utc=2026-10-23T10:01:59Z
+CONTROL successful SSH login (Wazuh 5715; no WAM rule)
+Warning: Permanently added '192.168.56.25' (ED25519) to the list of known hosts.
+UC1 SSH brute force against non-existent lab user
+Hydra v9.5 (c) 2023 by van Hauser/THC & David Maciejak - Please do not use in military or secret service organizations, or for illegal purposes (this is non-binding, these *** ignore laws and ethics anyway).
+
+Hydra (https://github.com/vanhauser-thc/thc-hydra) starting at 2026-10-23 10:02:03
+[DATA] max 2 tasks per 1 server, overall 2 tasks, 12 login tries (l:1/p:12), ~6 tries per task
+[DATA] attacking ssh://192.168.56.25:22/
+1 of 1 target completed, 0 valid password found
+Hydra (https://github.com/vanhauser-thc/thc-hydra) finished at 2026-10-23 10:02:53
+UC2 Auditd command execution
+UC3 FIM create, modify, delete
+UC4 Local account creation
+UC5 Successful sudo-to-root is the sudo invocation of this script
+Cleanup test account (deletion is an observed but unmatched event)
+finished_at_utc=2026-10-23T10:03:29Z
+run_log=/opt/wam-semi-real/results/use-cases-20261023T100159Z.log

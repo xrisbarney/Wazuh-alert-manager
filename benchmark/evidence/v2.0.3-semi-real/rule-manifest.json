@@ -1,0 +1,74 @@
+{
+  "activated_at": "2026-10-23T10:00:24.158356Z",
+  "agent": "wam-semi-real-linux",
+  "rules": {
+    "account_creation": {
+      "actions": {
+        "assignTo": null,
+        "caseSeverity": "high",
+        "createCase": true,
+        "setStatus": null
+      },
+      "id": "5fc2fb6fd10cf10fb04bff6b9365d8e8",
+      "name": "WAM semi-real 2026 - Account creation",
+      "ruleIds": [
+        "5902"
+      ]
+    },
+    "audit_command": {
+      "actions": {
+        "assignTo": null,
+        "caseSeverity": "high",
+        "createCase": true,
+        "setStatus": null
+      },
+      "id": "c76058a0f449262ad91432ff5972adcf",
+      "name": "WAM semi-real 2026 - Auditd command",
+      "ruleIds": [
+        "80792"
+      ]
+    },
+    "fim_change": {
+      "actions": {
+        "assignTo": null,
+        "caseSeverity": "medium",
+        "createCase": true,
+        "setStatus": null
+      },
+      "id": "4b0dd952b3156639653afca3b298817e",
+      "name": "WAM semi-real 2026 - FIM lifecycle",
+      "ruleIds": [
+        "550",
+        "553",
+        "554"
+      ]
+    },
+    "ssh_bruteforce": {
+      "actions": {
+        "assignTo": null,
+        "caseSeverity": "critical",
+        "createCase": true,
+        "setStatus": null
+      },
+      "id": "6d0c6ac0344c1207aa932916e3ebf591",
+      "name": "WAM semi-real 2026 - SSH brute force",
+      "ruleIds": [
+        "5712",
+        "5551",
+        "5720"
+      ]
+    },
+    "sudo_root": {
+      "actions": {
+        "assignTo": "admin",
+        "createCase": false,
+        "setStatus": "in_progress"
+      },
+      "id": "7b1d7784ed765ed8a29a072d76f6934f",
+      "name": "WAM semi-real 2026 - Sudo to root",
+      "ruleIds": [
+        "5402"
+      ]
+    }
+  }
+}
