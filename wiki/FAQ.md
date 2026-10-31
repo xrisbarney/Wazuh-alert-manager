@@ -7,7 +7,7 @@ No. It reads `wazuh-alerts-*` and stores all workflow state in its own indices. 
 No — it's an unofficial community plugin, not produced or endorsed by Wazuh Inc.
 
 **Which versions are supported?**
-Wazuh 4.12 / 4.13 / 4.14 (OpenSearch Dashboards 2.19.1 / 2.19.2 / 2.19.5). Use the matching ZIP; Dashboard requires an exact target-version match.
+Wazuh 4.12.0 through 4.14.9. Those patches use OpenSearch Dashboards 2.19.1 through 2.19.6; see [[Installation#supported-versions]] for the exact patch mapping. Use the matching ZIP because Dashboard requires an exact target-version match.
 
 **Do I need to reindex anything?**
 No for fresh installs. The one exception: very old installs where `assigned_to` was mapped as `text` need a reindex for analyst metrics to aggregate — see [[Troubleshooting]].

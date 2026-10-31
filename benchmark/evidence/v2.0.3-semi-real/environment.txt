@@ -1,0 +1,8 @@
+agent_name=wam-semi-real-linux
+sensor_ip=192.168.56.25
+manager_ip=192.168.56.21
+os=Ubuntu 24.04.3 LTS
+kernel=6.8.0-86-generic
+wazuh_agent=4.14.9-1
+auditd=1:3.1.2-2.1ubuntu0.1
+hydra=9.5

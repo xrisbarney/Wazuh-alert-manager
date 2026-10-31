@@ -1,0 +1,74 @@
+{"elapsed_seconds": 0.0, "synced": 0, "queue": {"active": 0, "reportedLag": 0, "deferred": 0, "failed": 0, "pending": 0, "claimed": 0, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 17.365, "synced": 10000, "queue": {"active": 9909, "reportedLag": 9909, "deferred": 0, "failed": 0, "pending": 9566, "claimed": 343, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 36.233, "synced": 21765, "queue": {"active": 11133, "reportedLag": 11133, "deferred": 0, "failed": 0, "pending": 10464, "claimed": 669, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 54.932, "synced": 40000, "queue": {"active": 7904, "reportedLag": 7904, "deferred": 0, "failed": 0, "pending": 7392, "claimed": 512, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 73.02, "transient_error": "<urlopen error [Errno 111] Connection refused>"}
+{"elapsed_seconds": 88.11, "synced": 49000, "queue": {"active": 6368, "reportedLag": 6368, "deferred": 0, "failed": 0, "pending": 5856, "claimed": 512, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 107.814, "synced": 58000, "queue": {"active": 6368, "reportedLag": 6368, "deferred": 0, "failed": 0, "pending": 5856, "claimed": 512, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 127.682, "synced": 80751, "queue": {"active": 6368, "reportedLag": 6368, "deferred": 0, "failed": 0, "pending": 5856, "claimed": 512, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 145.712, "synced": 100000, "queue": {"active": 6368, "reportedLag": 6368, "deferred": 0, "failed": 0, "pending": 5856, "claimed": 512, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 162.326, "synced": 100000, "queue": {"active": 6368, "reportedLag": 6368, "deferred": 0, "failed": 0, "pending": 5856, "claimed": 512, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 178.271, "synced": 100000, "queue": {"active": 6368, "reportedLag": 6368, "deferred": 0, "failed": 0, "pending": 5856, "claimed": 512, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 195.729, "synced": 100000, "queue": {"active": 5960, "reportedLag": 5960, "deferred": 0, "failed": 0, "pending": 5448, "claimed": 512, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 212.159, "synced": 100000, "queue": {"active": 3520, "reportedLag": 3520, "deferred": 0, "failed": 0, "pending": 3008, "claimed": 512, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 228.506, "synced": 100000, "queue": {"active": 3008, "reportedLag": 3008, "deferred": 0, "failed": 0, "pending": 2496, "claimed": 512, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 245.633, "synced": 100000, "queue": {"active": 2752, "reportedLag": 2752, "deferred": 0, "failed": 0, "pending": 2240, "claimed": 512, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 262.925, "synced": 100000, "queue": {"active": 2240, "reportedLag": 2240, "deferred": 0, "failed": 0, "pending": 1896, "claimed": 344, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 282.577, "synced": 100000, "queue": {"active": 1896, "reportedLag": 1896, "deferred": 0, "failed": 0, "pending": 1640, "claimed": 256, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 299.605, "synced": 100000, "queue": {"active": 1640, "reportedLag": 1640, "deferred": 0, "failed": 0, "pending": 1384, "claimed": 256, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 316.258, "synced": 100000, "queue": {"active": 1384, "reportedLag": 1384, "deferred": 0, "failed": 0, "pending": 1128, "claimed": 256, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 333.354, "synced": 100000, "queue": {"active": 872, "reportedLag": 872, "deferred": 0, "failed": 0, "pending": 616, "claimed": 256, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 352.421, "synced": 100000, "queue": {"active": 360, "reportedLag": 360, "deferred": 0, "failed": 0, "pending": 104, "claimed": 256, "retry": 0, "admissionOpen": true}}
+{"elapsed_seconds": 369.732, "synced": 100000, "queue": {"active": 0, "reportedLag": 0, "deferred": 0, "failed": 0, "pending": 0, "claimed": 0, "retry": 0, "admissionOpen": true}}
+{
+  "actual": {
+    "assigned_in_progress": 2500,
+    "boolean_group_cases": 2,
+    "boolean_group_linked": 1200,
+    "burst_srcip_cases": 10,
+    "burst_srcip_linked": 2000,
+    "closed_alerts": 5000,
+    "cooccurrence_cases": 10,
+    "cooccurrence_linked": 600,
+    "false_actions_on_controls": 0,
+    "immediate_agent_cases": 10,
+    "immediate_agent_linked": 500,
+    "immediate_user_cases": 10,
+    "immediate_user_linked": 1000,
+    "total_synced": 100000
+  },
+  "end_to_end_seconds": 369.732,
+  "expected": {
+    "assigned_in_progress": 2500,
+    "boolean_group_cases": 2,
+    "boolean_group_linked": 1200,
+    "burst_srcip_cases": 10,
+    "burst_srcip_linked": 2000,
+    "closed_alerts": 5000,
+    "cooccurrence_cases": 10,
+    "cooccurrence_linked": 600,
+    "false_actions_on_controls": 0,
+    "immediate_agent_cases": 10,
+    "immediate_agent_linked": 500,
+    "immediate_user_cases": 10,
+    "immediate_user_linked": 1000,
+    "total_synced": 100000
+  },
+  "mismatches": {},
+  "passed": true,
+  "queue_final": {
+    "active": 0,
+    "admissionOpen": true,
+    "claimed": 0,
+    "deferred": 0,
+    "failed": 0,
+    "pending": 0,
+    "reportedLag": 0,
+    "retry": 0
+  },
+  "queue_high_water": {
+    "active": 11133,
+    "deferred": 0,
+    "failed": 0
+  }
+}

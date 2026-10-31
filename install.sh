@@ -10,15 +10,15 @@
 #
 # Usage:
 #   curl -fsSL <base-url>/install.sh | sudo bash                    # latest
-#   curl -fsSL <base-url>/install.sh | sudo bash -s -- --version 2.0.0
-#   sudo ./install.sh --artifact ./wazuhAlertManager-2.19.5.zip \
-#        --checksum ./wazuhAlertManager-2.19.5.zip.sha256
+#   curl -fsSL <base-url>/install.sh | sudo bash -s -- --version 2.0.3
+#   sudo ./install.sh --artifact ./wazuhAlertManager-2.19.6.zip \
+#        --checksum ./wazuhAlertManager-2.19.6.zip.sha256
 #
 # Recommended, supply-chain-safe form (download + verify the installer first):
-#   curl -fsSLO <base-url>/v2.0.0/install.sh
-#   curl -fsSLO <base-url>/v2.0.0/install.sh.sha256
+#   curl -fsSLO <base-url>/v2.0.3/install.sh
+#   curl -fsSLO <base-url>/v2.0.3/install.sh.sha256
 #   sha256sum -c install.sh.sha256
-#   sudo bash install.sh --version 2.0.0
+#   sudo bash install.sh --version 2.0.3
 
 set -euo pipefail
 
@@ -36,7 +36,7 @@ BACKUP_DIR="/var/lib/wazuh-alert-manager/backups"
 
 # OSD version -> Wazuh release this artifact targets. Anything not listed here
 # is refused: the installer must never guess.
-SUPPORTED_OSD_VERSIONS="2.19.1 2.19.2 2.19.5"
+SUPPORTED_OSD_VERSIONS="2.19.1 2.19.2 2.19.3 2.19.4 2.19.5 2.19.6"
 
 # Optional signature verification (minisign). Not required, but used when both
 # the tool and a trusted public key are present.
@@ -89,7 +89,7 @@ Wazuh Alert Manager installer
   install.sh [options]
 
 Install / upgrade:
-  --version V          Install a pinned plugin release (e.g. 2.0.0). Recommended.
+  --version V          Install a pinned plugin release (e.g. 2.0.3). Recommended.
   --artifact FILE      Install from a local ZIP (offline). Use with --checksum.
   --checksum FILE      SHA-256 checksum file for --artifact.
   --base-url URL       Override the release host (or WAM_RELEASE_BASE_URL).

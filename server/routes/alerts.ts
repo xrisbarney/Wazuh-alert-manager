@@ -272,7 +272,12 @@ export function defineAlertRoutes(router: IRouter) {
         }
         const failed: any[] = [];
         if (body.length) {
-          const result: any = await client.bulk({ body });
+          // wait_for: the Workbench queue and alert flyout re-read these alerts
+          // through a search right after this call; without it they could show
+          // the old status/assignee until the next index refresh. It waits for
+          // the scheduled refresh rather than forcing one, so large batches
+          // (up to 1000 alerts) add at most ~1s instead of refresh load.
+          const result: any = await client.bulk({ body, refresh: 'wait_for' });
           const items = result?.body?.items;
           if (!Array.isArray(items) || items.length !== owners.length) {
             throw new Error(`Bulk response contained ${Array.isArray(items) ? items.length : 0} item(s) for ${owners.length} operation(s)`);
@@ -577,7 +582,11 @@ export function defineAlertRoutes(router: IRouter) {
           body.push({ script: { lang: 'painless', source: scriptSource, params: { ids: [id] } } });
         }
 
-        const result: any = await client.bulk({ body });
+        // wait_for: the Related Alerts panel re-reads related_alert_ids (and
+        // the Suggested exclusions) through a search immediately after this
+        // call, and a search only sees the update once the index refreshes.
+        // Without it the panel showed the pre-link state until a later reload.
+        const result: any = await client.bulk({ body, refresh: 'wait_for' });
         const items = result?.body?.items;
         const expectedItems = relatedIds.length + 2;
         if (!Array.isArray(items) || items.length !== expectedItems) {

@@ -93,4 +93,6 @@ Plugin archives are compiled separately because the OpenSearch Dashboards versio
 | 4.13.x | 2.19.2 |
 | 4.14.x | 2.19.5 |
 
+The plugin is built for every exact OSD version used by the supported Wazuh patches: 2.19.1 through 2.19.6 for Wazuh 4.12.0 through 4.14.9. The **server code is identical** across builds, but every ZIP is compiled inside a matching official Wazuh Dashboard source tree and receives that target's exact version stamp rather than being relabelled after the fact. See [[Installation#supported-versions]] for the patch-level mapping.
+
 Install the matching archive on every OpenSearch Dashboards node that can serve users. Nothing is installed on Wazuh agents, and a manager-only or indexer-only node does not need the dashboard plugin. See [[Installation]].

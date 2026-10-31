@@ -1,0 +1,15 @@
+[
+  { "wazuhVersion": "4.12.0", "osdVersion": "2.19.1" },
+  { "wazuhVersion": "4.13.0", "osdVersion": "2.19.2" },
+  { "wazuhVersion": "4.13.1", "osdVersion": "2.19.2" },
+  { "wazuhVersion": "4.14.0", "osdVersion": "2.19.3" },
+  { "wazuhVersion": "4.14.1", "osdVersion": "2.19.3" },
+  { "wazuhVersion": "4.14.2", "osdVersion": "2.19.4" },
+  { "wazuhVersion": "4.14.3", "osdVersion": "2.19.4" },
+  { "wazuhVersion": "4.14.4", "osdVersion": "2.19.4" },
+  { "wazuhVersion": "4.14.5", "osdVersion": "2.19.5" },
+  { "wazuhVersion": "4.14.6", "osdVersion": "2.19.5" },
+  { "wazuhVersion": "4.14.7", "osdVersion": "2.19.5" },
+  { "wazuhVersion": "4.14.8", "osdVersion": "2.19.6" },
+  { "wazuhVersion": "4.14.9", "osdVersion": "2.19.6" }
+]

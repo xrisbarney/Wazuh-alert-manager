@@ -62,11 +62,12 @@ export const DonutBreakdown: React.FC<Props> = ({ segments, centerValue, centerL
           ) : (
             arcs.map((a, i) => <path key={i} d={slicePath(cx, cy, rO, rI, a.a0, a.a1)} fill={a.seg.color} />)
           )}
-          <text className="wamDonut__value" x={cx} y={cy - 2} textAnchor="middle" fontSize={size * 0.2} fontWeight={700}>
+          {/* Type comes from index.scss: the dashboard's title and text styles. */}
+          <text className="wamDonut__value" x={cx} y={cy - 2} textAnchor="middle">
             {centerValue != null ? centerValue : total.toLocaleString()}
           </text>
           {centerLabel && (
-            <text className="wamDonut__label" x={cx} y={cy + size * 0.12} textAnchor="middle" fontSize={size * 0.085}>
+            <text className="wamDonut__label" x={cx} y={cy + size * 0.12} textAnchor="middle">
               {centerLabel}
             </text>
           )}
@@ -79,19 +80,19 @@ export const DonutBreakdown: React.FC<Props> = ({ segments, centerValue, centerL
             return (
               <EuiFlexGroup key={s.label} gutterSize="s" alignItems="center" responsive={false} style={{ marginBottom: 4 }}>
                 <EuiFlexItem grow={false}>
-                  <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: s.color }} />
+                  <span className="wamDonut__swatch" style={{ background: s.color }} />
                 </EuiFlexItem>
                 <EuiFlexItem>
                   <EuiText size="xs">{s.label}</EuiText>
                 </EuiFlexItem>
                 <EuiFlexItem grow={false}>
-                  <EuiText size="xs" style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
-                    {s.value.toLocaleString()}
+                  <EuiText size="xs">
+                    <span className="wamDonut__count">{s.value.toLocaleString()}</span>
                   </EuiText>
                 </EuiFlexItem>
                 <EuiFlexItem grow={false} style={{ width: 38, textAlign: 'right' }}>
-                  <EuiText size="xs" color="subdued" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                    {pct}%
+                  <EuiText size="xs" color="subdued">
+                    <span className="wamDonut__pct">{pct}%</span>
                   </EuiText>
                 </EuiFlexItem>
               </EuiFlexGroup>

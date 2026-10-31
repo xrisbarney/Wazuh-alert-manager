@@ -32,6 +32,8 @@ is reproducibility evidence, not a universal production-capacity claim.
 
 ## Compatibility
 
-Release assets are built independently for Wazuh 4.12, 4.13 and 4.14
-(OpenSearch Dashboards 2.19.1, 2.19.2 and 2.19.5). Native Wazuh alert indices
-remain read-only. Existing v1/v2 plugin data is migrated or retained safely.
+Release assets are built independently for every OpenSearch Dashboards version
+used by Wazuh 4.12.0 through 4.14.9: OSD 2.19.1, 2.19.2, 2.19.3, 2.19.4,
+2.19.5 and 2.19.6. The installer detects the exact dashboard version and
+selects its matching ZIP. Native Wazuh alert indices remain read-only. Existing
+v1/v2 plugin data is migrated or retained safely.

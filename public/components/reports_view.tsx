@@ -170,7 +170,7 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
       {loading && !metrics ? (
         <EuiLoadingSpinner size="xl" />
       ) : !metrics ? (
-        <EuiText color="subdued">No data.</EuiText>
+        <EuiText size="s" color="subdued">No data.</EuiText>
       ) : (
         <EuiTabbedContent
           className="wamReportTabs"

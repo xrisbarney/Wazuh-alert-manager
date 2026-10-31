@@ -1,0 +1,30 @@
+name: Wazuh compatibility watch
+
+on:
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - supported-wazuh-versions.json
+      - install.sh
+      - scripts/check-supported-versions.js
+      - .github/workflows/build-and-release.yml
+      - .github/workflows/compatibility-watch.yml
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify official Wazuh/OSD matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18.19.0"
+      - name: Compare release tags, installer, and build targets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/check-supported-versions.js

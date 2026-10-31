@@ -1,20 +1,23 @@
 # Wazuh Alert Manager 2.0.2
 
-This page documents the **2.0.2** release. It contains the bounded storage model,
-durable high-volume automation worker, exact evidence counters, and bounded case
-previews. Existing plugin data is migrated during upgrade; new installations
-should use the matching 2.0.2 archive.
+The recommended patch level is **2.0.3**. It contains the complete v2.0 feature
+set, the durable high-volume automation worker, exact evidence counters and
+bounded case previews. Versions 2.0.0 and 2.0.1 remain upgrade sources, but new
+installations should use the latest release.
 
 Version 2.0.2 provides a bounded security-operations workbench while
 keeping Wazuh's native `wazuh-alerts-*` indices read-only.
 
 ## Supported releases
 
-| Wazuh | OpenSearch Dashboards | Release asset |
-|-------|-----------------------|---------------|
-| 4.12.x | 2.19.1 | `wazuhAlertManager-2.19.1.zip` |
-| 4.13.x | 2.19.2 | `wazuhAlertManager-2.19.2.zip` |
-| 4.14.x | 2.19.5 | `wazuhAlertManager-2.19.5.zip` |
+| Wazuh release(s) | OpenSearch Dashboards | Release asset |
+|------------------|-----------------------|---------------|
+| 4.12.0 | 2.19.1 | `wazuhAlertManager-2.19.1.zip` |
+| 4.13.0–4.13.1 | 2.19.2 | `wazuhAlertManager-2.19.2.zip` |
+| 4.14.0–4.14.1 | 2.19.3 | `wazuhAlertManager-2.19.3.zip` |
+| 4.14.2–4.14.4 | 2.19.4 | `wazuhAlertManager-2.19.4.zip` |
+| 4.14.5–4.14.7 | 2.19.5 | `wazuhAlertManager-2.19.5.zip` |
+| 4.14.8–4.14.9 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` |
 
 Each ZIP is built inside the matching official Wazuh Dashboard source tree. The
 installer detects the dashboard version and refuses to guess when it is not in
@@ -50,29 +53,8 @@ retention, and [[Automation Rules]] before enabling production actions.
 
 ## Validation evidence
 
-Version 2.0.2 was built for all three supported dashboard versions and exercised
-through unit/integration tests, browser workflows, lifecycle retire/restore
-tests, and a clean installer/runtime smoke test against the release assets.
-
-The high-volume plugin-pipeline benchmark ran three exact 100,000-alert trials on
-a single-node Wazuh 4.14 / OpenSearch Dashboards 2.19.5 VirtualBox development VM.
-End-to-end times were 246.181, 219.596, and 238.081 seconds. Every trial produced
-the same verified result:
-
-| Result | Exact count per trial |
-|---|---:|
-| Operational alert projections | 100,000 |
-| Deduplicated cases | 42 |
-| Case evidence relationships | 5,300 |
-| Alerts closed by automation | 5,000 |
-| Alerts assigned and moved to In progress | 2,500 |
-| Negative-control alerts | 87,200 |
-| Actions on negative controls | 0 |
-| Automation queue remaining at completion | 0 |
-
-One trial included a dashboard restart to exercise durable admission and worker
-recovery. The benchmark injected controlled data into the plugin pipeline; it
-did not include Wazuh agent-to-manager transport and is therefore evidence of
-plugin behavior under this workload, not a universal production-capacity claim.
-The reproducible kit and exact results are stored in
-[`benchmark/evidence/v2.0.2-100k`](https://github.com/xrisbarney/Wazuh-alert-manager/tree/main/benchmark/evidence/v2.0.2-100k).
+The release gate includes unit/integration tests, production builds in the
+six-version compatibility matrix, a 4.14.9 browser workflow bench, lifecycle
+retire/restore tests, and a clean installer/runtime smoke test against the
+published release assets. The release page records the final outcome and
+checksums.

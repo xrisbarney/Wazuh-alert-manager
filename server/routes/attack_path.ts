@@ -51,8 +51,24 @@ export function defineAttackPathRoutes(router: IRouter) {
           .filter((item) => item.source)
           .map((item) => ({ _id: item.id, _source: item.source }));
 
+        const graph = buildAttackGraph(alerts);
+        // Attach each alert's case-relationship state (live / held / archived)
+        // so a graph-filtered Linked Alerts view can show and act on it without
+        // paging through the evidence list. Snapshots are deliberately omitted.
+        const relationshipById = new Map(relationships.map((item: any) => [item.alert_id, item]));
+        for (const hop of graph.hops) {
+          const rel: any = relationshipById.get(hop.alertId);
+          if (rel) {
+            hop.evidence = {
+              relationship_state: rel.relationship_state ?? null,
+              hold_reason: rel.hold_reason ?? null,
+              archive_index: rel.archive_index ?? null,
+            };
+          }
+        }
+
         return response.ok({ body: {
-          ...buildAttackGraph(alerts),
+          ...graph,
           truncated,
           limit: maxGraphAlerts,
           includedAlerts: alerts.length,

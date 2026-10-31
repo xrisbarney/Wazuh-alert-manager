@@ -36,6 +36,13 @@ export interface AttackGraphEdge {
   level: number;
 }
 
+/** Case-relationship state for one hop, attached by the attack-path route. */
+export interface AttackGraphHopEvidence {
+  relationship_state: string | null;
+  hold_reason: string | null;
+  archive_index: string | null;
+}
+
 export interface KillChainPhase {
   tactic: string;
   order: number;
@@ -49,11 +56,16 @@ export interface AttackGraphHop {
   timestamp: string;
   alertId: string;
   host: string | null;
+  sources: string[];
   users: string[];
+  techniqueIds: string[];
   techniques: string[];
   tactics: string[];
+  ruleId: string;
   ruleDescription: string;
   level: number;
+  status: string | null;
+  evidence?: AttackGraphHopEvidence;
 }
 
 export interface AttackGraph {
@@ -108,6 +120,7 @@ export function buildAttackGraph(alerts: Array<{ _id: string; _source: any }>): 
     const userNames: string[] = Array.from(
       new Set([...asArray<string>(data.srcuser), ...asArray<string>(data.dstuser)].filter(Boolean))
     );
+    const sources: string[] = Array.from(new Set(asArray<string>(data.srcip).map(String).filter(Boolean)));
     const userIds = userNames.map((u) => `user:${u}`);
     const rawTechniqueIds: string[] = asArray<string>(src.rule?.mitre?.id);
     const rawTechniqueLabels: string[] = asArray<string>(src.rule?.mitre?.technique);
@@ -153,11 +166,15 @@ export function buildAttackGraph(alerts: Array<{ _id: string; _source: any }>): 
       timestamp,
       alertId: alert._id,
       host: src.agent?.name || null,
+      sources,
       users: userNames,
+      techniqueIds,
       techniques: techniqueLabels,
       tactics,
+      ruleId: src.rule?.id != null ? String(src.rule.id) : '',
       ruleDescription: src.rule?.description || '',
       level,
+      status: typeof src.status === 'string' ? src.status : null,
     });
   }
 

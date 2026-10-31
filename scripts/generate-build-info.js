@@ -5,14 +5,29 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'opensearch_dashboards.json'), 'utf8'));
 let revision = 'unknown';
-try {
-  revision = execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], {
-    cwd: root,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-  }).trim();
-} catch (e) {
-  // Source archives may not contain .git; the timestamp still makes the artifact unique.
+const explicitRevision = process.env.WAM_SOURCE_COMMIT || process.env.GITHUB_SHA;
+if (explicitRevision) {
+  revision = explicitRevision.slice(0, 12);
+} else {
+  try {
+    const gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    // A plugin copied below a wazuh-dashboard checkout inherits the parent's
+    // .git directory. Never label that unrelated dashboard revision as the
+    // plugin source revision.
+    if (path.resolve(gitRoot) === root) {
+      revision = execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], {
+        cwd: root,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    }
+  } catch (e) {
+    // Source archives may not contain .git; the timestamp still identifies the build.
+  }
 }
 
 const builtAt = new Date().toISOString();

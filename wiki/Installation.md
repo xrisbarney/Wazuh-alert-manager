@@ -38,14 +38,19 @@ availability and does not multiply alert processing.
 The plugin artifact must match the exact OpenSearch Dashboards version, or the
 dashboard refuses to load it:
 
-| Wazuh release | OpenSearch Dashboards | Artifact |
-|---------------|-----------------------|----------|
-| 4.12.x | 2.19.1 | `wazuhAlertManager-2.19.1.zip` |
-| 4.13.x | 2.19.2 | `wazuhAlertManager-2.19.2.zip` |
-| 4.14.x | 2.19.5 | `wazuhAlertManager-2.19.5.zip` |
+| Wazuh release(s) | OpenSearch Dashboards | Artifact |
+|------------------|-----------------------|----------|
+| 4.12.0 | 2.19.1 | `wazuhAlertManager-2.19.1.zip` |
+| 4.13.0–4.13.1 | 2.19.2 | `wazuhAlertManager-2.19.2.zip` |
+| 4.14.0–4.14.1 | 2.19.3 | `wazuhAlertManager-2.19.3.zip` |
+| 4.14.2–4.14.4 | 2.19.4 | `wazuhAlertManager-2.19.4.zip` |
+| 4.14.5–4.14.7 | 2.19.5 | `wazuhAlertManager-2.19.5.zip` |
+| 4.14.8–4.14.9 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` |
 
 The installer reads the dashboard's own `package.json` (`version`) to select the
-artifact and refuses any version not in this table — it never guesses.
+artifact and refuses any version not in this table — it never guesses. Wazuh
+patch releases do not all use the same dashboard version, which is why 4.14 has
+four rows. Check this table again after upgrading Wazuh.
 
 ## One-line installer
 
@@ -54,21 +59,21 @@ artifact and refuses any version not in this table — it never guesses.
 curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash
 
 # Pinned release (recommended)
-curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash -s -- --version 2.0.2
+curl -fsSL https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | sudo bash -s -- --version 2.0.3
 
 # Local / offline artifact
-sudo ./install.sh --artifact ./wazuhAlertManager-2.19.5.zip \
-  --checksum ./wazuhAlertManager-2.19.5.zip.sha256
+sudo ./install.sh --artifact ./wazuhAlertManager-2.19.6.zip \
+  --checksum ./wazuhAlertManager-2.19.6.zip.sha256
 ```
 
 For stronger supply-chain safety, download and verify the installer before
 running it:
 
 ```bash
-curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.2/install.sh
-curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.2/install.sh.sha256
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.3/install.sh
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.3/install.sh.sha256
 sha256sum -c install.sh.sha256
-sudo bash install.sh --version 2.0.2
+sudo bash install.sh --version 2.0.3
 ```
 
 The default release host is GitHub Releases (override with `--base-url` or the
@@ -108,7 +113,7 @@ migrates its own indices using the dashboard service identity.
 
 | Command | Effect |
 |---------|--------|
-| `install.sh --version 2.0.2` | Fresh install, v2 upgrade, or same-version reinstall |
+| `install.sh --version 2.0.3` | Fresh install, v2 upgrade, or same-version reinstall |
 | `install.sh --dry-run` | Resolve versions/artifacts and print the plan without changing anything |
 | `install.sh --no-restart` | Install but leave the dashboard stopped |
 | `install.sh --rollback` | Restore the most recent backup |
