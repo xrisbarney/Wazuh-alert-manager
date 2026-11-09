@@ -12,5 +12,6 @@
   { "wazuhVersion": "4.14.7", "osdVersion": "2.19.5" },
   { "wazuhVersion": "4.14.8", "osdVersion": "2.19.6" },
   { "wazuhVersion": "4.14.9", "osdVersion": "2.19.6" },
+  { "wazuhVersion": "4.14.10", "osdVersion": "2.19.6" },
   { "wazuhVersion": "5.0.0-rc2", "osdVersion": "3.6.0", "prerelease": true }
 ]
