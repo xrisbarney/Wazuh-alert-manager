@@ -12,7 +12,7 @@ async function signIn(page: Page) {
     await page.locator('[data-test-subj="password"]').fill(process.env.WAM_E2E_PASSWORD!);
     await page.locator('[data-test-subj="submit"]').click();
   }
-  await expect(page.getByRole('heading', { name: 'Alert queue' })).toBeVisible({ timeout: 120_000 });
+  await expect(page.getByRole('heading', { name: /(Alert|Finding) queue/ })).toBeVisible({ timeout: 120_000 });
 }
 
 async function capture(page: Page, name: string) {
@@ -43,7 +43,7 @@ test('capture public wiki screenshots', async ({ page }) => {
   await expect(caseFlyout.getByRole('tab', { name: 'Overview' })).toBeVisible({ timeout: 120_000 });
   await caseFlyout.getByRole('button', { name: 'Expand to full screen' }).click();
   await captureElement(page, '.wamCaseFlyout', 'case-overview.png');
-  await caseFlyout.getByRole('tab', { name: /^Linked alerts/ }).click();
+  await caseFlyout.getByRole('tab', { name: /^Linked (alerts|findings)/ }).click();
   await expect(caseFlyout.getByRole('columnheader', { name: 'Evidence' })).toBeVisible({ timeout: 120_000 });
   await captureElement(page, '.wamCaseFlyout', 'case-linked-evidence.png');
   await caseFlyout.getByRole('tab', { name: 'Attack graph' }).click();

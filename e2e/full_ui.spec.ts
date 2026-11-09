@@ -5,6 +5,20 @@ import * as path from 'path';
 const API = '/api/wazuh_alert_manager';
 
 function emitAutomationFixtures() {
+  // WAM_E2E_PROFILE=wazuh5 seeds Wazuh 5.0-shaped findings into the plugin-owned
+  // test stream on the 5.0 lab (same source IPs/users as the 4.x fixtures, so
+  // the automation scenarios below are identical on both platforms).
+  if (process.env.WAM_E2E_PROFILE === 'wazuh5') {
+    const vagrantDir = process.env.WAM_E2E_VAGRANT_DIR || path.resolve(process.cwd(), '..', '..', 'wazuh-vagrant');
+    const remote = [
+      'cd /home/vagrant/wam-tools',
+      "export WAM_PW=$(sudo grep '^WAZUH_INDEXER_ADMIN_PASSWORD=' /etc/wazuh-indexer/export/credentials.env | cut -d= -f2- | sed -e 's/^\"//' -e 's/\"$//')",
+      'export WAM_INDEXER=https://localhost:9200',
+      'python3 e2e/seed_findings_v5.py --count 8 --severity high',
+    ].join(' && ');
+    execFileSync('vagrant', ['ssh', '-c', remote], { cwd: vagrantDir, stdio: 'pipe', timeout: 120_000 });
+    return;
+  }
   const vagrantDir = process.env.WAM_E2E_VAGRANT_DIR || path.resolve(process.cwd(), '..', '..', 'wazuh414-vagrant');
   const remote = [
     'cd /home/vagrant/wazuh-alert-manager-src',
@@ -26,7 +40,7 @@ async function signIn(page: Page) {
     await page.locator('[data-test-subj="submit"]').click();
   }
   await expect(page).toHaveURL(/\/app\/wazuh-alert-manager/, { timeout: 60_000 });
-  await expect(page.getByRole('heading', { name: 'Alert queue' })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('heading', { name: /(Alert|Finding) queue/ })).toBeVisible({ timeout: 60_000 });
 }
 
 async function api(page: Page, method: string, path: string, body?: unknown) {
@@ -187,7 +201,7 @@ test.describe('full workbench UI bench', () => {
     await flyout.getByRole('button', { name: 'Add comment' }).click();
     await expect(flyout.getByText('E2E analyst investigation note')).toBeVisible({ timeout: 30_000 });
 
-    await flyout.getByRole('tab', { name: /Linked alerts/ }).click();
+    await flyout.getByRole('tab', { name: /Linked (alerts|findings)/ }).click();
     const holdButton = flyout.getByRole('button', { name: 'Set evidence hold' }).first();
     await expect(holdButton).toBeVisible({ timeout: 30_000 });
     await holdButton.click();
@@ -354,7 +368,7 @@ test.describe('full workbench UI bench', () => {
     await page.getByRole('button', { name: 'Refresh' }).click();
     await expect(page.getByText('E2E burst entity rule: automated incident', { exact: true })).toHaveCount(2, { timeout: 60_000 });
     await page.getByRole('button', { name: 'E2E burst entity rule: automated incident', exact: true }).first().click();
-    await expect(page.locator('.wamCaseFlyout').getByRole('tab', { name: /Linked alerts/ })).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('.wamCaseFlyout').getByRole('tab', { name: /Linked (alerts|findings)/ })).toBeVisible({ timeout: 60_000 });
 
     // Disable/delete fixtures after observing their effects; existing cases remain
     // as auditable closed work and no future incoming alert is affected.
@@ -430,7 +444,7 @@ test.describe('full workbench UI bench', () => {
     }
 
     await page.goto('/app/wazuh-alert-manager');
-    await expect(page.getByRole('tab', { name: 'Alerts' })).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByRole('tab', { name: /^(Alerts|Findings)$/ })).toBeVisible({ timeout: 120_000 });
     await page.getByRole('button', { name: /^Open details for / }).first().click();
     const alertFlyout = page.locator('.wamAlertFlyout');
     await alertFlyout.getByRole('tab', { name: 'Comments' }).click();

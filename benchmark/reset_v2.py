@@ -22,6 +22,16 @@ LEGACY_V1_INDICES = {
     "wazuh-alert-manager-rules",
     "wazuh-alert-manager-meta",
 }
+# Plugin-owned Wazuh 5.0-shaped TEST data streams (e2e/seed_findings_v5.py and
+# the 5.0 benchmark mode). Exact names only; the real wazuh-findings-v5-<category>
+# and wazuh-events-v5-<category> streams are native and never touched.
+WAM_TEST_STREAMS = {
+    "wazuh-findings-v5-wam-e2e",
+    "wazuh-events-v5-wam-e2e",
+    "wazuh-findings-v5-wam-benchmark",
+    "wazuh-events-v5-wam-benchmark",
+}
+WAM_TEST_TEMPLATE_PREFIX = "wam-e2e-"
 
 
 def request(path, method="GET"):
@@ -49,9 +59,29 @@ def main():
         action="store_true",
         help="also delete the five exact legacy v1 plugin indices",
     )
+    parser.add_argument(
+        "--include-wam-test-streams",
+        action="store_true",
+        help="also delete the plugin-owned wazuh-*-v5-wam-* TEST data streams and their wam-e2e-* templates (Wazuh 5.0 labs)",
+    )
     args = parser.parse_args()
     if not args.yes or not PASSWORD:
         parser.error("Set WAM_PW and pass --yes")
+
+    streams_deleted = []
+    if args.include_wam_test_streams:
+        present = request("/_data_stream/*").get("data_streams", [])
+        for stream in sorted(WAM_TEST_STREAMS.intersection(entry["name"] for entry in present)):
+            if not stream.startswith(("wazuh-findings-v5-wam-", "wazuh-events-v5-wam-")):
+                raise RuntimeError(f"Refusing non-test stream: {stream}")
+            request(f"/_data_stream/{stream}", "DELETE")
+            streams_deleted.append(stream)
+        templates = request("/_index_template").get("index_templates", [])
+        for template in sorted(entry["name"] for entry in templates):
+            if template.startswith(WAM_TEST_TEMPLATE_PREFIX):
+                request(f"/_index_template/{template}", "DELETE")
+                streams_deleted.append(f"template:{template}")
+        print(json.dumps({"deleted_test_streams": streams_deleted}, indent=2))
 
     indices = request("/_cat/indices?format=json&h=index")
     names = sorted({entry["index"] for entry in indices})

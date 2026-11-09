@@ -9,8 +9,107 @@ USER = os.environ.get("WAM_USER", "admin")
 PW = os.environ.get("WAM_PW", "")
 OS = os.environ.get("WAM_INDEXER", "https://localhost:9200").rstrip("/")
 API = os.environ.get("WAM_API", "https://localhost/api/wazuh_alert_manager").rstrip("/")
-SRC = os.environ.get("WAM_BENCH_SOURCE_INDEX", "wazuh-alerts-4.x-wam-benchmark")
+# WAM_BENCH_PROFILE=wazuh4 (default) injects 4.x-shaped alerts into a plain
+# test index. WAM_BENCH_PROFILE=wazuh5 injects Wazuh 5.0-shaped findings into a
+# plugin-owned TEST data stream (wazuh-findings-v5-wam-benchmark), whose
+# backing indices satisfy the plugin's approved 5.0 source matcher. Native
+# Wazuh streams are never written.
+PROFILE = os.environ.get("WAM_BENCH_PROFILE", "wazuh4")
+if PROFILE not in ("wazuh4", "wazuh5"):
+    raise SystemExit("WAM_BENCH_PROFILE must be wazuh4 or wazuh5")
+SRC = os.environ.get("WAM_BENCH_SOURCE_INDEX", "wazuh-findings-v5-wam-benchmark" if PROFILE == "wazuh5" else "wazuh-alerts-4.x-wam-benchmark")
 ALERTS, CASES = "wazuh-alert-status-v2-read", "wazuh-alert-manager-v2-cases-read"
+
+# Mapping for plugin-owned Wazuh 5.0-shaped TEST streams (shared with
+# e2e/seed_findings_v5.py). Mirrors the fields the plugin reads from a live
+# rc2 finding: wazuh.agent.*, wazuh.rule.* (label level), ECS entities,
+# event.index/event.doc_id provenance, nanosecond @timestamp.
+V5_TEST_MAPPINGS = {
+    "dynamic": True,
+    "properties": {
+        "@timestamp": {"type": "date_nanos"},
+        "message": {"type": "keyword", "ignore_above": 2048},
+        "source": {"properties": {"ip": {"type": "ip"}, "port": {"type": "long"}, "user": {"properties": {"name": {"type": "keyword"}}}}},
+        "destination": {"properties": {"ip": {"type": "ip"}, "port": {"type": "long"}, "user": {"properties": {"name": {"type": "keyword"}}}}},
+        "user": {"properties": {"name": {"type": "keyword"}}},
+        "process": {"properties": {"name": {"type": "keyword"}, "pid": {"type": "long"}}},
+        "host": {"properties": {"hostname": {"type": "keyword"}}},
+        "event": {"properties": {
+            "index": {"type": "keyword"}, "doc_id": {"type": "keyword"}, "kind": {"type": "keyword"},
+            "category": {"type": "keyword"}, "type": {"type": "keyword"}, "original": {"type": "keyword", "ignore_above": 4096},
+        }},
+        "wazuh": {"properties": {
+            "agent": {"properties": {
+                "id": {"type": "keyword"}, "name": {"type": "keyword"}, "groups": {"type": "keyword"}, "version": {"type": "keyword"},
+                "host": {"properties": {"hostname": {"type": "keyword"}, "ip": {"type": "ip"}}},
+            }},
+            "rule": {"properties": {
+                "id": {"type": "keyword"}, "title": {"type": "keyword"}, "level": {"type": "keyword"}, "tags": {"type": "keyword"},
+                "mitre": {"properties": {"id": {"type": "keyword"}, "tactic": {"type": "keyword"}, "technique": {"type": "keyword"}}},
+            }},
+            "cluster": {"properties": {"node": {"type": "keyword"}, "name": {"type": "keyword"}}},
+            "integration": {"properties": {"name": {"type": "keyword"}, "category": {"type": "keyword"}}},
+            "protocol": {"properties": {"location": {"type": "keyword"}}},
+            "space": {"properties": {"name": {"type": "keyword"}}},
+        }},
+    },
+}
+V5_TEST_TEMPLATE_PREFIX = "wam-e2e-"
+
+
+def severity_label(level):
+    """Same bands the plugin uses (common/severity.ts): 12+ critical, 7-11 high, 4-6 medium, else low."""
+    level = int(level)
+    return "critical" if level >= 12 else "high" if level >= 7 else "medium" if level >= 4 else "low"
+
+
+def to_finding(doc):
+    """Translate a 4.x benchmark alert into the equivalent Wazuh 5.0 finding shape."""
+    data = doc.get("data", {})
+    finding = {
+        "@timestamp": doc["@timestamp"],
+        "message": doc.get("full_log"),
+        "event": {"kind": "event", "category": ["intrusion_detection"], "type": ["info"], "original": doc.get("full_log")},
+        "host": {"hostname": doc["agent"]["name"]},
+        "wazuh": {
+            "agent": {"id": doc["agent"]["id"], "name": doc["agent"]["name"], "groups": ["default"], "version": "v5.0.0",
+                      "host": {"hostname": doc["agent"]["name"], "ip": doc["agent"]["ip"]}},
+            "rule": {"id": doc["rule"]["id"], "title": doc["rule"]["description"], "level": severity_label(doc["rule"]["level"]),
+                     "tags": [severity_label(doc["rule"]["level"])] + doc["rule"]["groups"], "mitre": doc["rule"]["mitre"], "status": "stable"},
+            "cluster": {"node": "node01", "name": doc["manager"]["name"]},
+            "integration": {"name": doc["decoder"]["name"], "category": "wam-benchmark"},
+            "protocol": {"location": doc["location"]},
+            "space": {"name": "standard"},
+        },
+    }
+    if "srcip" in data or "srcport" in data or "srcuser" in data:
+        finding["source"] = {**({"ip": data["srcip"]} if "srcip" in data else {}),
+                             **({"port": data["srcport"]} if "srcport" in data else {}),
+                             **({"user": {"name": data["srcuser"]}} if "srcuser" in data else {})}
+    if "dstip" in data or "dstport" in data or "dstuser" in data:
+        finding["destination"] = {**({"ip": data["dstip"]} if "dstip" in data else {}),
+                                  **({"port": data["dstport"]} if "dstport" in data else {}),
+                                  **({"user": {"name": data["dstuser"]}} if "dstuser" in data else {})}
+    if "srcuser" in data:
+        finding["user"] = {"name": data["srcuser"]}
+    if isinstance(data.get("process"), dict) and data["process"].get("name"):
+        finding["process"] = {"name": data["process"]["name"]}
+    return finding
+
+
+def ensure_v5_stream(name):
+    """Create the plugin-owned TEST template + data stream (idempotent)."""
+    osreq(f"/_index_template/{V5_TEST_TEMPLATE_PREFIX}{name}", {
+        "index_patterns": [f"{name}*"], "data_stream": {}, "priority": 500,
+        # Wazuh's own finding streams raise max_docvalue_fields_search; the
+        # dashboard's wazuh-findings-v5* Discover view requests >100 docvalue
+        # fields, so a test stream without this setting makes shards fail there.
+        "template": {"settings": {"number_of_shards": 1, "number_of_replicas": 0, "index.max_docvalue_fields_search": 500}, "mappings": V5_TEST_MAPPINGS},
+        "_meta": {"owner": "wazuh-alert-manager test tooling", "purpose": "plugin test stream; not Wazuh data"},
+    }, "PUT")
+    try: osreq(f"/_data_stream/{name}", method="PUT")
+    except RuntimeError as error:
+        if "resource_already_exists_exception" not in str(error): raise
 
 EXPECTED = {
     "total_synced": 100000,
@@ -55,7 +154,10 @@ def count(index, query):
 
 def term(field, value): return {"term": {field: value}}
 def must(*clauses): return {"bool": {"must": list(clauses)}}
-def scoped(*clauses): return must(term("source_index", SRC), *clauses)
+def scoped(*clauses):
+    # 4.x: the plain test index name. 5.0: any backing generation of the test stream.
+    source = {"prefix": {"source_index": f".ds-{SRC}-"}} if PROFILE == "wazuh5" else term("source_index", SRC)
+    return must(source, *clauses)
 
 
 def group(group_id, predicates):
@@ -180,6 +282,14 @@ def corpus():
 
 
 def create_source():
+    if PROFILE == "wazuh5":
+        if not SRC.startswith("wazuh-findings-v5-wam-"):
+            raise RuntimeError(f"Refusing to recreate a non-test stream: {SRC}")
+        try: osreq(f"/_data_stream/{SRC}", method="DELETE")
+        except RuntimeError as error:
+            if "(404)" not in str(error): raise
+        ensure_v5_stream(SRC)
+        return
     try: osreq(f"/{SRC}", method="DELETE")
     except RuntimeError as error:
         if "(404)" not in str(error): raise
@@ -196,15 +306,20 @@ def create_source():
 def send_bulk(lines):
     result = req(OS, "/_bulk", b"\n".join(lines) + b"\n", "POST", "application/x-ndjson")
     if result.get("errors"):
-        failures = [i for i in result.get("items", []) if i.get("index", {}).get("error")]
+        failures = [i for i in result.get("items", []) if (i.get("index") or i.get("create") or {}).get("error")]
         raise RuntimeError(f"Bulk failures: {failures[:2]}")
 
 
 def inject(chunk_size):
     create_source(); started = time.perf_counter(); lines = []; written = 0
     for doc_id, doc in corpus():
-        lines += [json.dumps({"index": {"_index": SRC, "_id": doc_id}}, separators=(",", ":")).encode(),
-                  json.dumps(doc, separators=(",", ":")).encode()]
+        if PROFILE == "wazuh5":
+            # Data streams accept only create operations.
+            lines += [json.dumps({"create": {"_index": SRC, "_id": doc_id}}, separators=(",", ":")).encode(),
+                      json.dumps(to_finding(doc), separators=(",", ":")).encode()]
+        else:
+            lines += [json.dumps({"index": {"_index": SRC, "_id": doc_id}}, separators=(",", ":")).encode(),
+                      json.dumps(doc, separators=(",", ":")).encode()]
         written += 1
         if written % chunk_size == 0: send_bulk(lines); lines = []
     if lines: send_bulk(lines)
