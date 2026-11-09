@@ -46,6 +46,12 @@ export const AboutView: React.FC<{ apiService: AlertsApiService }> = ({ apiServi
     { title: 'Server build ID', description: <code>{server.buildId}</code> },
     { title: 'Built at', description: server.builtAt },
     { title: 'Target OpenSearch Dashboards', description: server.targetOsdVersion },
+    {
+      title: 'Target Wazuh',
+      description: server.targetWazuhVersion
+        ? `${server.targetWazuhVersion} (reads ${server.targetWazuhMajor === 5 ? 'wazuh-findings-v5-* data streams' : 'wazuh-alerts-* indices'}, read only)`
+        : 'unknown',
+    },
     { title: 'Bundle state', description: <EuiBadge color={matches ? 'success' : 'warning'}>{matches ? 'Current' : 'Update available'}</EuiBadge> },
   ] : [];
 

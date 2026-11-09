@@ -18,6 +18,9 @@ export interface BuildInfo {
   buildId: string;
   builtAt: string;
   targetOsdVersion: string;
+  /** Wazuh release this build targets (4.x reads alerts, 5.0 reads findings). */
+  targetWazuhVersion?: string;
+  targetWazuhMajor?: number;
 }
 
 export interface AutomationDlqItem {
@@ -66,8 +69,28 @@ export interface AutomationDlqPage {
   nextCursor: string | null;
 }
 
+export type SourceFamily = 'wazuh4_alerts' | 'wazuh5_findings';
+
+/** Which native Wazuh storage this build reads and whether it is reachable. */
+export interface SourceHealth {
+  status: 'ready' | 'waiting' | 'blocked' | 'unknown';
+  family: SourceFamily | null;
+  pattern: string | null;
+  mode: 'auto' | SourceFamily | null;
+  eligible: SourceFamily[];
+  reason: string;
+  probe?: { indices: number; dataStreams: number; aliases: number; timestampMapped: boolean | null } | null;
+  checkedAt?: string | null;
+  build?: { targetWazuhVersion: string; targetOsdVersion: string };
+  nativeReadOnly: boolean;
+}
+
 export interface SystemHealth {
+  /** false when the server could not create its own stores on start. */
+  provisioned?: boolean;
   counts?: Record<string, number | null>;
+  sourcePattern?: string;
+  source?: SourceHealth | null;
   sync?: {
     completed_at?: string;
     updated_at?: string;

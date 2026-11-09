@@ -172,7 +172,7 @@ export const SyncSettingsView: React.FC<Props> = ({ apiService, onToast }) => {
           <EuiFlexItem>
             <EuiTitle size="xxs"><h4>Sync schedule</h4></EuiTitle>
             <EuiText size="xs" color="subdued">
-              Native <code>wazuh-alerts-*</code> indices remain read only. Changes take effect after the current cycle without restarting Dashboards.
+              Native Wazuh storage (4.x <code>wazuh-alerts-*</code>, 5.0 <code>wazuh-findings-v5-*</code>) remains read only. Changes take effect after the current cycle without restarting Dashboards.
             </EuiText>
           </EuiFlexItem>
         </EuiFlexGroup>

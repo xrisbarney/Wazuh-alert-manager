@@ -26,6 +26,7 @@ import { SettingsView } from './settings_view';
 import { ReportsView } from './reports_view';
 import { PLUGIN_BUILD_ID } from '../../common';
 import { BuildInfo } from '../services/api';
+import { TerminologyContext, terminologyFor } from '../terminology';
 
 export type AppSection = 'workbench' | 'reporting';
 
@@ -50,6 +51,7 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 
   const [jumpToCaseId, setJumpToCaseId] = useState<string | undefined>(initialParams.get('case') || undefined);
   const [openAlertId, setOpenAlertId] = useState<string | undefined>(initialParams.get('alert') || undefined);
   const [serverBuild, setServerBuild] = useState<BuildInfo | null>(null);
+  const terms = terminologyFor(serverBuild);
 
   const apiService = React.useMemo(() => new AlertsApiService(coreStart.http), [coreStart.http]);
 
@@ -102,7 +104,7 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 
   };
 
   return (
-    <>
+    <TerminologyContext.Provider value={terms}>
       <EuiPage paddingSize="m" className="wamApp">
         <EuiPageBody>
           {serverBuild && serverBuild.buildId !== PLUGIN_BUILD_ID && (
@@ -135,12 +137,12 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 
                   </EuiFlexItem>
                   <EuiFlexItem>
                     <EuiTitle size="s"><h1>Security operations workbench</h1></EuiTitle>
-                    <EuiText size="s" color="subdued">Triage alerts, coordinate investigations, and automate repeatable decisions.</EuiText>
+                    <EuiText size="s" color="subdued">Triage {terms.units}, coordinate investigations, and automate repeatable decisions.</EuiText>
                   </EuiFlexItem>
                 </EuiFlexGroup>
                 <EuiSpacer size="m" />
                 <EuiTabs className="wamWorkbenchTabs">
-                  <EuiTab isSelected={activeTab === 'alerts'} onClick={() => selectTab('alerts')}>Alerts</EuiTab>
+                  <EuiTab isSelected={activeTab === 'alerts'} onClick={() => selectTab('alerts')}>{terms.Units}</EuiTab>
                   <EuiTab isSelected={activeTab === 'cases'} onClick={() => selectTab('cases')}>Cases</EuiTab>
                   <EuiTab isSelected={activeTab === 'settings'} onClick={() => selectTab('settings')}>Settings</EuiTab>
                 </EuiTabs>
@@ -178,6 +180,6 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 
       </EuiPage>
 
       <EuiGlobalToastList className="wamGlobalToasts" toasts={toasts} dismissToast={removeToast} toastLifeTimeMs={6000} />
-    </>
+    </TerminologyContext.Provider>
   );
 };

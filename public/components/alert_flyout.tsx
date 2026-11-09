@@ -1,3 +1,4 @@
+import { useTerminology } from '../terminology';
 import React, { useMemo, useState } from 'react';
 import {
   EuiFlyout,
@@ -71,7 +72,13 @@ function flattenFields(value: any, operational: boolean, prefix = '', rows: Fiel
   return rows;
 }
 
-export const AlertFlyout: React.FC<Props> = ({
+export const AlertFlyout: React.FC<Props> = (props) => {
+  const terms = useTerminology();
+  return <AlertFlyoutInner {...props} terms={terms} />;
+};
+
+const AlertFlyoutInner: React.FC<Props & { terms: ReturnType<typeof useTerminology> }> = ({
+  terms,
   alert,
   apiService,
   updating,
@@ -113,7 +120,7 @@ export const AlertFlyout: React.FC<Props> = ({
         <EuiFlexGroup alignItems="center" gutterSize="s" responsive={false}>
           <EuiFlexItem>
             <EuiTitle size="m">
-              <h2 id="alert-details-flyout">Alert details</h2>
+              <h2 id="alert-details-flyout">{terms.Unit} details</h2>
             </EuiTitle>
           </EuiFlexItem>
           <EuiFlexItem grow={false}>
@@ -159,7 +166,12 @@ export const AlertFlyout: React.FC<Props> = ({
 
                     <EuiDescriptionListTitle>Rule</EuiDescriptionListTitle>
                     <EuiDescriptionListDescription>
-                      {alert._source.rule?.description} (Level {alert._source.rule?.level})
+                      {alert._source.rule?.description}{' '}
+                      {typeof alert._source.rule?.level === 'number'
+                        ? `(Level ${alert._source.rule.level})`
+                        : alert._source.severity_label
+                        ? `(Severity ${alert._source.severity_label})`
+                        : ''}
                     </EuiDescriptionListDescription>
 
                     <EuiDescriptionListTitle>Manager</EuiDescriptionListTitle>
@@ -246,7 +258,7 @@ export const AlertFlyout: React.FC<Props> = ({
             },
             {
               id: 'related',
-              name: 'Related alerts',
+              name: `Related ${terms.units}`,
               content: (
                 <div>
                   <EuiSpacer size="m" />

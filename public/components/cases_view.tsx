@@ -1,3 +1,4 @@
+import { useTerminology } from '../terminology';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   EuiBasicTable,
@@ -38,6 +39,7 @@ interface Props {
 }
 
 export const CasesView: React.FC<Props> = ({ apiService, onToast, openCaseId, onOpenAlert, onCaseFlyoutClosed }) => {
+  const terms = useTerminology();
   const [cases, setCases] = useState<Case[]>([]);
   const [totalCases, setTotalCases] = useState(0);
   const [summary, setSummary] = useState({ open: 0, in_progress: 0, closed: 0, total: 0 });
@@ -210,7 +212,7 @@ export const CasesView: React.FC<Props> = ({ apiService, onToast, openCaseId, on
     { field: 'status', name: 'Status', sortable: true, render: (s: CaseStatus) => <StatusBadge status={s} /> },
     {
       field: 'evidence_count',
-      name: 'Alerts',
+      name: terms.Units,
       render: (count: number | undefined, caseDoc: Case) => count ?? caseDoc.alert_ids?.length ?? 0,
     },
     { field: 'assigned_to', name: 'Assigned to', sortable: true, render: (v: string | null) => v || 'Unassigned' },
@@ -399,7 +401,7 @@ export const CasesView: React.FC<Props> = ({ apiService, onToast, openCaseId, on
           title={<h2>No cases found</h2>}
           body={
             <p>
-              No cases matched your filters. Select alerts in the Alerts tab and use "Create case from selected" to
+              No cases matched your filters. Select {terms.units} in the {terms.Units} tab and use "Create case from selected" to
               start one, or "Add to case" to link them to an existing one.
             </p>
           }

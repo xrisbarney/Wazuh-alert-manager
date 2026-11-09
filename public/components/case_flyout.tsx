@@ -1,3 +1,4 @@
+import { useTerminology } from '../terminology';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   EuiFlyout,
@@ -86,6 +87,7 @@ function describeCaseUpdate(payload: Record<string, any>): string {
 }
 
 export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onError, onToast, onChanged, onOpenAlert }) => {
+  const terms = useTerminology();
   const [loading, setLoading] = useState(true);
   const [caseDoc, setCaseDoc] = useState<Case | null>(null);
   const [alerts, setAlerts] = useState<Array<Alert & { _evidence?: any }>>([]);
@@ -477,7 +479,7 @@ export const CaseFlyout: React.FC<Props> = ({ caseId, apiService, onClose, onErr
             },
             {
               id: 'alerts',
-              name: `Linked alerts (${evidenceTotal})`,
+              name: `Linked ${terms.units} (${evidenceTotal})`,
               content: (
                 <div>
                   <EuiSpacer size="m" />

@@ -880,7 +880,7 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
                 {matchField('Rule groups', 'ruleGroups', 'ruleGroupsMode', 'e.g. authentication_failed, pam')}
                 {matchField('Rule IDs', 'ruleIds', 'ruleIdsMode', 'e.g. 5710, 5716')}
                 {matchField('Agents', 'agentNames', 'agentNamesMode', 'Any agent')}
-                <EuiFormRow label="Minimum level"><EuiFieldNumber min={0} max={16} value={editing.match?.minLevel ?? ''} onChange={(event) => updateMatch({ minLevel: event.target.value === '' ? undefined : Number(event.target.value) })} /></EuiFormRow>
+                <EuiFormRow label="Minimum level" helpText="Wazuh 4.x rule level. Wazuh 5.0 findings carry a severity label instead; the floor applies through its band (0-3 low, 4-6 medium, 7-11 high, 12+ critical)."><EuiFieldNumber min={0} max={16} value={editing.match?.minLevel ?? ''} onChange={(event) => updateMatch({ minLevel: event.target.value === '' ? undefined : Number(event.target.value) })} /></EuiFormRow>
                 {!isBurst && <EuiCallOut size="s" color="primary" iconType="iInCircle" title="All-of is disabled for per-alert triggers">All-of means co-occurrence on the same entity within a burst window. Live per-alert evaluation behaves as Any, so the editor does not offer a misleading All selection.</EuiCallOut>}
                 {isMatchAll(editing) && (
                   <>

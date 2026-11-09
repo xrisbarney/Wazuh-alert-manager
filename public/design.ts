@@ -7,16 +7,15 @@
 // state of most rows - leaving nothing to make a genuinely critical row stand
 // out. Colours here are EUI semantic tokens only; never a hardcoded hex.
 
-export type SeverityBand = 'critical' | 'high' | 'medium' | 'low';
+import { bandFromLabel, bandFromLevel, SeverityBand as SharedSeverityBand } from '../common/severity';
 
-// Thresholds standardised on the SLA policy already used server-side
-// (server/routes/reports.ts): Critical >=12, High 7-11, Medium 4-6, Low 0-3.
-export function severityBand(level: number | null | undefined): SeverityBand {
-  const l = typeof level === 'number' ? level : 0;
-  if (l >= 12) return 'critical';
-  if (l >= 7) return 'high';
-  if (l >= 4) return 'medium';
-  return 'low';
+export type SeverityBand = SharedSeverityBand;
+
+// Thresholds live in common/severity.ts (shared with rule matching, filters
+// and the SLA policy): Critical >=12, High 7-11, Medium 4-6, Low 0-3. A Wazuh
+// 5.0 finding has no number, only a label; the label decides its band.
+export function severityBand(level: number | null | undefined, label?: string | null): SeverityBand {
+  return bandFromLevel(level) ?? bandFromLabel(label) ?? 'low';
 }
 
 export const SEVERITY_LABEL: Record<SeverityBand, string> = {
@@ -24,6 +23,7 @@ export const SEVERITY_LABEL: Record<SeverityBand, string> = {
   high: 'High',
   medium: 'Medium',
   low: 'Low',
+  informational: 'Info',
 };
 
 // The warm/emphasis ramp belongs to severity alone: danger -> warning -> grey ->
@@ -33,6 +33,7 @@ export const SEVERITY_BADGE_COLOR: Record<SeverityBand, string> = {
   high: 'warning',
   medium: 'default',
   low: 'hollow',
+  informational: 'hollow',
 };
 
 // Case severity uses the same ramp keyed by name.

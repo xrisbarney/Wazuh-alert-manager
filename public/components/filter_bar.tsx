@@ -210,6 +210,9 @@ export const FilterBar: React.FC<Props> = ({
                   <EuiFilterButton
                     key={o.value}
                     hasActiveFilters={active}
+                    isSelected={active}
+                    className={`wamStatusFilter wamStatusFilter--${o.value}${active ? ' wamStatusFilter--active' : ''}`}
+                    data-test-subj={`wamStatusFilter-${o.value}`}
                     onClick={() =>
                       onChange({
                         ...filters,

@@ -1,3 +1,4 @@
+import { useTerminology } from '../terminology';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   EuiFlexGroup,
@@ -68,6 +69,7 @@ const isPartialAlertUpdate = (result: BulkAlertUpdateResponse) =>
   Boolean(result.linkage?.some((item) => !item.ok));
 
 export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, openAlertId, onOpenAlertHandled }) => {
+  const terms = useTerminology();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   // case_id -> case title, resolved lazily so the Case column shows a readable
   // name instead of a raw id.
@@ -495,7 +497,7 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
       name: 'Severity',
       width: '120px',
       sortable: true,
-      render: (level: number) => <SeverityBadge level={level} />,
+      render: (level: number, row: Alert) => <SeverityBadge level={level} label={row._source?.severity_label} />,
     },
     {
       field: '_source',
@@ -557,7 +559,7 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     <>
       <EuiFlexGroup alignItems="center" justifyContent="spaceBetween" gutterSize="m" wrap>
         <EuiFlexItem grow={false}>
-          <EuiTitle size="s"><h2>Alert queue</h2></EuiTitle>
+          <EuiTitle size="s"><h2>{terms.Unit} queue</h2></EuiTitle>
           <EuiText size="s" color="subdued">Prioritized triage with explicit query and time-range controls.</EuiText>
         </EuiFlexItem>
         <EuiFlexItem grow={false}>

@@ -1,3 +1,4 @@
+import { useTerminology } from '../terminology';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   EuiBadge,
@@ -305,11 +306,15 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
 
   if (loading && !health && !lifecycleSettings && !capabilities) return <EuiLoadingSpinner size="xl" />;
   if (!health && !loading && !lifecycleSettings && !capabilities) return <EuiCallOut color="danger" iconType="alert" title="Storage health is unavailable"><p>{loadError || 'The server returned no health data.'}</p><EuiButton size="s" iconType="refresh" onClick={load} isLoading={loading}>Retry</EuiButton></EuiCallOut>;
+  const terms = useTerminology();
   const counts = health?.counts || {};
   const migration = health?.migration;
+  const source = health?.source || null;
+  const sourceFamilyLabel = (family: string | null | undefined) =>
+    family === 'wazuh5_findings' ? 'Wazuh 5.0 findings' : family === 'wazuh4_alerts' ? 'Wazuh 4.x alerts' : 'an unknown source';
   const canManageLifecycle = Boolean(capabilities?.canManageLifecycle);
   const rows = [
-    { store: 'Operational alerts', alias: 'wazuh-alert-status-v2-read', documents: counts.alerts },
+    { store: `Operational ${terms.units}`, alias: 'wazuh-alert-status-v2-read', documents: counts.alerts },
     { store: 'Cases', alias: 'wazuh-alert-manager-v2-cases-read', documents: counts.cases },
     { store: 'Evidence relationships', alias: 'wazuh-alert-manager-v2-evidence-read', documents: counts.evidence },
     { store: 'Activity events', alias: 'wazuh-alert-manager-v2-activity-read', documents: counts.activity },
@@ -322,9 +327,55 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
       <EuiTitle size="s"><h3>Storage and lifecycle</h3></EuiTitle>
       <EuiText size="s" color="subdued">
         Plugin writes are restricted to its <code>wazuh-alert-status-v2-*</code> and{' '}
-        <code>wazuh-alert-manager-v2-*</code> families. Native <code>wazuh-alerts-*</code> indices are read only.
+        <code>wazuh-alert-manager-v2-*</code> families. Native Wazuh storage (4.x <code>wazuh-alerts-*</code>,
+        5.0 <code>wazuh-events-v5-*</code> and <code>wazuh-findings-v5-*</code>) is read only.
       </EuiText>
       <EuiSpacer size="m" />
+      {health?.provisioned === false && (
+        <>
+          <EuiCallOut color="danger" iconType="alert" title="Plugin storage is not provisioned" data-test-subj="wamUnprovisioned">
+            <p>
+              The server could not create its <code>wazuh-alert-status-v2-*</code> / <code>wazuh-alert-manager-v2-*</code> stores on start,
+              so nothing is synced yet. Check the <code>wazuh-dashboard</code> log for <code>failed to provision indices</code>.
+              On Wazuh 5.0 the dashboard&apos;s indexer user needs the <code>wazuh_alert_manager_store</code> role (the installer grants it);
+              restart <code>wazuh-dashboard</code> after fixing permissions.
+            </p>
+          </EuiCallOut>
+          <EuiSpacer size="m" />
+        </>
+      )}
+      {source && (
+        <>
+          <EuiCallOut
+            size="s"
+            color={source.status === 'ready' ? 'success' : source.status === 'waiting' ? 'primary' : source.status === 'blocked' ? 'danger' : 'warning'}
+            iconType={source.status === 'ready' ? 'check' : source.status === 'blocked' ? 'alert' : 'clock'}
+            title={
+              source.status === 'ready'
+                ? `Reading ${sourceFamilyLabel(source.family)} from ${source.pattern}`
+                : source.status === 'waiting'
+                ? `Waiting for ${sourceFamilyLabel(source.family)} (${source.pattern})`
+                : source.status === 'blocked'
+                ? 'Sync is stopped: the native source could not be validated'
+                : 'Native source not checked yet'
+            }
+            data-test-subj="wamSourceStatus"
+          >
+            <p>{source.reason}</p>
+            <p>
+              Build target: Wazuh {source.build?.targetWazuhVersion || '?'} / OpenSearch Dashboards {source.build?.targetOsdVersion || '?'}.
+              Source mode: <code>{source.mode || 'auto'}</code>. Eligible: {source.eligible?.length ? source.eligible.map(sourceFamilyLabel).join(', ') : 'none'}.
+              {source.probe && (
+                <> Resolved {source.probe.dataStreams} data stream(s), {source.probe.indices} index(es), {source.probe.aliases} alias(es)
+                {source.probe.timestampMapped === false ? '; @timestamp is NOT mapped' : ''}.</>
+              )}
+              {source.checkedAt ? ` Last checked ${source.checkedAt}.` : ''}
+              {' '}Native stores are never written.
+            </p>
+          </EuiCallOut>
+          <EuiSpacer size="m" />
+        </>
+      )}
       {loadError && <><EuiCallOut color="warning" iconType="alert" title="Some storage data could not be refreshed"><p>{loadError}</p><EuiButton size="s" iconType="refresh" onClick={load} isLoading={loading}>Retry</EuiButton></EuiCallOut><EuiSpacer size="m" /></>}
       {!canManageLifecycle && (
         <>
@@ -482,7 +533,7 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
         </>
       )}
       <EuiFlexGroup gutterSize="m" wrap className="wamStorageStats">
-        <EuiFlexItem><EuiPanel hasBorder hasShadow={false}><EuiStat title={counts.alerts ?? '—'} description="Operational alerts" /></EuiPanel></EuiFlexItem>
+        <EuiFlexItem><EuiPanel hasBorder hasShadow={false}><EuiStat title={counts.alerts ?? '—'} description={`Operational ${terms.units}`} /></EuiPanel></EuiFlexItem>
         <EuiFlexItem><EuiPanel hasBorder hasShadow={false}><EuiStat title={counts.cases ?? '—'} description="Cases" /></EuiPanel></EuiFlexItem>
         <EuiFlexItem><EuiPanel hasBorder hasShadow={false}><EuiStat title={counts.evidence ?? '—'} description="Evidence relationships" /></EuiPanel></EuiFlexItem>
         <EuiFlexItem><EuiPanel hasBorder hasShadow={false}><EuiStat title={counts.activity ?? '—'} description="Activity events" /></EuiPanel></EuiFlexItem>

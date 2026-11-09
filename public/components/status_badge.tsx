@@ -19,8 +19,10 @@ export const StatusBadge: React.FC<{ status: AlertStatus | CaseStatus }> = ({ st
 // Alert severity derived from the rule level, badged with a label + the number
 // so colour is never the sole carrier of meaning (accessibility) and the exact
 // level is still visible.
-export const SeverityBadge: React.FC<{ level: number | null | undefined }> = ({ level }) => {
-  const band = severityBand(level);
+// A Wazuh 5.0 finding carries a severity label instead of a number; the badge
+// shows the band from the label and no numeric suffix.
+export const SeverityBadge: React.FC<{ level: number | null | undefined; label?: string | null }> = ({ level, label }) => {
+  const band = severityBand(level, label);
   return (
     <EuiBadge color={SEVERITY_BADGE_COLOR[band]}>
       {SEVERITY_LABEL[band]}
