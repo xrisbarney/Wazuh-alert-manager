@@ -34,6 +34,10 @@ export interface Alert {
   _index?: string;
   _raw_source?: Record<string, any> | null;
   _source_available?: boolean;
+  /** Wazuh 5.0: the underlying event a finding references (guarded second hop). */
+  _raw_event?: Record<string, any> | null;
+  _event_available?: boolean;
+  _source_family?: 'wazuh4_alerts' | 'wazuh5_findings' | null;
   _source: {
     agent?: {
       ip?: string;
@@ -46,8 +50,17 @@ export interface Alert {
     rule?: {
       id?: string;
       description?: string;
-      level?: number;
+      /** 4.x numeric level; null for 5.0 findings (see severity_label). */
+      level?: number | null;
     };
+    /** Which native family produced the record (absent on pre-v3 records). */
+    source_family?: 'wazuh4_alerts' | 'wazuh5_findings' | null;
+    source_profile_version?: number | null;
+    /** Wazuh 5.0 severity label, stored verbatim; null for 4.x alerts. */
+    severity_label?: string | null;
+    event_index?: string | null;
+    event_doc_id?: string | null;
+    space?: string | null;
     '@timestamp': string;
     status: AlertStatus;
     case_id?: string | null;

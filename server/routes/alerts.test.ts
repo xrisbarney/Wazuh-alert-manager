@@ -97,3 +97,74 @@ describe('related alert linking', () => {
     expect(request.body[4]).toEqual({ update: { _index: ALERT_INDEX, _id: 'a2' } });
   });
 });
+
+describe('alert hydration is guarded by the stored index family', () => {
+  const hydrate = async (stored: any, raw: Record<string, any>) => {
+    const handler = handlerFor('get', '/alerts/{id}');
+    const client = {
+      search: jest.fn(async () => ({ body: { hits: { hits: [{ _id: 'a1', _index: ALERT_INDEX, _source: stored }] } } })),
+      get: jest.fn(async ({ index, id }: any) => {
+        const key = `${index}/${id}`;
+        if (raw[key]) return { body: { _source: raw[key] } };
+        const error: any = new Error('not found'); error.meta = { statusCode: 404 }; throw error;
+      }),
+    };
+    const ok = jest.fn((value: any) => value);
+    const response = await handler(
+      { core: { opensearch: { client: { asCurrentUser: client } } } },
+      { params: { id: 'a1' } },
+      { ok, customError: jest.fn((v: any) => v), notFound: jest.fn((v: any) => v) }
+    );
+    return { client, body: ok.mock.calls[0]?.[0]?.body, response };
+  };
+
+  test('a 4.x alert hydrates from its exact wazuh-alerts-* index and takes no second hop', async () => {
+    const { client, body } = await hydrate(
+      { source_resolved: true, source_index: 'wazuh-alerts-4.x-2026.10.31', source_id: 'x1' },
+      { 'wazuh-alerts-4.x-2026.10.31/x1': { full_log: 'raw' } }
+    );
+    expect(client.get).toHaveBeenCalledTimes(1);
+    expect(body._raw_source).toEqual({ full_log: 'raw' });
+    expect(body._source_available).toBe(true);
+    expect(body._raw_event).toBeNull();
+    expect(body._source_family).toBe('wazuh4_alerts');
+  });
+
+  test('a 5.0 finding hydrates the finding, then its event only through the events matcher', async () => {
+    const { client, body } = await hydrate(
+      { source_resolved: true, source_index: '.ds-wazuh-findings-v5-security-000001', source_id: 'f1' },
+      {
+        '.ds-wazuh-findings-v5-security-000001/f1': { message: 'finding', event: { index: '.ds-wazuh-events-v5-security-000001', doc_id: 'e1' } },
+        '.ds-wazuh-events-v5-security-000001/e1': { event: { original: 'raw line' } },
+      }
+    );
+    expect(client.get).toHaveBeenCalledTimes(2);
+    expect(client.get).toHaveBeenLastCalledWith({ index: '.ds-wazuh-events-v5-security-000001', id: 'e1' });
+    expect(body._raw_event).toEqual({ event: { original: 'raw line' } });
+    expect(body._event_available).toBe(true);
+    expect(body._source_family).toBe('wazuh5_findings');
+  });
+
+  test('an event reference outside the events family is never followed', async () => {
+    const { client, body } = await hydrate(
+      { source_resolved: true, source_index: '.ds-wazuh-findings-v5-security-000001', source_id: 'f1' },
+      { '.ds-wazuh-findings-v5-security-000001/f1': { event: { index: '.kibana_1', doc_id: 'config:1' } } }
+    );
+    expect(client.get).toHaveBeenCalledTimes(1);
+    expect(body._raw_event).toBeNull();
+    expect(body._event_available).toBe(false);
+  });
+
+  test('a stored index outside both families is never read, even if marked resolved', async () => {
+    for (const index of ['.kibana_1', 'wazuh-alert-status-v2-000001', 'wazuh-events-v5-security', '.ds-wazuh-events-v5-security-000001', 'wazuh-alerts-*']) {
+      const { client, body } = await hydrate(
+        { source_resolved: true, source_index: index, source_id: 'x' },
+        { [`${index}/x`]: { leaked: true } }
+      );
+      expect(client.get).not.toHaveBeenCalled();
+      expect(body._raw_source).toBeNull();
+      expect(body._source_available).toBe(false);
+      expect(body._source_family).toBeNull();
+    }
+  });
+});

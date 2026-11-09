@@ -10,7 +10,8 @@ import {
   EVIDENCE_WRITE_ALIAS,
   META_INDEX,
 } from '../../common';
-import { ensureMappingAdditions, ensureRolloverFamily, isResourceAlreadyExists } from './provision';
+import { ensureIndex, ensureMappingAdditions, ensureRolloverFamily, isResourceAlreadyExists } from './provision';
+import { alertStatusMapping, metaMapping } from './mappings';
 
 const logger: any = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
 
@@ -357,7 +358,7 @@ describe('mapping upgrades', () => {
 
   test('fails startup when a required mapped field is absent', async () => {
     const client: any = {
-      get: jest.fn().mockResolvedValue({ body: { _source: { version: 12 } } }),
+      get: jest.fn().mockResolvedValue({ body: { _source: { version: 13 } } }),
       index: jest.fn(),
       indices: {
         exists: jest.fn().mockResolvedValue({ body: true }),
@@ -372,7 +373,7 @@ describe('mapping upgrades', () => {
 
   test('fails startup when an existing generation allows dynamic fields', async () => {
     const client: any = {
-      get: jest.fn().mockResolvedValue({ body: { _source: { version: 12 } } }),
+      get: jest.fn().mockResolvedValue({ body: { _source: { version: 13 } } }),
       index: jest.fn(),
       indices: {
         exists: jest.fn().mockResolvedValue({ body: true }),
@@ -393,5 +394,69 @@ describe('mapping upgrades', () => {
       meta: { statusCode: 400, body: { error: { type: 'mapper_parsing_exception' } } },
     })).toBe(false);
     expect(isResourceAlreadyExists({ meta: { statusCode: 400 } })).toBe(false);
+  });
+});
+
+describe('provisioning when the cluster blocks the create-index API (Wazuh 5.0)', () => {
+  const blocked = () => {
+    const error: any = new Error('index_create_block_exception: blocked by: [FORBIDDEN/10/cluster create-index blocked (api)];');
+    error.meta = { statusCode: 403, body: { error: { type: 'index_create_block_exception' } } };
+    return error;
+  };
+
+  function blockedClient() {
+    const created = new Set<string>();
+    return {
+      created,
+      indices: {
+        exists: jest.fn(async ({ index }: any) => ({ body: created.has(index) })),
+        existsAlias: jest.fn(async () => ({ body: false })),
+        getAlias: jest.fn(async () => ({ body: {} })),
+        create: jest.fn(async () => { throw blocked(); }),
+        putIndexTemplate: jest.fn(async () => ({ body: { acknowledged: true } })),
+        deleteIndexTemplate: jest.fn(async () => ({ body: { acknowledged: true } })),
+        updateAliases: jest.fn(async () => ({})),
+        getMapping: jest.fn(async ({ index }: any) => ({ body: { [index]: { mappings: { dynamic: false, properties: alertStatusMapping.properties } } } })),
+        putMapping: jest.fn(async () => ({})),
+      },
+      index: jest.fn(async ({ index }: any) => { created.add(index); return { body: { result: 'created' } }; }),
+      delete: jest.fn(async () => ({ body: { result: 'deleted' } })),
+      get: jest.fn().mockRejectedValue({ meta: { statusCode: 404 } }),
+    } as any;
+  }
+
+  test('a rollover family is bootstrapped through a temporary plugin-owned template and one deleted write', async () => {
+    const client = blockedClient();
+    await ensureRolloverFamily(client, 'wazuh-alert-status-v2-000001', 'wazuh-alert-status-v2-read', 'wazuh-alert-status-v2-write', alertStatusMapping, logger);
+
+    expect(client.indices.create).toHaveBeenCalledTimes(1);
+    const template = client.indices.putIndexTemplate.mock.calls[0][0];
+    expect(template.name).toBe('wazuh-alert-manager-v2-template-wazuh-alert-status-v2-000001');
+    expect(template.body.index_patterns).toEqual(['wazuh-alert-status-v2-000001']);
+    expect(template.body.template.mappings).toBe(alertStatusMapping);
+    expect(template.body.template.aliases).toEqual({
+      'wazuh-alert-status-v2-read': {},
+      'wazuh-alert-status-v2-write': { is_write_index: true },
+    });
+    expect(client.index).toHaveBeenCalledWith(expect.objectContaining({ index: 'wazuh-alert-status-v2-000001', id: '_wam_bootstrap', refresh: true }));
+    expect(client.delete).toHaveBeenCalledWith(expect.objectContaining({ index: 'wazuh-alert-status-v2-000001', id: '_wam_bootstrap' }));
+    expect(client.indices.deleteIndexTemplate).toHaveBeenCalledWith({ name: template.name });
+    expect(client.indices.updateAliases).not.toHaveBeenCalled();
+  });
+
+  test('a singleton index is bootstrapped the same way and never writes outside plugin prefixes', async () => {
+    const client = blockedClient();
+    await ensureIndex(client, 'wazuh-alert-manager-v2-meta', metaMapping, logger);
+    expect(client.indices.putIndexTemplate.mock.calls[0][0].name).toBe('wazuh-alert-manager-v2-template-wazuh-alert-manager-v2-meta');
+    for (const call of [...client.index.mock.calls, ...client.delete.mock.calls]) {
+      expect(call[0].index).toMatch(/^wazuh-alert-(status|manager)-v2-/);
+    }
+  });
+
+  test('any other create failure is still fatal', async () => {
+    const client = blockedClient();
+    client.indices.create = jest.fn(async () => { const e: any = new Error('boom'); e.meta = { statusCode: 500, body: { error: { type: 'some_other_exception' } } }; throw e; });
+    await expect(ensureIndex(client, 'wazuh-alert-manager-v2-meta', metaMapping, logger)).rejects.toThrow('boom');
+    expect(client.indices.putIndexTemplate).not.toHaveBeenCalled();
   });
 });

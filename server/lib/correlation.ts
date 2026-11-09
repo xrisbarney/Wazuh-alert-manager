@@ -1,4 +1,5 @@
 import { CorrelationEntity, CorrelationRule } from '../../common';
+import { bandsAtOrAboveLevel, meetsMinLevel } from '../../common/severity';
 
 export type RuleMatchResult =
   | { supported: true; matched: boolean }
@@ -69,7 +70,20 @@ export function buildMatchFilters(match: CorrelationRule['match']): any[] {
   if (match.ruleGroups?.length) filter.push({ terms: { 'rule.groups': match.ruleGroups } });
   if (match.ruleIds?.length) filter.push({ terms: { 'rule.id': match.ruleIds.map(String) } });
   if (match.agentNames?.length) filter.push({ terms: { 'agent.name': match.agentNames } });
-  if (match.minLevel != null) filter.push({ range: { 'rule.level': { gte: match.minLevel } } });
+  // A numeric floor applies to 4.x `rule.level` directly and to 5.0 label-only
+  // records through the severity bands it covers (see common/severity.ts).
+  if (match.minLevel != null) {
+    const bands = bandsAtOrAboveLevel(match.minLevel);
+    filter.push({
+      bool: {
+        should: [
+          { range: { 'rule.level': { gte: match.minLevel } } },
+          ...(bands.length ? [{ terms: { severity_label: bands } }] : []),
+        ],
+        minimum_should_match: 1,
+      },
+    });
+  }
   return filter;
 }
 
@@ -93,7 +107,7 @@ export function evaluateAlertMatch(rule: CorrelationRule, source: any): RuleMatc
     return { supported: false, matched: false, reason: 'all_mode_requires_burst' };
   }
   const m = rule.match;
-  if (m.minLevel != null && !(Number(source?.rule?.level ?? 0) >= m.minLevel)) return { supported: true, matched: false };
+  if (m.minLevel != null && !meetsMinLevel(source, m.minLevel)) return { supported: true, matched: false };
   if (m.ruleIds?.length && !m.ruleIds.map(String).includes(String(source?.rule?.id))) {
     return { supported: true, matched: false };
   }

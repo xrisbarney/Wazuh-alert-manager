@@ -96,6 +96,8 @@ describe('source pagination', () => {
     client.transport = {
       request: jest
         .fn()
+        // v3: the source is resolved read-only before any PIT is opened.
+        .mockResolvedValueOnce({ body: { indices: [{ name: 'wazuh-alerts-4.x-2026.10.31' }], aliases: [], data_streams: [] } })
         .mockResolvedValueOnce({ body: { pit_id: 'transport-pit' } })
         .mockResolvedValueOnce({ body: { succeeded: true } }),
     };
@@ -103,11 +105,16 @@ describe('source pagination', () => {
     await runSyncOnce(client, config, logger, 'holder', 120);
 
     expect(client.transport.request).toHaveBeenNthCalledWith(1, {
+      method: 'GET',
+      path: '/_resolve/index/wazuh-alerts-*',
+      querystring: { expand_wildcards: 'open' },
+    });
+    expect(client.transport.request).toHaveBeenNthCalledWith(2, {
       method: 'POST',
       path: '/wazuh-alerts-*/_search/point_in_time',
       querystring: { keep_alive: '120s' },
     });
-    expect(client.transport.request).toHaveBeenNthCalledWith(2, {
+    expect(client.transport.request).toHaveBeenNthCalledWith(3, {
       method: 'DELETE',
       path: '/_search/point_in_time',
       body: { pit_id: ['transport-pit'] },

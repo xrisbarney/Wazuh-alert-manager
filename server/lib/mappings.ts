@@ -14,6 +14,16 @@ export const alertStatusMapping = {
     source_index: { type: 'keyword' },
     source_id: { type: 'keyword' },
     source_resolved: { type: 'boolean' },
+    // v3: which native family produced the record and how it was normalized.
+    // 4.x records: wazuh4_alerts / numeric rule.level / severity_label null.
+    // 5.0 records: wazuh5_findings / rule.level null / severity_label verbatim,
+    // plus the underlying event location for guarded lazy hydration.
+    source_family: { type: 'keyword' },
+    source_profile_version: { type: 'integer' },
+    severity_label: { type: 'keyword' },
+    event_index: { type: 'keyword' },
+    event_doc_id: { type: 'keyword' },
+    space: { type: 'keyword' },
     '@timestamp': { type: 'date' },
     ingested_at: { type: 'date' },
     state_version: { type: 'long' },
@@ -312,6 +322,13 @@ export const metaMapping = {
     window_from: { type: 'date' },
     window_to: { type: 'date' },
     pit_id: { type: 'keyword', index: false },
+    source_family: { type: 'keyword' },
+    document_type: { type: 'keyword' },
+    family: { type: 'keyword' },
+    pattern: { type: 'keyword' },
+    mode: { type: 'keyword' },
+    reason: { type: 'keyword', ignore_above: 1024 },
+    checked_at: { type: 'date' },
   },
 };
 

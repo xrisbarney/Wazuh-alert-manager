@@ -10,6 +10,13 @@
  * step instead of hand-editing JSON: it patches opensearch_dashboards.json
  * and package.json in place with the version you're building for.
  *
+ * It also records which Wazuh release the build targets. The manifest is
+ * validated strictly by OSD, so that record lives in package.json under
+ * "wazuhAlertManager.targetWazuhVersion" and is compiled into
+ * common/build_info.ts by scripts/generate-build-info.js. The plugin uses
+ * it at runtime to decide which native source family (4.x alerts or 5.0
+ * findings) a build may read from.
+ *
  * The plugin code itself only touches stable, documented OSD APIs
  * (core.http, core.opensearch.client, core.application.register, the
  * `data` plugin, @elastic/eui), so a rebuild is normally all a new target
@@ -17,7 +24,11 @@
  * actually been tested against.
  *
  * Usage:
- *   node scripts/set-target-version.js --osd-version 2.19.5 [--plugin-version 1.1.0]
+ *   node scripts/set-target-version.js --osd-version 2.19.5 [--plugin-version 1.1.0] [--wazuh-version 4.14.7]
+ *
+ * When --wazuh-version is omitted it is derived from
+ * supported-wazuh-versions.json (the newest Wazuh release that ships the
+ * requested OSD version).
  */
 const fs = require('fs');
 const path = require('path');
@@ -37,29 +48,59 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv.slice(2));
 if (!args['osd-version']) {
-  console.error('Usage: node scripts/set-target-version.js --osd-version <version> [--plugin-version <version>]');
+  console.error(
+    'Usage: node scripts/set-target-version.js --osd-version <version> [--plugin-version <version>] [--wazuh-version <version>]'
+  );
   process.exit(1);
 }
 
 const root = path.resolve(__dirname, '..');
 const manifestPath = path.join(root, 'opensearch_dashboards.json');
 const packagePath = path.join(root, 'package.json');
+const matrixPath = path.join(root, 'supported-wazuh-versions.json');
+
+function deriveWazuhVersion(osdVersion) {
+  const matrix = JSON.parse(fs.readFileSync(matrixPath, 'utf8'));
+  const matches = matrix.filter((entry) => entry.osdVersion === osdVersion);
+  if (!matches.length) return null;
+  // Prefer a final release over a prerelease for the same OSD version, then
+  // the newest Wazuh patch.
+  matches.sort((a, b) => {
+    if (Boolean(a.prerelease) !== Boolean(b.prerelease)) return a.prerelease ? 1 : -1;
+    return b.wazuhVersion.localeCompare(a.wazuhVersion, undefined, { numeric: true });
+  });
+  return matches[0].wazuhVersion;
+}
+
+const osdVersion = args['osd-version'];
+const wazuhVersion = args['wazuh-version'] || deriveWazuhVersion(osdVersion);
+if (!wazuhVersion) {
+  console.error(
+    `No Wazuh release in supported-wazuh-versions.json ships OSD ${osdVersion}; pass --wazuh-version explicitly.`
+  );
+  process.exit(1);
+}
+if (!/^\d+\.\d+\.\d+(-[0-9a-z.]+)?$/i.test(wazuhVersion)) {
+  console.error(`Invalid --wazuh-version '${wazuhVersion}' (expected e.g. 4.14.7 or 5.0.0-rc2).`);
+  process.exit(1);
+}
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-manifest.opensearchDashboardsVersion = args['osd-version'];
+manifest.opensearchDashboardsVersion = osdVersion;
 if (args['plugin-version']) {
   manifest.version = args['plugin-version'];
 }
 fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
+const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
 if (args['plugin-version']) {
-  const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
   pkg.version = args['plugin-version'];
-  fs.writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
 }
+pkg.wazuhAlertManager = { ...(pkg.wazuhAlertManager || {}), targetWazuhVersion: wazuhVersion };
+fs.writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
 
 console.log(
-  `Targeted opensearchDashboardsVersion=${args['osd-version']}` +
+  `Targeted opensearchDashboardsVersion=${osdVersion}, Wazuh ${wazuhVersion}` +
     (args['plugin-version'] ? `, plugin version=${args['plugin-version']}` : '')
 );
 console.log('Now run `yarn build` from inside <wazuh-dashboard>/plugins/wazuhAlertManager to produce the zip.');

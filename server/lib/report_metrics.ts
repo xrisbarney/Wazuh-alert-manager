@@ -1,4 +1,5 @@
 import { REPORTING_FIELD_VERSION, slaForLevel } from './reporting_fields';
+import { effectiveLevel } from '../../common/severity';
 
 export interface ReportHistoryEntry {
   timestamp: string;
@@ -173,7 +174,9 @@ export function deriveAlertReporting(
   throughMs: number = Number.POSITIVE_INFINITY
 ): Record<string, any> {
   const timing = deriveAlertTiming(source, activity, throughMs);
-  const level = source?.rule?.level != null ? Number(source.rule.level) : 0;
+  // 4.x: the numeric level. 5.0: the lowest level of the label's band, so a
+  // label never claims a stricter SLA tier than the equivalent 4.x alert.
+  const level = effectiveLevel(source) ?? 0;
   const tier = slaForLevel(level);
   const reporting: Record<string, any> = {
     first_assigned_at: timing.firstAssignedAt,

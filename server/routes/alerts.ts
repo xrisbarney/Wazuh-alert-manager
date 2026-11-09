@@ -1,6 +1,7 @@
 import { schema } from '@osd/config-schema';
 import { IRouter } from '../../../../src/core/server';
 import { API_ROOT, ALERT_STATUS_INDEX, ALERT_STATUSES } from '../../common';
+import { severityRangeClause } from '../../common/severity';
 import { getCurrentUsername } from '../lib/opensearch';
 import { APPEND_HISTORY_SCRIPT_SOURCE, buildHistoryEntry } from '../lib/history';
 import { resolveAlerts } from '../lib/index_resolution';
@@ -8,6 +9,8 @@ import { pushActivityBulk } from '../lib/activity';
 import { reconcileCaseEvidence } from '../lib/case_evidence_service';
 import { buildReportingUpdate, REPORTING_MERGE_SCRIPT } from '../lib/reporting_fields';
 import { resolveCase } from '../lib/case_index_resolution';
+import { isApprovedEvidenceIndex, isApprovedSourceIndex } from '../lib/index_namespace';
+import { sourceFamilyOfIndex, sourceProfile } from '../lib/source_profile';
 
 const filterQuerySchema = schema.object({
   statuses: schema.maybe(schema.string()), // csv
@@ -30,12 +33,10 @@ function buildBoolQuery(query: Record<string, any>, includeStatusFilter: boolean
   if (includeStatusFilter && query.statuses) {
     filter.push({ terms: { status: String(query.statuses).split(',').filter(Boolean) } });
   }
-  if (query.levelMin != null || query.levelMax != null) {
-    const range: any = {};
-    if (query.levelMin != null) range.gte = query.levelMin;
-    if (query.levelMax != null) range.lte = query.levelMax;
-    filter.push({ range: { 'rule.level': range } });
-  }
+  // Numeric bounds apply to 4.x rule.level and, through severity bands, to
+  // 5.0 label-only findings (see common/severity.ts).
+  const severityClause = severityRangeClause(query.levelMin, query.levelMax);
+  if (severityClause) filter.push(severityClause);
   if (query.ruleIds) {
     filter.push({ terms: { 'rule.id': String(query.ruleIds).split(',').filter(Boolean) } });
   }
@@ -326,15 +327,36 @@ export function defineAlertRoutes(router: IRouter) {
         const found = locations.get(id);
         if (!found) return response.notFound({ body: { message: 'Alert not found' } });
         let rawSource: any = null;
+        let rawEvent: any = null;
         const sourceIndex = found.source?.source_index;
         const sourceId = found.source?.source_id;
-        if (found.source?.source_resolved && sourceIndex?.startsWith('wazuh-alerts-') && sourceId) {
+        // Hydrate only from an exact physical index that the stored record's
+        // own family approves (4.x wazuh-alerts-*, 5.0 .ds-wazuh-findings-v5-*).
+        // The family comes from the index name itself, so records projected by
+        // either build stay readable after a platform transition, and a
+        // tampered or stale projection can never point the server elsewhere.
+        const family = typeof sourceIndex === 'string' ? sourceFamilyOfIndex(sourceIndex) : null;
+        const profile = family ? sourceProfile(family) : null;
+        if (found.source?.source_resolved && profile && sourceId && isApprovedSourceIndex(sourceIndex, profile)) {
           try {
             const raw: any = await client.get({ index: sourceIndex, id: sourceId });
             rawSource = raw.body?._source || null;
           } catch (e) {
             // Native retention may have expired. The compact operational
             // projection remains available and is explicitly marked below.
+          }
+          // 5.0: a finding references its underlying event. Follow it only
+          // when both parts pass the strict events backing-index matcher.
+          const eventIndex = rawSource?.event?.index ?? found.source?.event_index;
+          const eventDocId = rawSource?.event?.doc_id ?? found.source?.event_doc_id;
+          if (typeof eventIndex === 'string' && typeof eventDocId === 'string' && eventDocId &&
+              isApprovedEvidenceIndex(eventIndex, profile)) {
+            try {
+              const raw: any = await client.get({ index: eventIndex, id: eventDocId });
+              rawEvent = raw.body?._source || null;
+            } catch (e) {
+              // Event retention is independent of finding retention.
+            }
           }
         }
         return response.ok({
@@ -345,6 +367,9 @@ export function defineAlertRoutes(router: IRouter) {
             _source: found.source,
             _raw_source: rawSource,
             _source_available: Boolean(rawSource),
+            _raw_event: rawEvent,
+            _event_available: Boolean(rawEvent),
+            _source_family: family,
           },
         });
       } catch (e: any) {

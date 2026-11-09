@@ -8,12 +8,13 @@ import {
   reconcileAutomationAdmissions,
   recordAutomationEnqueueFailure,
 } from './automation_queue';
-import { assertManagedWriteTarget, assertSafeSourcePattern, isManagedPhysicalIndex } from './index_namespace';
+import { assertManagedWriteTarget, isManagedPhysicalIndex } from './index_namespace';
 import { resolveAlerts } from './index_resolution';
-import { projectOperationalAlert } from './operational_projection';
 import { loadSyncSettings } from './sync_settings';
+import { sourceAdapter } from './adapters/source_adapter';
+import { persistSourceState, resolveSource, syncStateDocId } from './source_runtime';
+import { SourceFamily } from './source_profile';
 
-const SYNC_STATE_DOC_ID = 'sync_state';
 const RETIRED_ALERT_DOC_PREFIX = 'retired-alert:';
 const MAX_RETIREMENT_RECORDS = 1000;
 const ARCHIVE_STATE_PRIORITY: Record<string, number> = { managed: 0, restored: 1, completed: 2, purging: 3, purged: 4 };
@@ -43,9 +44,9 @@ interface SyncState {
   pit_id?: string | null;
 }
 
-async function getSyncState(client: any, config: AlertManagerConfigType): Promise<SyncState> {
+async function getSyncState(client: any, config: AlertManagerConfigType, family: SourceFamily): Promise<SyncState> {
   try {
-    const res: any = await client.get({ index: META_INDEX, id: SYNC_STATE_DOC_ID });
+    const res: any = await client.get({ index: META_INDEX, id: syncStateDocId(family) });
     const source = res?.body?._source;
     if (source?.completed_at || source?.value) {
       return {
@@ -64,11 +65,11 @@ async function getSyncState(client: any, config: AlertManagerConfigType): Promis
   return { completed_at: new Date(Date.now() - lookbackMs).toISOString() };
 }
 
-async function setSyncState(client: any, state: SyncState) {
+async function setSyncState(client: any, family: SourceFamily, state: SyncState) {
   await client.index({
     index: assertManagedWriteTarget(META_INDEX),
-    id: SYNC_STATE_DOC_ID,
-    body: { ...state, value: state.completed_at, updated_at: new Date().toISOString() },
+    id: syncStateDocId(family),
+    body: { ...state, source_family: family, value: state.completed_at, updated_at: new Date().toISOString() },
   });
 }
 
@@ -230,28 +231,49 @@ export async function runSyncOnce(
   holderId: string,
   ttlSeconds: number
 ) {
-  assertSafeSourcePattern(config.sync.sourceIndexPattern);
+  // Decide which native family this build may read and whether it is there.
+  // Anything other than `ready` stops this tick safely and is surfaced in
+  // Storage Health; the plugin never falls back to another pattern.
+  const source = await resolveSource(client, config);
+  try {
+    await persistSourceState(client, source);
+  } catch (e: any) {
+    logger.debug(`wazuh-alert-manager sync: could not record source state: ${e.message}`);
+  }
+  if (source.status !== 'ready' || !source.family || !source.pattern) {
+    const message = `wazuh-alert-manager sync: source ${source.status}: ${source.reason}`;
+    if (source.status === 'blocked') logger.error(message);
+    else logger.info(message);
+    return;
+  }
+  const family = source.family;
+  const adapter = sourceAdapter(family);
+  if (config.sync.minRuleLevel != null && !adapter.supportsNumericLevelFilter) {
+    logger.debug(`wazuh-alert-manager sync: sync.minRuleLevel is ignored for ${family} (labelled severity)`);
+  }
   try {
     await reconcileAutomationAdmissions(client);
   } catch (e: any) {
     logger.error(`wazuh-alert-manager sync: automation admission reconciliation failed: ${e.message}`);
   }
-  const state = await getSyncState(client, config);
+  const state = await getSyncState(client, config, family);
   const overlapMs = config.sync.overlapSeconds * 1000;
   const windowFrom =
     state.window_from || new Date(new Date(state.completed_at).getTime() - overlapMs).toISOString();
   const windowTo = state.window_to || new Date().toISOString();
 
-  const must: any[] = [{ range: { '@timestamp': { gte: windowFrom, lte: windowTo } } }];
-  if (config.sync.minRuleLevel != null) {
-    must.push({ range: { 'rule.level': { gte: config.sync.minRuleLevel } } });
-  }
+  const query = adapter.buildQuery({
+    windowFrom,
+    windowTo,
+    minRuleLevel: config.sync.minRuleLevel ?? null,
+    minSeverityLabel: (config.sync as any).minSeverityLabel ?? null,
+  });
 
   const keepAlive = `${Math.max(ttlSeconds, 120)}s`;
   let pitId = state.pit_id || null;
   if (!pitId) {
     try {
-      const pit: any = await createSourcePit(client, config.sync.sourceIndexPattern, keepAlive);
+      const pit: any = await createSourcePit(client, source.pattern, keepAlive);
       pitId = pit?.body?.pit_id || pit?.body?.id;
       if (!pitId) throw new Error('OpenSearch returned no PIT id');
     } catch (e: any) {
@@ -266,12 +288,11 @@ export async function runSyncOnce(
       size: config.sync.batchSize,
       body: {
         pit: { id: pitId, keep_alive: keepAlive },
-        query: { bool: { must } },
-        // PIT freezes the shard view while _doc is the sortable, efficient
-        // tie-breaker supported by the OpenSearch versions shipped by Wazuh.
-        // If the PIT expires, we restart this frozen window from
-        // its beginning; idempotent upserts may replay documents but skip none.
-        sort: [{ '@timestamp': { order: 'asc' } }, { _doc: { order: 'asc' } }],
+        query,
+        // PIT freezes the shard view while _doc is the tie-breaker. If the PIT
+        // expires, we restart this frozen window from its beginning;
+        // idempotent upserts may replay documents but skip none.
+        sort: adapter.sortSpec(),
         ...(state.search_after ? { search_after: state.search_after } : {}),
       },
     });
@@ -281,7 +302,7 @@ export async function runSyncOnce(
     // A search_after value is meaningful only for the PIT that produced it.
     // Clear both together so expiry or node loss causes safe replay, not gaps.
     try {
-      await setSyncState(client, {
+      await setSyncState(client, family, {
         completed_at: state.completed_at,
         window_from: windowFrom,
         window_to: windowTo,
@@ -295,7 +316,7 @@ export async function runSyncOnce(
   }
 
   if (hits.length === 0) {
-    await setSyncState(client, {
+    await setSyncState(client, family, {
       completed_at: windowTo,
       window_from: null,
       window_to: null,
@@ -331,7 +352,7 @@ export async function runSyncOnce(
     return;
   }
 
-  const projected = hits.map((hit) => projectOperationalAlert(hit));
+  const projected = hits.map((hit) => adapter.project(hit));
   let existingLocations: Map<string, any>;
   let archivedStates: Map<string, string>;
   try {
@@ -520,6 +541,7 @@ export async function runSyncOnce(
 
   await setSyncState(
     client,
+    family,
     batchFull
       ? {
           completed_at: state.completed_at,

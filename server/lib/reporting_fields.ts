@@ -3,6 +3,8 @@
 // unbounded history arrays or sampling. Updated idempotently wherever an alert
 // is assigned, closed, or reopened (manual bulk-update, automation, backfill).
 
+import { effectiveLevel } from '../../common/severity';
+
 export const REPORTING_FIELD_VERSION = 1;
 
 export interface ReportingSlaTier {
@@ -50,8 +52,9 @@ function minutesBetween(occurredMs: number, atMs: number): number | null {
 }
 
 function levelOf(source: any): number {
-  const level = source?.rule?.level;
-  return level != null ? Number(level) : 0;
+  // 4.x: numeric rule.level. 5.0: the lowest level of the label's band so a
+  // label-only finding never claims a stricter SLA tier (common/severity.ts).
+  return effectiveLevel(source) ?? 0;
 }
 
 /**

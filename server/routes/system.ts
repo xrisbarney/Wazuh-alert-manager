@@ -19,7 +19,11 @@ import {
   PLUGIN_BUILT_AT,
   PLUGIN_VERSION,
   TARGET_OSD_VERSION,
+  TARGET_WAZUH_VERSION,
+  TARGET_WAZUH_MAJOR,
 } from '../../common';
+import { SOURCE_STATE_DOC_ID, eligibleFamilies } from '../lib/source_runtime';
+import { sourceProfile } from '../lib/source_profile';
 import { canManageLifecycle, isPluginAdmin, requireLifecycleManager, requirePluginAdmin } from '../lib/authorization';
 import { trustedIdentity } from '../lib/identity';
 import { LIFECYCLE_SETTINGS_ID, lifecycleStatus, loadLifecycleSettings } from '../lib/lifecycle';
@@ -345,6 +349,8 @@ export function defineSystemRoutes(router: IRouter) {
           buildId: PLUGIN_BUILD_ID,
           builtAt: PLUGIN_BUILT_AT,
           targetOsdVersion: TARGET_OSD_VERSION,
+          targetWazuhVersion: TARGET_WAZUH_VERSION,
+          targetWazuhMajor: TARGET_WAZUH_MAJOR,
         },
       })
   );
@@ -461,9 +467,49 @@ export function defineSystemRoutes(router: IRouter) {
   router.get({ path: `${API_ROOT}/system/health`, validate: false }, async (context, request, response) => {
     const client = context.core.opensearch.client.asCurrentUser;
     try {
+      // Provisioning can fail on start (dashboard user lacks write access to
+      // the plugin stores, or the cluster blocks index creation). Say so in a
+      // structured way instead of surfacing a raw index_not_found error.
+      const metaExists = Boolean((await client.indices.exists({ index: META_INDEX })).body);
+      if (!metaExists) {
+        const eligible = eligibleFamilies();
+        const expectedPattern = eligible.length ? sourceProfile(eligible[0]).defaultPattern : null;
+        return response.ok({
+          body: {
+            provisioned: false,
+            namespace: 'wazuh-alert-status-v2-* / wazuh-alert-manager-v2-*',
+            sourcePattern: `${expectedPattern || 'unresolved'} (read only)`,
+            source: {
+              status: 'blocked',
+              family: eligible[0] || null,
+              pattern: expectedPattern,
+              mode: null,
+              eligible,
+              reason:
+                'Plugin storage is not provisioned. The server could not create its own indices on start; check the ' +
+                'wazuh-dashboard log for "failed to provision indices". On Wazuh 5.0 the dashboard user needs the ' +
+                'wazuh_alert_manager_store role (install.sh grants it) and the cluster blocks explicit index creation, ' +
+                'which the plugin works around automatically. Restart wazuh-dashboard after fixing permissions.',
+              probe: null,
+              checkedAt: null,
+              build: { targetWazuhVersion: TARGET_WAZUH_VERSION, targetOsdVersion: TARGET_OSD_VERSION },
+              nativeReadOnly: true,
+            },
+            counts: {},
+            migration: null,
+            sync: null,
+            automation: null,
+            lifecycle: null,
+            generations: {
+              alerts: [], archivedAlerts: [], activity: [], archivedActivity: [], evidence: [],
+              archivedEvidenceRelationships: [], cases: [], archivedCases: [],
+            },
+          },
+        });
+      }
       const [
         alerts, activity, cases, evidence, heldEvidence, archivedEvidence, purgedEvidence,
-        legacyAlerts, dlq, migration, sync, generations, archived, activityStorage, evidenceStorage, caseGenerationsList, archivedCases, automation,
+        legacyAlerts, dlq, migration, sourceState, generations, archived, activityStorage, evidenceStorage, caseGenerationsList, archivedCases, automation,
       ] = await Promise.all([
         safeCount(client, ALERTS_READ_ALIAS),
         safeCount(client, ACTIVITY_READ_ALIAS),
@@ -475,7 +521,7 @@ export function defineSystemRoutes(router: IRouter) {
         safeCount(client, LEGACY_ALERT_STATUS_INDEX),
         safeCount(client, SYNC_DLQ_INDEX),
         safeGet(client, MIGRATION_INDEX, 'legacy-v1-to-v2'),
-        safeGet(client, META_INDEX, 'sync_state'),
+        safeGet(client, META_INDEX, SOURCE_STATE_DOC_ID),
         alertGenerations(client),
         archivedAlertGenerations(client),
         activityGenerations(client),
@@ -490,10 +536,29 @@ export function defineSystemRoutes(router: IRouter) {
       } catch (e) {
         // ISM may be unavailable to a read-only analyst. Counts remain useful.
       }
+      // The sync cursor lives in a per-family document. Before the first v3
+      // tick records a source state, fall back to the 4.x document so an
+      // upgraded install still shows its last watermark.
+      const syncDocId = sourceState?.sync_state_doc_id || 'sync_state';
+      const sync = await safeGet(client, META_INDEX, syncDocId);
+      const eligible = eligibleFamilies();
+      const expectedPattern = eligible.length ? sourceProfile(eligible[0]).defaultPattern : null;
       return response.ok({
         body: {
           namespace: 'wazuh-alert-status-v2-* / wazuh-alert-manager-v2-*',
-          sourcePattern: 'wazuh-alerts-* (read only)',
+          sourcePattern: `${sourceState?.pattern || expectedPattern || 'unresolved'} (read only)`,
+          source: {
+            status: sourceState?.status || 'unknown',
+            family: sourceState?.family || null,
+            pattern: sourceState?.pattern || null,
+            mode: sourceState?.mode || null,
+            eligible,
+            reason: sourceState?.reason || 'The sync worker has not recorded a source check yet.',
+            probe: sourceState?.probe || null,
+            checkedAt: sourceState?.checked_at || null,
+            build: { targetWazuhVersion: TARGET_WAZUH_VERSION, targetOsdVersion: TARGET_OSD_VERSION },
+            nativeReadOnly: true,
+          },
           counts: { alerts, activity, cases, evidence, heldEvidence, archivedEvidence, purgedEvidence, legacyAlerts, dlq },
           migration,
           sync,

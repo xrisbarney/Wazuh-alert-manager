@@ -55,6 +55,13 @@ jobs:
           - wazuhVersion: "4.14.9"
             osdVersion: "2.19.6"
             dashboardRef: "v4.14.9"
+          # Wazuh 5.0 (prerelease). Development-only target until the owner
+          # promotes it: OSD 3.6 / Node 22 (from that checkout's .nvmrc), and
+          # the plugin reads wazuh-findings-v5-* data streams instead of
+          # wazuh-alerts-*. See supported-wazuh-versions.json ("prerelease").
+          - wazuhVersion: "5.0.0-rc2"
+            osdVersion: "3.6.0"
+            dashboardRef: "v5.0.0-rc2"
 
     steps:
       - name: Checkout plugin source

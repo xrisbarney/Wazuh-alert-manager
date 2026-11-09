@@ -38,10 +38,19 @@ export function buildEvidenceSnapshot(alertSource: any): any {
     agent: s.agent
       ? { id: s.agent.id ?? null, name: s.agent.name ?? null, ip: s.agent.ip ?? null }
       : null,
+    // 5.0 findings have no numeric level; keep null (never 0) and carry the
+    // verbatim label so an archived case still explains its severity.
+    severity_label: typeof s.severity_label === 'string' ? s.severity_label : null,
+    source_family: typeof s.source_family === 'string' ? s.source_family : null,
     rule: s.rule
       ? {
           id: s.rule.id ?? null,
-          level: typeof s.rule.level === 'number' ? s.rule.level : Number(s.rule.level || 0),
+          level:
+            typeof s.rule.level === 'number'
+              ? s.rule.level
+              : s.rule.level == null || s.rule.level === ''
+              ? null
+              : Number.isFinite(Number(s.rule.level)) ? Number(s.rule.level) : null,
           description: s.rule.description ?? null,
           mitre: s.rule.mitre
             ? {
