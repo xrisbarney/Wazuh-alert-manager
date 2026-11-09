@@ -17,7 +17,7 @@ keeping Wazuh's native `wazuh-alerts-*` indices read-only.
 | 4.14.0–4.14.1 | 2.19.3 | `wazuhAlertManager-2.19.3.zip` |
 | 4.14.2–4.14.4 | 2.19.4 | `wazuhAlertManager-2.19.4.zip` |
 | 4.14.5–4.14.7 | 2.19.5 | `wazuhAlertManager-2.19.5.zip` |
-| 4.14.8–4.14.9 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` |
+| 4.14.8–4.14.10 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` |
 
 Each ZIP is built inside the matching official Wazuh Dashboard source tree. The
 installer detects the dashboard version and refuses to guess when it is not in

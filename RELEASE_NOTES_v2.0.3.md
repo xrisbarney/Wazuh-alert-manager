@@ -1,7 +1,7 @@
 # Wazuh Alert Manager 2.0.3
 
 Version 2.0.3 expands exact-version compatibility across every OpenSearch
-Dashboards release used by Wazuh 4.12.0 through 4.14.9 and includes the
+Dashboards release used by Wazuh 4.12.0 through 4.14.10 and includes the
 Workbench fixes validated in pull request #16.
 
 ## Compatibility
@@ -15,7 +15,7 @@ The release contains six independently compiled plugin archives:
 | 4.14.0–4.14.1 | 2.19.3 | `wazuhAlertManager-2.19.3.zip` |
 | 4.14.2–4.14.4 | 2.19.4 | `wazuhAlertManager-2.19.4.zip` |
 | 4.14.5–4.14.7 | 2.19.5 | `wazuhAlertManager-2.19.5.zip` |
-| 4.14.8–4.14.9 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` |
+| 4.14.8–4.14.10 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` |
 
 The installer reads the installed dashboard's exact version and selects the
 matching archive. A scheduled compatibility guard now detects new Wazuh patch
@@ -44,6 +44,8 @@ build matrix.
   official `wazuh/wazuh-dashboard` source tags.
 - 34 Jest suites and 354 tests passed.
 - The OSD 2.19.6 artifact was installed and browser-tested on Wazuh 4.14.9.
+- 2026-11-09: Wazuh 4.14.10 was added to the matrix. It ships the same OSD 2.19.6, so the
+  existing `wazuhAlertManager-2.19.6.zip` applies unchanged; no new plugin version was cut.
 - Playwright covered sign-in, theme behavior, manual case creation, evidence
   hold/release, graph and timeline views, case status transitions, and closure.
 - Native `wazuh-alerts-*` indices remain read-only. Plugin-owned data and v1/v2

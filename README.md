@@ -8,7 +8,7 @@ case management with multi-alert bulk actions, dropdown-based filtering,
 and optional AI-assisted analysis via OpenAI, DeepSeek, Gemini or Claude.
 
 Release artifacts are built against official Wazuh Dashboard source for
-**Wazuh 4.12.0–4.14.9**; the full browser bench runs on **Wazuh 4.14.9 / OSD
+**Wazuh 4.12.0–4.14.10**; the full browser bench runs on **Wazuh 4.14.9 / OSD
 2.19.6**. See [SUPPORTED_VERSIONS.md](./SUPPORTED_VERSIONS.md) for the exact
 version-to-artifact matrix.
 
@@ -367,7 +367,7 @@ This plugin follows the standard OpenSearch Dashboards plugin layout and
 must be built from inside a `wazuh-dashboard` checkout:
 
 ```bash
-git clone --branch v4.14.9 https://github.com/wazuh/wazuh-dashboard.git
+git clone --branch v4.14.10 https://github.com/wazuh/wazuh-dashboard.git
 cd wazuh-dashboard
 git clone <this repo> plugins/wazuhAlertManager
 yarn osd bootstrap
@@ -411,7 +411,7 @@ result to your registry, and swap the image reference. Everything else
 Build a custom image:
 
 ```dockerfile
-FROM wazuh/wazuh-dashboard:4.14.9
+FROM wazuh/wazuh-dashboard:4.14.10
 
 COPY wazuhAlertManager-2.19.6.zip /tmp/wazuhAlertManager.zip
 

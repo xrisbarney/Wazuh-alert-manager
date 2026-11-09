@@ -71,4 +71,4 @@ Because candidate work is scoped to the batch, evaluation cost is proportional t
 
 ## Compatibility
 
-The plugin is built for every exact OSD version used by the supported Wazuh patches: 2.19.1 through 2.19.6 for Wazuh 4.12.0 through 4.14.9. The **server code is identical** across builds, but every ZIP is compiled inside a matching official Wazuh Dashboard source tree and receives that target's exact version stamp rather than being relabelled after the fact. See [[Installation#supported-versions]] for the patch-level mapping.
+The plugin is built for every exact OSD version used by the supported Wazuh patches: 2.19.1 through 2.19.6 for Wazuh 4.12.0 through 4.14.10. The **server code is identical** across builds, but every ZIP is compiled inside a matching official Wazuh Dashboard source tree and receives that target's exact version stamp rather than being relabelled after the fact. See [[Installation#supported-versions]] for the patch-level mapping.

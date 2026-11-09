@@ -52,9 +52,9 @@ jobs:
           - wazuhVersion: "4.14.7"
             osdVersion: "2.19.5"
             dashboardRef: "v4.14.7"
-          - wazuhVersion: "4.14.9"
+          - wazuhVersion: "4.14.10"
             osdVersion: "2.19.6"
-            dashboardRef: "v4.14.9"
+            dashboardRef: "v4.14.10"
 
     steps:
       - name: Checkout plugin source

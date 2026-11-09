@@ -28,7 +28,7 @@ in README.md) - the plugin zip `COPY`'d into the image must match the
 | 4.14.0–4.14.1 | 2.19.3 | `wazuhAlertManager-2.19.3.zip` | `v4.14.1` |
 | 4.14.2–4.14.4 | 2.19.4 | `wazuhAlertManager-2.19.4.zip` | `v4.14.4` |
 | 4.14.5–4.14.7 | 2.19.5 | `wazuhAlertManager-2.19.5.zip` | `v4.14.7` |
-| 4.14.8–4.14.9 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` | `v4.14.9`; browser-tested on 4.14.9 |
+| 4.14.8–4.14.10 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` | `v4.14.10`; browser-tested on 4.14.9 (4.14.10 ships the same OSD 2.19.6) |
 
 These mappings come from each official `wazuh/wazuh-dashboard` release tag.
 The one-line installer reads the installed dashboard's `package.json` and
