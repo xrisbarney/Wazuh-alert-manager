@@ -4,7 +4,7 @@
 
 This wiki documents **version 2.0.2** only.
 
-> ⚠️ **Unofficial** — this plugin is not produced or endorsed by Wazuh Inc. It reads Wazuh's alerts and stores its own workflow state in separate indices; it never modifies `wazuh-alerts-*`.
+> ⚠️ **Unofficial** — this plugin is not produced or endorsed by Wazuh Inc. It reads Wazuh's alerts (4.x `wazuh-alerts-*`) or findings (5.0 `wazuh-findings-v5-*`) and stores its own workflow state in separate indices; it never modifies native Wazuh storage.
 
 ![Alert queue with operational summaries and filters](images/workbench-alert-queue.png)
 
@@ -27,9 +27,10 @@ This wiki documents **version 2.0.2** only.
 | 4.14.0–4.14.1 | 2.19.3 | `wazuhAlertManager-2.19.3.zip` |
 | 4.14.2–4.14.4 | 2.19.4 | `wazuhAlertManager-2.19.4.zip` |
 | 4.14.5–4.14.7 | 2.19.5 | `wazuhAlertManager-2.19.5.zip` |
-| 4.14.8–4.14.9 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` |
+| 4.14.8–4.14.10 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` |
+| 5.0.0 (rc2; development target) | 3.6.0 | `wazuhAlertManager-3.6.0.zip` |
 
-Download the zip matching the exact dashboard version from the **[Releases page](https://github.com/xrisbarney/Wazuh-alert-manager/releases)**. The server code is identical across builds, but each ZIP is compiled and stamped for one exact OSD version.
+Download the zip matching the exact dashboard version from the **[Releases page](https://github.com/xrisbarney/Wazuh-alert-manager/releases)**. The source code is identical across builds, but each ZIP is compiled and stamped for one exact OSD version and one Wazuh line: 4.x builds read `wazuh-alerts-*`, the 5.0 build reads the `wazuh-findings-v5-*` data streams. See [[Architecture#one-plugin-for-wazuh-4x-and-50]].
 
 ## Where to next
 

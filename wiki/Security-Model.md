@@ -10,7 +10,7 @@ This plugin handles security data, so it is deliberately conservative about iden
 
 ## Data isolation
 
-- The plugin **never modifies** `wazuh-alerts-*`. It reads them and stores workflow state in its own indices (see [[Architecture]]).
+- The plugin **never modifies** native Wazuh storage: 4.x `wazuh-alerts-*` indices, or 5.0 `wazuh-events-v5-*` / `wazuh-findings-v5-*` data streams and their hidden `.ds-` backing indices. It reads the family its build targets and stores workflow state in its own indices (see [[Architecture]]). The write guard refuses every native prefix by name, independent of the service account's privileges.
 - Plugin-owned fields (`status`, `assigned_to`, `case_id`, history) are **protected on re-sync** — a same-named field arriving from Wazuh cannot clobber an analyst's decision.
 
 <a name="ai-egress"></a>
@@ -39,5 +39,5 @@ When [[AI Analysis]] is enabled, what leaves your network is tightly controlled:
 
 ## Recommended hardening
 
-- Apply document-level security to the `wazuh-alert-status-v2-*` operational indices if you restrict who can see which alerts. Restrictions on native `wazuh-alerts-*` indices do **not** carry through the sync copy.
+- Apply document-level security to the `wazuh-alert-status-v2-*` operational indices if you restrict who can see which alerts. Restrictions on native `wazuh-alerts-*` indices (or 5.0 findings streams) do **not** carry through the sync copy.
 - Enable at-rest encryption for the stored AI key (see [[AI Analysis]]).

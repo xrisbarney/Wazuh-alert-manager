@@ -133,5 +133,5 @@ Per-case counts are validated before evidence-first reads become authoritative.
 
 The compatibility `alert_ids` preview is bounded to 1,000 IDs and is not the
 long-term membership source of truth. A bounded legacy fallback remains available
-while a migration is incomplete. Native `wazuh-alerts-*` indices remain read-only,
+while a migration is incomplete. Native Wazuh storage (`wazuh-alerts-*` on 4.x, `wazuh-findings-v5-*` / `wazuh-events-v5-*` on 5.0) remains read-only,
 and legacy plugin indices are retained as migration inputs rather than deleted.

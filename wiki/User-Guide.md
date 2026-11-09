@@ -73,7 +73,7 @@ Settings include:
   server-side and require the configured encryption key. See [[AI Analysis]].
 - **Background sync** — view the native-alert read pattern, sync watermark,
   overlap, interval, batch size, and sync-DLQ health. Changes apply to the plugin
-  projection only; `wazuh-alerts-*` remains read-only.
+  projection only; native Wazuh storage (`wazuh-alerts-*` on 4.x, `wazuh-findings-v5-*` on 5.0) remains read-only. On a Wazuh 5.0 dashboard the workbench says **Findings** wherever this guide says alerts (the tab, the queue, the details flyout, linked findings in a case). On Wazuh 5.0 the severity badge shows the finding's label (for example **High**) without a numeric level, because 5.0 rules carry labels rather than the 4.x 0–16 levels.
 - **Storage & lifecycle** — configure generation rollover and retention, inspect
   every plugin-owned alias family, and perform reviewed retire/restore/purge
   operations. Mutating controls require the effective Wazuh lifecycle role. See

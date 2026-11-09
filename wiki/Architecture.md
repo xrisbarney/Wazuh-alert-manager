@@ -4,7 +4,20 @@
 
 Wazuh Alert Manager 2.0.2 is an OpenSearch Dashboards New Platform plugin with server and browser components. It reads native Wazuh alert indices, builds a bounded operational projection, and adds alert workflow, cases, evidence relationships, automation, lifecycle controls, reporting, and optional AI analysis.
 
-The central safety boundary is strict: native `wazuh-alerts-*` indices are read-only. Every plugin write is restricted to the exact `wazuh-alert-status-v2-` and `wazuh-alert-manager-v2-` prefixes.
+The central safety boundary is strict: native Wazuh storage is read-only, whether it is a 4.x `wazuh-alerts-*` index or a 5.0 `wazuh-events-v5-*` / `wazuh-findings-v5-*` data stream (and its hidden `.ds-` backing indices). Every plugin write is restricted to the exact `wazuh-alert-status-v2-` and `wazuh-alert-manager-v2-` prefixes, and the write guard additionally refuses every native prefix by name.
+
+## One plugin for Wazuh 4.x and 5.0
+
+The same source tree is compiled once per exact OpenSearch Dashboards version. Each build records the Wazuh release it targets, and that decides the only native *source family* the build may read:
+
+| Family | Wazuh | Native source (read-only) | Severity model | Underlying evidence |
+|---|---|---|---|---|
+| `wazuh4_alerts` | 4.12–4.14 | `wazuh-alerts-*` indices | numeric `rule.level` 0–16 | the alert itself (`full_log`) |
+| `wazuh5_findings` | 5.0 | `wazuh-findings-v5-*` data streams | label in `wazuh.rule.level` (`informational`, `low`, `medium`, `high`, `critical`) | the finding's `event.index` / `event.doc_id` in a `wazuh-events-v5-*` stream, read on demand |
+
+A *source adapter* per family builds the sync query and normalizes each hit into the same bounded canonical record (`agent.*`, `rule.*`, `data.*` entities, MITRE, provenance). Cases, evidence, automation, reporting, lifecycle and the UI consume only that canonical record and do not know which family produced it. 5.0 records keep their severity label verbatim in `severity_label` and leave `rule.level` null; nothing converts a label into a number. Numeric thresholds (rule `minLevel`, level filters, SLA tiers) apply to 5.0 records through severity bands (0–3 low, 4–6 medium, 7–11 high, 12+ critical), the same bands the UI has always badged.
+
+Source detection runs every sync tick: `sync.sourceMode` (`auto`, the default, or an explicit family that must be eligible for the build) selects the family; an optional `sync.sourceIndexPattern` override must stay inside it; a read-only probe confirms the pattern resolves to the expected indices or data streams with a mapped `@timestamp`. The outcome (`ready`, `waiting` for a not-yet-created source, or `blocked` with the reason) is recorded in the meta index and shown in Storage Health. The plugin never falls back to another pattern. Sync cursors are kept per family, so a 4.x cursor is never replayed against 5.0 findings after a platform upgrade.
 
 ## Plugin-owned storage
 
@@ -33,7 +46,7 @@ Mappings are bounded and versioned. Provisioning is idempotent and applies compa
 
 ## Alert synchronization
 
-One dashboard replica at a time acquires a renewable sync lease. The synchronizer reads new native alerts with a point-in-time search, a composite `@timestamp` and document-ID cursor, and an overlap window. Full batches trigger an immediate continuation rather than waiting for the next configured interval.
+One dashboard replica at a time acquires a renewable sync lease. The synchronizer resolves the native source for this build (see above), then reads new native alerts or findings with a point-in-time search, a composite `@timestamp` and document-ID cursor, and an overlap window. On 5.0, where `@timestamp` is nanosecond-precision, the sort key is cast to milliseconds so the persisted cursor stays exact; a backing-index rollover during a point-in-time window is harmless because the window keeps its frozen view and the next window (with overlap) picks up the new generation. Full batches trigger an immediate continuation rather than waiting for the next configured interval.
 
 For each batch, the server:
 
@@ -46,7 +59,7 @@ For each batch, the server:
 
 The cursor is not advanced before durable automation admission. Re-reading an overlapping source alert is safe: partial upserts preserve status, assignment, comments, case links, and other analyst-owned state. Records that cannot be synchronized enter the sync dead-letter queue instead of silently disappearing.
 
-Only a bounded operational field set is projected. Full raw alert details remain in Wazuh and are loaded lazily from the trusted `source_index` and `source_id` recorded on the projection.
+Only a bounded operational field set is projected. Full raw alert details remain in Wazuh and are loaded lazily from the trusted `source_index` and `source_id` recorded on the projection. Before any such read the stored index is re-validated against its own family's exact physical-index matcher, so a stale or tampered projection can never point the server at an arbitrary index. On 5.0 the server first reads the finding and then, only if the finding's `event.index` names a `wazuh-events-v5-*` backing index, the underlying event.
 
 ## Automation execution
 
@@ -93,6 +106,6 @@ Plugin archives are compiled separately because the OpenSearch Dashboards versio
 | 4.13.x | 2.19.2 |
 | 4.14.x | 2.19.5 |
 
-The plugin is built for every exact OSD version used by the supported Wazuh patches: 2.19.1 through 2.19.6 for Wazuh 4.12.0 through 4.14.9. The **server code is identical** across builds, but every ZIP is compiled inside a matching official Wazuh Dashboard source tree and receives that target's exact version stamp rather than being relabelled after the fact. See [[Installation#supported-versions]] for the patch-level mapping.
+The plugin is built for every exact OSD version used by the supported Wazuh patches: 2.19.1 through 2.19.6 for Wazuh 4.12.0 through 4.14.10, and 3.6.0 for Wazuh 5.0 (a development target while 5.0 is prerelease). The **source code is identical** across builds, but every ZIP is compiled inside a matching official Wazuh Dashboard source tree and receives that target's exact version stamp (and target Wazuh release) rather than being relabelled after the fact. See [[Installation#supported-versions]] for the patch-level mapping.
 
 Install the matching archive on every OpenSearch Dashboards node that can serve users. Nothing is installed on Wazuh agents, and a manager-only or indexer-only node does not need the dashboard plugin. See [[Installation]].

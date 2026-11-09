@@ -1,13 +1,13 @@
 # FAQ
 
 **Does it modify my Wazuh alerts?**
-No. It reads `wazuh-alerts-*` and stores all workflow state in its own indices. Your raw alerts are never changed.
+No. It reads `wazuh-alerts-*` (Wazuh 4.x) or the `wazuh-findings-v5-*` data streams (Wazuh 5.0) and stores all workflow state in its own indices. Your raw alerts, events and findings are never changed.
 
 **Is it official?**
 No — it's an unofficial community plugin, not produced or endorsed by Wazuh Inc.
 
 **Which versions are supported?**
-Wazuh 4.12.0 through 4.14.9. Those patches use OpenSearch Dashboards 2.19.1 through 2.19.6; see [[Installation#supported-versions]] for the exact patch mapping. Use the matching ZIP because Dashboard requires an exact target-version match.
+Wazuh 4.12.0 through 4.14.10 (OpenSearch Dashboards 2.19.1 through 2.19.6), and Wazuh 5.0 (OpenSearch Dashboards 3.6.0) as a development target while 5.0 is prerelease; see [[Installation#supported-versions]] for the exact patch mapping. The same plugin serves both lines; the installer picks the artifact for your dashboard version. Use the matching ZIP because Dashboard requires an exact target-version match.
 
 **Do I need to reindex anything?**
 No for fresh installs. The one exception: very old installs where `assigned_to` was mapped as `text` need a reindex for analyst metrics to aggregate — see [[Troubleshooting]].

@@ -45,7 +45,37 @@ dashboard refuses to load it:
 | 4.14.0–4.14.1 | 2.19.3 | `wazuhAlertManager-2.19.3.zip` |
 | 4.14.2–4.14.4 | 2.19.4 | `wazuhAlertManager-2.19.4.zip` |
 | 4.14.5–4.14.7 | 2.19.5 | `wazuhAlertManager-2.19.5.zip` |
-| 4.14.8–4.14.9 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` |
+| 4.14.8–4.14.10 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` |
+| 5.0.0 (rc2; development target) | 3.6.0 | `wazuhAlertManager-3.6.0.zip` |
+
+The same plugin serves both Wazuh lines. A build for Wazuh 4.x reads
+`wazuh-alerts-*`; a build for Wazuh 5.0 reads the `wazuh-findings-v5-*` data
+streams. The installer picks the artifact from the running dashboard's exact
+OpenSearch Dashboards version, so there is nothing to choose by hand. Wazuh
+5.0 support is in development while 5.0 is prerelease; see
+[[Architecture#one-plugin-for-wazuh-4x-and-50]].
+
+### Wazuh 5.0 specifics
+
+Two platform differences on Wazuh 5.0 are handled for you:
+
+- **Store ownership.** The dashboard's indexer user (`kibanaserver`) is read-only on
+  `wazuh-*` on 5.0. The installer creates the OpenSearch Security role
+  `wazuh_alert_manager_store` (`indices_all` on `wazuh-alert-status-v2-*` and
+  `wazuh-alert-manager-v2-*` only, plus point-in-time and bulk cluster
+  permissions) and maps that user to it, using the admin credentials the Wazuh
+  installer leaves in `/etc/wazuh-indexer/export/credentials.env`. On a
+  distributed deployment without those credentials it prints the exact role to
+  create. Native Wazuh storage is not part of the role. Use `--dashboard-user`,
+  `--indexer-url` or `--skip-store-role` to adjust.
+- **Blocked create-index API.** The 5.0 indexer sets
+  `cluster.blocks.create_index: true`. The plugin provisions each of its stores
+  through a temporary plugin-owned index template and a bootstrap write (which
+  auto-creates the index with the right mappings and aliases), then removes
+  both the bootstrap document and the template. Rollover generations are
+  unaffected. You will see `Created ... through a bootstrap write` in the
+  dashboard log on 5.0.
+
 
 The installer reads the dashboard's own `package.json` (`version`) to select the
 artifact and refuses any version not in this table — it never guesses. Wazuh

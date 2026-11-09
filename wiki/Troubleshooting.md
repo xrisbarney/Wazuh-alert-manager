@@ -108,9 +108,35 @@ GET wazuh-alert-status-v2-read/_search
 GET wazuh-alert-manager-v2-meta/_doc/sync_state
 GET wazuh-alert-manager-v2-meta/_doc/sync_settings
 GET wazuh-alert-manager-v2-meta/_doc/sync_lock
+GET wazuh-alert-manager-v2-meta/_doc/source_state
 GET _cat/indices/wazuh-alerts-*,wazuh-alert-status-v2-*,wazuh-alert-manager-v2-*?v
 GET _cat/aliases/wazuh-alert-status-v2-*?v
 ```
+
+On **Wazuh 5.0** the native source is the `wazuh-findings-v5-*` data streams
+and the sync cursor document is `sync_state:wazuh5_findings`:
+
+```http
+GET wazuh-findings-v5-*/_search
+{
+  "size": 1,
+  "sort": [{ "@timestamp": "desc" }],
+  "_source": ["@timestamp", "wazuh.agent.name", "wazuh.rule.level", "wazuh.rule.title"]
+}
+
+GET wazuh-alert-manager-v2-meta/_doc/sync_state:wazuh5_findings
+GET wazuh-alert-manager-v2-meta/_doc/source_state
+GET _data_stream/wazuh-findings-v5-*
+```
+
+`source_state` records what the sync worker decided on its last tick:
+`status` is `ready` (syncing), `waiting` (the expected source does not exist
+yet, for example a fresh install before the first alert or finding), or
+`blocked` (the configured `sync.sourceMode` or `sync.sourceIndexPattern` is
+not valid for this build, or the pattern does not look like the expected
+source). The `reason` field explains it, and Storage Health shows the same
+information. The plugin never falls back to a different pattern; fix the
+configuration or wait for Wazuh to create the source.
 
 `sync_settings.enabled` should be `true`. A missing `sync_lock` is normally
 harmless for no more than one polling interval because a running sync worker

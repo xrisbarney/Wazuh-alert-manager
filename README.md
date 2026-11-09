@@ -8,8 +8,11 @@ case management with multi-alert bulk actions, dropdown-based filtering,
 and optional AI-assisted analysis via OpenAI, DeepSeek, Gemini or Claude.
 
 Release artifacts are built against official Wazuh Dashboard source for
-**Wazuh 4.12.0–4.14.9**; the full browser bench runs on **Wazuh 4.14.9 / OSD
-2.19.6**. See [SUPPORTED_VERSIONS.md](./SUPPORTED_VERSIONS.md) for the exact
+**Wazuh 4.12.0–4.14.10**; the full browser bench runs on **Wazuh 4.14.9 / OSD
+2.19.6**. **Wazuh 5.0** (OSD 3.6.0, currently rc2) is the v3.0 development
+target: the same plugin reads 5.0's `wazuh-findings-v5-*` data streams
+instead of 4.x `wazuh-alerts-*`, detected automatically per build. See
+[SUPPORTED_VERSIONS.md](./SUPPORTED_VERSIONS.md) for the exact
 version-to-artifact matrix.
 
 ---
@@ -93,7 +96,10 @@ server/
     constants.ts          (in common/) single source of truth for index/alias names
     mappings.ts           explicit v2 index mappings this plugin owns
     provision.ts          idempotent "create index + alias if missing"
-    sync_job.ts           copies wazuh-alerts-* into the v2 alert store on a timer
+    sync_job.ts           copies new native alerts/findings into the v2 alert store on a timer
+    source_profile.ts     the two read-only native families: 4.x wazuh-alerts-*, 5.0 wazuh-findings-v5-*
+    source_runtime.ts     per-tick source detection (build target + config) -> ready / waiting / blocked
+    adapters/             wazuh4_alert_adapter (v2 behaviour), wazuh5_finding_adapter (WCS -> canonical)
     sync_lock.ts          leader-lock doc so N dashboard replicas sync safely
     lifecycle.ts          plugin-managed rollover + retention marking
     alert_retirement.ts   case-safe carry-forward retirement, guarded restore, purge
@@ -131,8 +137,14 @@ public/
 ### Data model
 
 The plugin owns a set of **v2** indices, all auto-created (and aliased) on first
-server start. It never writes to Wazuh's native `wazuh-alerts-*` indices — those
-are read-only evidence sources.
+server start. It never writes to Wazuh's native storage — 4.x `wazuh-alerts-*`
+indices and 5.0 `wazuh-events-v5-*` / `wazuh-findings-v5-*` data streams are
+read-only evidence sources. A build compiled for Wazuh 4.x reads alerts; a
+build compiled for Wazuh 5.0 reads findings and follows a finding's
+`event.index` / `event.doc_id` to its underlying event only when an analyst
+opens it. Both produce the same bounded canonical record (plus
+`source_family`, and for 5.0 the verbatim `severity_label`, since 5.0 rule
+levels are labels rather than the 4.x 0–16 integers).
 
 | Index | Purpose |
 |---|---|
@@ -192,7 +204,12 @@ touches and what shape of request it accepts.
 `install.sh` detects the installed Wazuh Dashboard / OpenSearch Dashboards
 version, picks the matching artifact, verifies its SHA-256 (and, when
 configured, a minisign signature), backs up the current plugin, and swaps it
-in with automatic rollback on failure. It never modifies `wazuh-alerts-*`, never
+in with automatic rollback on failure. On Wazuh 5.0 it also grants the
+dashboard's indexer user a least-privilege OpenSearch Security role
+(`wazuh_alert_manager_store`, write access to the two exact plugin prefixes
+only), because 5.0 ships that user read-only on `wazuh-*`; on a distributed
+install without local admin credentials it prints the role to create instead.
+It never modifies `wazuh-alerts-*` or 5.0 events/findings, never
 deletes plugin data on upgrade, and fails closed on an unsupported dashboard
 version.
 
@@ -239,8 +256,17 @@ checksum/signature tooling (`scripts/make-release-artifacts.sh`).
 ### Configuring the sync job
 
 Defaults live in `server/config.ts` (`sync.enabled`, `sync.intervalSeconds`,
-`sync.sourceIndexPattern`, `sync.initialLookbackMinutes`, `sync.batchSize`,
-`sync.minRuleLevel`). These are meant to be overridable via
+`sync.sourceMode`, `sync.sourceIndexPattern`, `sync.initialLookbackMinutes`,
+`sync.batchSize`, `sync.minRuleLevel`). `sync.sourceMode` is `auto` by
+default: a Wazuh 4.x build reads `wazuh-alerts-*`, a Wazuh 5.0 build reads
+`wazuh-findings-v5-*`; an explicit `wazuh4_alerts` / `wazuh5_findings` value
+must still be eligible for the build. `sync.sourceIndexPattern` is an
+optional override that must stay inside the selected family (anything else
+stops sync safely and is explained in Storage Health). `sync.minRuleLevel`
+is a 4.x numeric floor applied at the source; its 5.0 counterpart is
+`sync.minSeverityLabel` (`informational` | `low` | `medium` | `high` |
+`critical`), applied to `wazuh.rule.level` at the source. Each is ignored by
+the other line. These are meant to be overridable via
 `opensearch_dashboards.yml` (e.g. `wazuhAlertManager.sync.intervalSeconds: 30`)
 the standard OSD way - **but see the config-loading caveat below** before
 relying on that on a Wazuh-packaged dashboard. If you hit it, change the
@@ -367,7 +393,7 @@ This plugin follows the standard OpenSearch Dashboards plugin layout and
 must be built from inside a `wazuh-dashboard` checkout:
 
 ```bash
-git clone --branch v4.14.9 https://github.com/wazuh/wazuh-dashboard.git
+git clone --branch v4.14.10 https://github.com/wazuh/wazuh-dashboard.git
 cd wazuh-dashboard
 git clone <this repo> plugins/wazuhAlertManager
 yarn osd bootstrap
@@ -411,7 +437,7 @@ result to your registry, and swap the image reference. Everything else
 Build a custom image:
 
 ```dockerfile
-FROM wazuh/wazuh-dashboard:4.14.9
+FROM wazuh/wazuh-dashboard:4.14.10
 
 COPY wazuhAlertManager-2.19.6.zip /tmp/wazuhAlertManager.zip
 
@@ -564,6 +590,12 @@ direction is visible in the repo itself.
 - The SLA policy (severity level -> resolution time target) is defined in
   `server/lib/reporting_fields.ts` - if you need different thresholds, that's
   currently a source edit + rebuild, not a UI setting.
+- On Wazuh 5.0, findings carry a severity label, not a number. The 4.x
+  source floor `sync.minRuleLevel` is ignored there; use
+  `sync.minSeverityLabel` instead. Numeric thresholds elsewhere (rule
+  minimum level, level filters, SLA tiers) apply to 5.0 records through
+  severity bands (0-3 low, 4-6 medium, 7-11 high, 12+ critical). Wazuh 5.0
+  itself is prerelease; the 5.0 target is re-verified when 5.0 is final.
 
 ## Disclaimer
 
