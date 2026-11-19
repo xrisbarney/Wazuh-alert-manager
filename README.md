@@ -434,7 +434,30 @@ this plugin's zip onto the same base image you already use, push the
 result to your registry, and swap the image reference. Everything else
 (volumes, networking, the rest of the Wazuh stack) stays exactly as it is.
 
-Build a custom image:
+**Prebuilt images.** Every supported Wazuh release has a ready-made image on
+GitHub Container Registry: the official `wazuh/wazuh-dashboard:<version>` with
+the matching plugin zip preinstalled and nothing else changed (same entrypoint,
+user, volumes and environment variables). Tags are the Wazuh version, plus a
+`-wam<plugin version>` tag pinned to the plugin release:
+
+```bash
+docker pull ghcr.io/xrisbarney/wazuh-dashboard-alert-manager:4.14.10
+docker pull ghcr.io/xrisbarney/wazuh-dashboard-alert-manager:4.14.10-wam2.0.3
+```
+
+Swap it in for `wazuh/wazuh-dashboard:4.14.10` in your compose file or
+manifest. The images are built by `.github/workflows/publish-images.yml`
+from `docker/Dockerfile`, which downloads the zip and its checksum from the
+GitHub release and verifies the checksum before installing. The same
+Dockerfile builds any supported pair locally:
+
+```bash
+docker build -f docker/Dockerfile \
+  --build-arg WAZUH_VERSION=4.14.10 --build-arg OSD_VERSION=2.19.6 \
+  --build-arg PLUGIN_VERSION=2.0.3 -t wazuh-dashboard-alert-manager:4.14.10 .
+```
+
+Or build a custom image yourself:
 
 ```dockerfile
 FROM wazuh/wazuh-dashboard:4.14.10
