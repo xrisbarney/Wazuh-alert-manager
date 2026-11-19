@@ -83,6 +83,26 @@ and `.minisig` (optional, verified when `minisign` and
 `WAM_MINISIGN_PUBLIC_KEY` are present). `<base-url>/latest/download/` resolves the newest
 release for the "latest" mode.
 
+## Container deployments
+
+If the dashboard runs as a container, do not run the installer inside it. Use
+the prebuilt image for your Wazuh version instead, which is the official
+`wazuh/wazuh-dashboard` image with the matching plugin zip preinstalled and
+nothing else changed:
+
+```bash
+docker pull ghcr.io/xrisbarney/wazuh-dashboard-alert-manager:4.14.10          # tracks the latest plugin release
+docker pull ghcr.io/xrisbarney/wazuh-dashboard-alert-manager:4.14.10-wam2.0.3  # pinned to a plugin release
+```
+
+Replace the `image:` of your `wazuh-dashboard` service with that reference and
+keep every volume, certificate mount and environment variable as it is. One
+tag exists per supported Wazuh release (see the matrix above); the images are
+published by the repository's `publish-images.yml` workflow from
+`docker/Dockerfile`, which verifies the zip's SHA-256 against the release
+checksum before installing. See the README section *Deploying on Docker /
+Kubernetes* for encryption-key and multi-replica notes.
+
 ## What the installer does
 
 1. Detects the installed OpenSearch Dashboards version.
