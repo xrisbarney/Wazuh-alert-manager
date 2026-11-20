@@ -1,0 +1,9 @@
+# E2E image: official wazuh-dashboard with a locally built plugin zip installed.
+#   docker build -f docker/dev/Dockerfile.local --build-arg WAZUH_VERSION=4.14.10 \
+#     --build-arg ZIP=build/wazuhAlertManager-2.19.6.zip -t wam-e2e-dashboard:dev .
+ARG WAZUH_VERSION
+FROM wazuh/wazuh-dashboard:${WAZUH_VERSION}
+ARG ZIP
+COPY --chown=1000:1000 ${ZIP} /tmp/wazuhAlertManager.zip
+RUN /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin install file:///tmp/wazuhAlertManager.zip \
+ && rm -f /tmp/wazuhAlertManager.zip
