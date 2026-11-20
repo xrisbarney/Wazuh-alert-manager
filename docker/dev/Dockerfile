@@ -23,11 +23,14 @@ ENV CYPRESS_INSTALL_BINARY=0 \
     NODE_OPTIONS=--max-old-space-size=6144 \
     OSD_REF=${DASHBOARD_REF}
 
-RUN apt-get update && apt-get install -y --no-install-recommends git rsync zip unzip && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git rsync zip unzip && rm -rf /var/lib/apt/lists/* \
+ && corepack enable \
+ && mkdir -p /osd && chown node:node /osd
 
+# OpenSearch Dashboards refuses to bootstrap or run as root.
+USER node
 WORKDIR /osd
 RUN git clone --depth 1 --branch ${DASHBOARD_REF} https://github.com/wazuh/wazuh-dashboard.git /osd \
- && corepack enable \
  && printf 'network-timeout 600000\nnetwork-concurrency 4\n' > /osd/.yarnrc \
  && yarn osd bootstrap \
  && yarn cache clean
