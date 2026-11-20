@@ -6,7 +6,7 @@ This plugin handles security data, so it is deliberately conservative about iden
 
 - The acting user is resolved **only** from the OpenSearch Security plugin — there is no request-header fallback that a client could spoof.
 - When identity cannot be established, actions are attributed to an explicit **`anonymous`** state rather than a guessed user.
-- Every workflow change (status, assignment, case link, automated rule action) is written to an append-only **history** with the actor and timestamp.
+- Workflow changes write an activity/audit event with the actor and timestamp, alongside a bounded embedded history where the mutable alert or case record requires one. Automation activity uses deterministic identities so a retry cannot append the same event twice.
 
 ## Data isolation
 

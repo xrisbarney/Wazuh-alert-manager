@@ -83,25 +83,66 @@ and `.minisig` (optional, verified when `minisign` and
 `WAM_MINISIGN_PUBLIC_KEY` are present). `<base-url>/latest/download/` resolves the newest
 release for the "latest" mode.
 
-## Container deployments
+## Container deployments (Docker / Kubernetes)
 
 If the dashboard runs as a container, do not run the installer inside it. Use
-the prebuilt image for your Wazuh version instead, which is the official
-`wazuh/wazuh-dashboard` image with the matching plugin zip preinstalled and
-nothing else changed:
+the prebuilt image for your Wazuh release instead. It is the official
+`wazuh/wazuh-dashboard:<version>` image with the matching plugin zip
+preinstalled and nothing else changed: same entrypoint, same user, same volumes
+and environment variables.
 
 ```bash
 docker pull ghcr.io/xrisbarney/wazuh-dashboard-alert-manager:4.14.10          # tracks the latest plugin release
-docker pull ghcr.io/xrisbarney/wazuh-dashboard-alert-manager:4.14.10-wam2.0.3  # pinned to a plugin release
+docker pull ghcr.io/xrisbarney/wazuh-dashboard-alert-manager:4.14.10-wam2.0.3  # pinned to this plugin release
 ```
 
-Replace the `image:` of your `wazuh-dashboard` service with that reference and
-keep every volume, certificate mount and environment variable as it is. One
-tag exists per supported Wazuh release (see the matrix above); the images are
-published by the repository's `publish-images.yml` workflow from
-`docker/Dockerfile`, which verifies the zip's SHA-256 against the release
-checksum before installing. See the README section *Deploying on Docker /
-Kubernetes* for encryption-key and multi-replica notes.
+One tag exists per Wazuh release in the table above, so pick the tag that
+equals your `wazuh/wazuh-dashboard` tag. Change **only** the image reference
+of the `wazuh-dashboard` service (the `image:` line in `docker-compose.yml`,
+the image field in your Helm values, or the container image in a `Deployment`
+manifest) and keep every volume, certificate mount and environment variable as
+it is. Images are published for `linux/amd64` and `linux/arm64`.
+
+- **Encryption key as an env var, only if you use AI analysis.** Set
+  `WAZUH_ALERT_MANAGER_ENCRYPTION_KEY` as a container environment variable or
+  through a Kubernetes `Secret`, with the exact same value on every replica.
+  Nothing else needs configuring to sync alerts and manage cases.
+- **Stateless pods are fine.** The plugin keeps no state on local disk; all of
+  its data lives in the plugin-owned `wazuh-alert-status-v2-*` and
+  `wazuh-alert-manager-v2-*` indices, so no extra volume is needed.
+- **Multiple replicas are safe.** Distributed leases ensure one replica runs
+  each background work lane at a time; the others detect the held lease and
+  skip it. Run the same image tag on every replica.
+- **Upgrades.** Move to the image tag of the new Wazuh release (and the
+  matching plugin release) the same way you roll out any image update.
+- **Probes are unchanged.** The plugin adds no probe requirements.
+
+The images are built by the repository's `publish-images.yml` workflow from
+`docker/Dockerfile`, which downloads the zip and its checksum from the GitHub
+release and verifies the SHA-256 before installing. The same Dockerfile builds
+any supported pair locally, and a two-line Dockerfile on top of the official
+image works as well if you prefer to build your own:
+
+```bash
+docker build -f docker/Dockerfile \
+  --build-arg WAZUH_VERSION=4.14.10 --build-arg OSD_VERSION=2.19.6 \
+  --build-arg PLUGIN_VERSION=2.0.3 -t wazuh-dashboard-alert-manager:4.14.10 .
+```
+
+```dockerfile
+FROM wazuh/wazuh-dashboard:4.14.10
+COPY wazuhAlertManager-2.19.6.zip /tmp/wazuhAlertManager.zip
+RUN /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin install \
+      file:///tmp/wazuhAlertManager.zip --allow-root
+```
+
+Verify an image before rolling it out:
+
+```bash
+docker run --rm --entrypoint /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin \
+  ghcr.io/xrisbarney/wazuh-dashboard-alert-manager:4.14.10 list
+# expected output includes: wazuhAlertManager@2.0.3
+```
 
 ## What the installer does
 

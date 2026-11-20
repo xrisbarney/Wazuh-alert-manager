@@ -47,7 +47,26 @@ OR
 (Source user equals administrator AND Process equals sshd)
 ```
 
-Supported entities are Agent, Source/Destination IP, Source/Destination port, Source/Destination user, and Process. Agent can be part of a correlation identity, but agent scope still belongs on Match.
+### Supported entity fields
+
+Entities are a fixed set that maps to Wazuh's standard decoder fields. Each entity reads exactly one path from the projected alert:
+
+| Trigger dropdown | Entity key | Alert field read |
+|------------------|------------|------------------|
+| Source IP | `srcip` | `data.srcip` |
+| Destination IP | `dstip` | `data.dstip` |
+| Source port | `srcport` | `data.srcport` |
+| Destination port | `dstport` | `data.dstport` |
+| Source user | `user` | `data.srcuser` |
+| Destination user | `dstuser` | `data.dstuser` |
+| Process | `process` | `data.process.name`, falling back to `data.process` |
+| Agent (API only in 2.0.x) | `agent` | `agent.name` |
+
+The `agent` entity is accepted by the rules API and the evaluator but is not yet offered in the Trigger dropdown; adding it to the dropdown is tracked as a future addition. Agent scope still belongs on Match.
+
+Fields are not selectable by arbitrary path. The sync job copies only a bounded projection of each native alert into plugin-owned storage (see [[Architecture]]), and that projection carries the fields above plus `agent`, `rule`, `manager`, `decoder`, and `location`. Fields produced by Wazuh's JSON decoder, such as `data.win.eventdata.targetUserName` or `data.win.eventdata.workstationName`, are not projected and cannot be used as entities in 2.0.x. Support for JSON-decoded fields is planned for a future release.
+
+`data.srcuser` and `data.dstuser` are populated by Wazuh's regex-based decoders through the decoder `order` option ([Wazuh decoder syntax](https://documentation.wazuh.com/current/user-manual/ruleset/ruleset-xml-syntax/decoders.html)). Windows Event Channel alerts are decoded by the [JSON decoder](https://documentation.wazuh.com/current/user-manual/ruleset/decoders/json-decoder.html) into `data.win.*` and normally carry no `data.srcuser` or `data.dstuser`, so Source user and Destination user do not match them. Preview reports such alerts in the missing-entity count. If the host that generated the event is the grouping you need, scope the rule by agent on Match.
 
 Preview and live execution use the same normalization and expression evaluator. IP addresses are canonicalized, ports are validated as integers from 0 through 65535, and user/process values are lowercased. A missing field does not form an `unknown` bucket; that group does not match. If one alert satisfies multiple OR groups, actions run once and all matching-group provenance is retained.
 
@@ -194,8 +213,8 @@ that separation and should be reserved for intentionally broad campaigns.
 
 ### Choosing values safely
 
-- Put host/agent scope on Match; do not repeat it merely because Agent is also
-  available as a correlation entity.
+- Put host/agent scope on Match. The Agent entity is API-only in 2.0.x and is
+  not needed for host scoping.
 - Use `Is present` when existence matters regardless of value.
 - Remember that `Is present` still separates identities by each observed value;
   it is not a single wildcard bucket under Separate by entity group.
