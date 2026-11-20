@@ -30,9 +30,9 @@ indexer plugin list. What 5.0 ships natively and how this plan avoids it:
 
 - [x] `docker/dev/Dockerfile`: bootstrapped `wazuh-dashboard` v4.14.10 tree (Node 18.19.0) for `yarn test` / `yarn build`. Image `wam-dev:4.14.10`.
 - [x] Wazuh 4.14.10 single-node Docker stack from `wazuh-docker` (checkout at `C:\Users\Chris\projects\wazuh-docker\single-node`, dashboard on https://localhost:8443, admin / SecretPassword).
-- [ ] `scripts/dev/test.sh`, `build.sh`, `e2e-deploy.sh` (build zip in the dev image, bake it into a dashboard image with `docker/Dockerfile`, swap it into the stack).
+- [x] `scripts/dev/test.sh`, `build.sh`, `e2e-deploy.sh` (build zip in the dev image, bake it into a dashboard image with `docker/Dockerfile`, swap it into the stack).
 - [ ] `e2e/seed_alerts.py` runnable from the host against the Docker indexer (`WAM_SEED_URL`), and `full_ui.spec.ts` seeding without Vagrant when `WAM_E2E_SEED=local`.
-- [ ] `.env.e2e.local` pointing at the Docker stack.
+- [x] `.env.e2e.local` pointing at the Docker stack (smoke spec green 2026-11-20).
 
 ## Phase 0: shared foundations
 
@@ -92,4 +92,5 @@ Needed by 6 and 1 (HTTP egress), 3 and 5 (periodic jobs), every feature (setting
 
 ## Log
 
+- 2026-11-20: dev image green: 39 suites / 405 tests, 2.19.6 zip built, deployed to the Docker stack, smoke spec 2/2.
 - 2026-11-20: branch created from 3.0; recommendations and plan written; dev image build and Docker stack started; subsystem maps in `runtime-evidence/trial-features/map/` (git-excluded).
