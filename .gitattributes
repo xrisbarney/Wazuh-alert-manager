@@ -1,0 +1,3 @@
+scripts/dev/*.sh text eol=lf
+docker/dev/* text eol=lf
+e2e/*.py text eol=lf
