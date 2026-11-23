@@ -6,10 +6,12 @@
 - [[User Guide]]
   - [Alerts](User-Guide#alerts)
   - [Cases](User-Guide#cases)
+  - [Settings](User-Guide#settings)
 - [[Automation Rules]]
 - [[Lifecycle, Retention and RBAC|Lifecycle-Retention-and-RBAC]]
 - [[Case Evidence and Case Lifecycle|Case-Evidence-and-Case-Lifecycle]]
 - [[Reporting]]
+- [[Notifications]]
 - [[AI Analysis]]
 - [[Security Model]]
 - [[Architecture]]

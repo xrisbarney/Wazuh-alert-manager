@@ -1,0 +1,57 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+#
+# wam-lab-agent-5: the Wazuh 5.0 twin of lab/agent. A small Ubuntu 24.04 VM
+# enrolled with the 5.0.0-rc2 agent against the wam5 Docker stack on the host
+# (wazuh-docker-5/single-node, which publishes the manager's HTTPS agent
+# listener 1517 as host port 1527 because the 4.14 stack owns the low ports).
+#
+# The 5.0 agent installs into /var/ossec like the 4.x agent, so the two cannot
+# share one VM; this is a separate box with its own name and hostname.
+#
+# Enrollment is token based. Mint one on the manager (the address must be in
+# the listener certificate's SAN; host.docker.internal is, and provision.sh
+# maps it to the NAT host 10.0.2.2 in /etc/hosts):
+#
+#   docker exec wam5-wazuh.manager sh -c 'cd /var/wazuh-manager && \
+#     bin/wazuh-manager-authd --create-enrollment-token \
+#       --address host.docker.internal --port 1527 --ttl 30d' | tail -1 > .enrollment-token
+#
+# .enrollment-token is git-ignored. WAM_LAB5_MANAGER overrides the NAT host.
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "bento/ubuntu-24.04"
+  config.vm.box_version = "202510.26.0"
+  config.vm.hostname = "wam-lab-agent-5"
+  config.vm.boot_timeout = 600
+
+  # /vagrant = this directory; /lab4 = lab/agent, for its generate.sh.
+  config.vm.synced_folder ".", "/vagrant"
+  config.vm.synced_folder "../agent", "/lab4"
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "wam-lab-agent-5"
+    vb.cpus = 1
+    vb.memory = 1024
+    vb.linked_clone = true
+    vb.customize ["modifyvm", :id, "--audio-driver", "none"]
+    vb.customize ["modifyvm", :id, "--usb", "off"]
+  end
+
+  token_file = File.join(File.dirname(__FILE__), ".enrollment-token")
+  token = File.exist?(token_file) ? File.read(token_file).strip : ""
+
+  config.vm.provision "shell",
+    path: "provision.sh",
+    privileged: true,
+    env: {
+      "WAM_LAB5_MANAGER" => ENV.fetch("WAM_LAB5_MANAGER", "10.0.2.2"),
+      "WAZUH_AGENT_NAME" => "wam-lab-agent-5",
+      "WAZUH_ENROLLMENT_TOKEN" => token,
+      "WAM_LAB_SECOND_IP" => ENV.fetch("WAM_LAB_SECOND_IP", "10.0.2.78"),
+      "WAM_AGENT_DEB_URL" => ENV.fetch(
+        "WAM_AGENT_DEB_URL",
+        "https://packages-staging.xdrsiem.wazuh.info/pre-release/5.x/apt/pool/main/w/wazuh-agent/wazuh-agent_5.0.0-rc2_amd64.deb"
+      ),
+    }
+end

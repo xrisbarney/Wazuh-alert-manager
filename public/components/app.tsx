@@ -26,6 +26,7 @@ import { SettingsView } from './settings_view';
 import { ReportsView } from './reports_view';
 import { PLUGIN_BUILD_ID } from '../../common';
 import { BuildInfo } from '../services/api';
+import { TerminologyContext, terminologyFor } from '../terminology';
 
 export type AppSection = 'workbench' | 'reporting';
 
@@ -41,6 +42,40 @@ interface AppProps {
 
 type WorkbenchTab = 'alerts' | 'cases' | 'settings';
 
+interface WorkbenchHeaderProps {
+  icon: string;
+  title: string;
+  description: React.ReactNode;
+  /** The top-level tab strip (Workbench only); Reporting has none. */
+  tabs?: React.ReactNode;
+}
+
+/**
+ * The sticky page header of both apps (step 8.4): icon, title block and the
+ * optional tab strip share one left edge with the content panel below
+ * (`.wamWorkbenchHeader` padding = the panel's content padding; the first tab
+ * pulls back its own padding, see index.scss).
+ */
+const WorkbenchHeader: React.FC<WorkbenchHeaderProps> = ({ icon, title, description, tabs }) => (
+  <div className={`wamWorkbenchHeader${tabs ? '' : ' wamWorkbenchHeader--noTabs'}`}>
+    <EuiFlexGroup alignItems="center" responsive={false} gutterSize="m" className="wamPageIntro">
+      <EuiFlexItem grow={false}>
+        <span className="wamPageIntro__icon"><EuiIcon type={icon} size="l" /></span>
+      </EuiFlexItem>
+      <EuiFlexItem>
+        <EuiTitle size="s"><h1>{title}</h1></EuiTitle>
+        <EuiText size="s" color="subdued">{description}</EuiText>
+      </EuiFlexItem>
+    </EuiFlexGroup>
+    {tabs ? (
+      <>
+        <EuiSpacer size="m" />
+        {tabs}
+      </>
+    ) : null}
+  </div>
+);
+
 export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 'workbench' }) => {
   const initialParams = React.useMemo(() => new URLSearchParams(window.location.search), []);
   const requestedTab = initialParams.get('tab');
@@ -50,6 +85,7 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 
   const [jumpToCaseId, setJumpToCaseId] = useState<string | undefined>(initialParams.get('case') || undefined);
   const [openAlertId, setOpenAlertId] = useState<string | undefined>(initialParams.get('alert') || undefined);
   const [serverBuild, setServerBuild] = useState<BuildInfo | null>(null);
+  const terms = terminologyFor(serverBuild);
 
   const apiService = React.useMemo(() => new AlertsApiService(coreStart.http), [coreStart.http]);
 
@@ -102,7 +138,7 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 
   };
 
   return (
-    <>
+    <TerminologyContext.Provider value={terms}>
       <EuiPage paddingSize="m" className="wamApp">
         <EuiPageBody>
           {serverBuild && serverBuild.buildId !== PLUGIN_BUILD_ID && (
@@ -121,30 +157,32 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 
             </>
           )}
           {section === 'reporting' ? (
-            <EuiPageContent>
-              <EuiPageContentBody>
-                <ReportsView apiService={apiService} onToast={addToast} />
-              </EuiPageContentBody>
-            </EuiPageContent>
+            <>
+              <WorkbenchHeader
+                icon="visBarVertical"
+                title="Reporting"
+                description={<>Operational outcomes for {terms.units} that occurred in the selected cohort.</>}
+              />
+              <EuiPageContent className="wamPageContent">
+                <EuiPageContentBody>
+                  <ReportsView apiService={apiService} onToast={addToast} />
+                </EuiPageContentBody>
+              </EuiPageContent>
+            </>
           ) : (
             <>
-              <div className="wamWorkbenchHeader">
-                <EuiFlexGroup alignItems="center" responsive={false} gutterSize="m" className="wamPageIntro">
-                  <EuiFlexItem grow={false}>
-                    <span className="wamPageIntro__icon"><EuiIcon type="securitySignal" size="l" /></span>
-                  </EuiFlexItem>
-                  <EuiFlexItem>
-                    <EuiTitle size="s"><h1>Security operations workbench</h1></EuiTitle>
-                    <EuiText size="s" color="subdued">Triage alerts, coordinate investigations, and automate repeatable decisions.</EuiText>
-                  </EuiFlexItem>
-                </EuiFlexGroup>
-                <EuiSpacer size="m" />
-                <EuiTabs className="wamWorkbenchTabs">
-                  <EuiTab isSelected={activeTab === 'alerts'} onClick={() => selectTab('alerts')}>Alerts</EuiTab>
-                  <EuiTab isSelected={activeTab === 'cases'} onClick={() => selectTab('cases')}>Cases</EuiTab>
-                  <EuiTab isSelected={activeTab === 'settings'} onClick={() => selectTab('settings')}>Settings</EuiTab>
-                </EuiTabs>
-              </div>
+              <WorkbenchHeader
+                icon="securitySignal"
+                title="Security operations workbench"
+                description={<>Triage {terms.units}, coordinate investigations, and automate repeatable decisions.</>}
+                tabs={
+                  <EuiTabs className="wamWorkbenchTabs">
+                    <EuiTab isSelected={activeTab === 'alerts'} onClick={() => selectTab('alerts')}>{terms.Units}</EuiTab>
+                    <EuiTab isSelected={activeTab === 'cases'} onClick={() => selectTab('cases')}>Cases</EuiTab>
+                    <EuiTab isSelected={activeTab === 'settings'} onClick={() => selectTab('settings')}>Settings</EuiTab>
+                  </EuiTabs>
+                }
+              />
 
               <EuiPageContent className="wamPageContent">
                 <EuiPageContentBody>
@@ -178,6 +216,6 @@ export const WazuhAlertManagerApp: React.FC<AppProps> = ({ coreStart, section = 
       </EuiPage>
 
       <EuiGlobalToastList className="wamGlobalToasts" toasts={toasts} dismissToast={removeToast} toastLifeTimeMs={6000} />
-    </>
+    </TerminologyContext.Provider>
   );
 };

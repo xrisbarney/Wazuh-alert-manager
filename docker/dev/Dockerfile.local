@@ -1,0 +1,21 @@
+# E2E image: official wazuh-dashboard with a locally built plugin zip installed.
+#   docker build -f docker/dev/Dockerfile.local --build-arg WAZUH_VERSION=4.14.10 \
+#     --build-arg ZIP=build/wazuhAlertManager-2.19.6.zip -t wam-e2e-dashboard:dev .
+# 5.0 images start as root and drop privileges in their entrypoint, so pass
+#   --build-arg WAZUH_VERSION=5.0.0-rc2 --build-arg ZIP=build/wazuhAlertManager-3.6.0.zip \
+#   --build-arg PLUGIN_UID=0 --build-arg PLUGIN_GID=0
+# (scripts/dev/e2e-deploy.sh does this from the WAM_* variables).
+ARG WAZUH_VERSION
+FROM wazuh/wazuh-dashboard:${WAZUH_VERSION}
+ARG ZIP
+# Owner of the staged zip: the image's own user (1000 on 4.x, root on 5.0).
+ARG PLUGIN_UID=1000
+ARG PLUGIN_GID=1000
+# Same path in 4.x and 5.0 images; overridable should it ever move.
+ARG PLUGIN_CLI=/usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin
+COPY --chown=${PLUGIN_UID}:${PLUGIN_GID} ${ZIP} /tmp/wazuhAlertManager.zip
+# The CLI refuses to run as root unless told so (5.0 images build as root;
+# 4.x images build as uid 1000 and take the plain command as before).
+RUN allow=""; if [ "$(id -u)" = "0" ]; then allow="--allow-root"; fi; \
+    ${PLUGIN_CLI} install file:///tmp/wazuhAlertManager.zip ${allow} \
+ && rm -f /tmp/wazuhAlertManager.zip

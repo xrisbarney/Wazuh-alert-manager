@@ -5,6 +5,9 @@ export interface ManagedDocumentLocation {
   id: string;
   index: string;
   source?: any;
+  /** Present when resolved with `withSeqNo`, for `if_seq_no` / `if_primary_term` writes. */
+  seqNo?: number;
+  primaryTerm?: number;
 }
 
 /** Resolve mutable documents behind a multi-index read alias. */
@@ -13,7 +16,8 @@ export async function resolveManagedDocuments(
   alias: string,
   ids: string[],
   physicalPrefix: string,
-  includeSource = false
+  includeSource = false,
+  withSeqNo = false
 ): Promise<Map<string, ManagedDocumentLocation>> {
   const unique = Array.from(new Set(ids.filter(Boolean)));
   const out = new Map<string, ManagedDocumentLocation>();
@@ -30,6 +34,7 @@ export async function resolveManagedDocuments(
         size: chunk.length * 2,
         query: { ids: { values: chunk } },
         _source: includeSource,
+        ...(withSeqNo ? { seq_no_primary_term: true } : {}),
         sort: [
           { state_version: { order: 'desc', unmapped_type: 'long' } },
           { ingested_at: { order: 'desc', unmapped_type: 'date' } },
@@ -40,14 +45,21 @@ export async function resolveManagedDocuments(
       if (!isManagedPhysicalIndex(hit._index, physicalPrefix)) {
         throw new Error(`Alias ${alias} resolved outside its managed family: ${hit._index}`);
       }
-      if (!out.has(hit._id)) out.set(hit._id, { id: hit._id, index: hit._index, source: hit._source });
+      if (!out.has(hit._id)) {
+        const location: ManagedDocumentLocation = { id: hit._id, index: hit._index, source: hit._source };
+        if (withSeqNo && typeof hit._seq_no === 'number' && typeof hit._primary_term === 'number') {
+          location.seqNo = hit._seq_no;
+          location.primaryTerm = hit._primary_term;
+        }
+        out.set(hit._id, location);
+      }
     }
   }
   return out;
 }
 
-export const resolveAlerts = (client: any, ids: string[], includeSource = false) =>
-  resolveManagedDocuments(client, ALERTS_READ_ALIAS, ids, 'wazuh-alert-status-v2-', includeSource);
+export const resolveAlerts = (client: any, ids: string[], includeSource = false, withSeqNo = false) =>
+  resolveManagedDocuments(client, ALERTS_READ_ALIAS, ids, 'wazuh-alert-status-v2-', includeSource, withSeqNo);
 
 export async function alertIndexOrThrow(client: any, id: string): Promise<string> {
   const found = await resolveAlerts(client, [id]);

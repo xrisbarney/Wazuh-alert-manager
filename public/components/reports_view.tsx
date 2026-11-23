@@ -15,12 +15,15 @@ import {
   EuiIconTip,
   EuiTabbedContent,
 } from '@elastic/eui';
-import { ReportMetrics } from '../../common';
+import { ReportMetrics, SlaPolicyResponse, DISPOSITIONS, DISPOSITION_LABELS } from '../../common';
+import type { Disposition, FalsePositiveByRuleRow } from '../../common';
+import { slaTargetsText } from './sla_targets_text';
 import { AlertsApiService } from '../services/api';
 import { formatDuration, STATUS_HEX, SEVERITY_HEX, STATUS_LABEL } from '../design';
 import { AlertTrendChart, StatusTrendChart } from './report_charts';
 import { DonutBreakdown } from './donut_breakdown';
 import { DeltaChip } from './delta_chip';
+import { ReportExportMenu } from './report_export_menu';
 
 // Resolve a picker value (absolute ISO or simple date-math like 'now-7d') to
 // epoch ms. Best-effort: anything it can't parse returns null, which just
@@ -78,6 +81,222 @@ function slaColor(pct: number | null): string {
 const REPORT_SCOPE =
   'Operational metric over live, unarchived alerts and cases only. Archived alerts and cases are excluded; retired activity can make timing incomplete. This is not an immutable compliance record.';
 
+const SLA_BAND_LABEL: Record<string, string> = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' };
+
+/**
+ * SLA enforcement (step 3.4): what the escalation scanner sees right now and
+ * what it did in the selected period. "Currently breached" is bound to now,
+ * not to the cohort; the breach and escalation counts come from the
+ * scanner's activity events whose timestamp falls in the period.
+ */
+// Concrete fills for the dispositions donut (SVG needs hex, not EUI tokens);
+// the same semantics as DISPOSITION_BADGE_COLOR: true positive = danger red,
+// false positive = neutral grey, benign = green, duplicate = light blue,
+// undetermined = amber.
+export const DISPOSITION_HEX: Record<Disposition, string> = {
+  true_positive: '#BD271E',
+  false_positive: '#98A2B3',
+  benign: '#54B399',
+  duplicate: '#6092C0',
+  undetermined: '#FEC514',
+};
+
+/**
+ * Dispositions (step 2.4): donut of the alerts closed in the period by
+ * outcome and the false-positive rate by rule. Renders nothing for a payload
+ * without the figures (an older server).
+ */
+export const DispositionsSection: React.FC<{ metrics: ReportMetrics }> = ({ metrics }) => {
+  const dispositions = metrics.dispositions;
+  const byRule = metrics.falsePositiveByRule;
+  if (!dispositions && !byRule) return null;
+  const closedInPeriod = dispositions ? DISPOSITIONS.reduce((sum, value) => sum + (dispositions[value] ?? 0), 0) : 0;
+  return (
+    <div className="wamReportDispositions" data-test-subj="wamReportDispositions">
+      <EuiSpacer size="l" />
+      <EuiHorizontalRule margin="none" />
+      <EuiSpacer size="m" />
+      <EuiTitle size="xs"><h3>Dispositions</h3></EuiTitle>
+      <EuiText size="xs" color="subdued">
+        Outcome recorded on the alerts closed in this period (by close time; an alert closed without a disposition counts as undetermined).
+      </EuiText>
+      <EuiSpacer size="s" />
+      <EuiFlexGroup gutterSize="m" wrap className="wamReportCharts">
+        <EuiFlexItem style={{ minWidth: 300 }} grow={false}>
+          <EuiPanel paddingSize="m" hasShadow={false} hasBorder className="wamReportPanel">
+            <EuiTitle size="xxs"><h4>Alerts closed by disposition</h4></EuiTitle>
+            <EuiText size="xs" color="subdued">Outcome recorded on the alerts closed in the period</EuiText>
+            <EuiSpacer size="s" />
+            {dispositions ? (
+              <div data-test-subj="wamReportDispositionsDonut">
+                <DonutBreakdown
+                  centerLabel="closed"
+                  centerValue={closedInPeriod}
+                  segments={DISPOSITIONS.map((value) => ({ label: DISPOSITION_LABELS[value], value: dispositions[value] ?? 0, color: DISPOSITION_HEX[value] }))}
+                />
+              </div>
+            ) : null}
+          </EuiPanel>
+        </EuiFlexItem>
+        <EuiFlexItem style={{ minWidth: 360 }}>
+          <EuiPanel paddingSize="m" hasShadow={false} hasBorder className="wamReportPanel">
+            <EuiTitle size="xxs"><h4>False-positive rate by rule</h4></EuiTitle>
+            <EuiText size="xs" color="subdued">Top {byRule?.length ?? 0} rules by alerts closed in the period.</EuiText>
+            <EuiSpacer size="s" />
+            {!byRule || byRule.length === 0 ? (
+              <EuiText size="s" color="subdued" data-test-subj="wamReportFalsePositiveEmpty">No alerts were closed in this period.</EuiText>
+            ) : (
+              <EuiBasicTable<FalsePositiveByRuleRow>
+                className="wamReportFalsePositiveTable"
+                data-test-subj="wamReportFalsePositiveTable"
+                items={byRule}
+                columns={[
+                  { field: 'rule_id', name: 'Rule', width: '110px' },
+                  { field: 'description', name: 'Description', render: (value: string | null) => value || '-' },
+                  { field: 'closed', name: 'Closed', width: '90px', align: 'right' },
+                  { field: 'false_positive', name: 'False positives', width: '130px', align: 'right' },
+                  { field: 'rate', name: 'Rate', width: '90px', align: 'right', render: (rate: number) => `${(rate * 100).toFixed(0)}%` },
+                ]}
+              />
+            )}
+          </EuiPanel>
+        </EuiFlexItem>
+      </EuiFlexGroup>
+    </div>
+  );
+};
+
+export const SlaEnforcementSection: React.FC<{ metrics: ReportMetrics; slaPolicy: SlaPolicyResponse | null }> = ({
+  metrics,
+  slaPolicy,
+}) => {
+  const breached = metrics.slaCurrentlyBreached;
+  const breaches = metrics.slaBreachesInPeriod;
+  const escalations = metrics.slaEscalationsInPeriod;
+  if (!breached && !breaches && !escalations) return null;
+  const policyEscalations = slaPolicy?.policy?.escalations;
+  const policyHasNoEscalations = Array.isArray(policyEscalations) && policyEscalations.length === 0;
+  const rows = escalations?.byEscalation || [];
+  const bandSummary = breached
+    ? Object.keys(SLA_BAND_LABEL)
+        .filter((band) => (breached.byBand?.[band as keyof typeof breached.byBand] ?? 0) > 0)
+        .map((band) => `${SLA_BAND_LABEL[band]} ${breached.byBand[band as keyof typeof breached.byBand]}`)
+        .join(' · ')
+    : '';
+  return (
+    <div className="wamReportSlaEnforcement" data-test-subj="wamReportSlaEnforcement">
+      <EuiSpacer size="l" />
+      <EuiHorizontalRule margin="none" />
+      <EuiSpacer size="m" />
+      <EuiTitle size="xs">
+        <h3>SLA enforcement</h3>
+      </EuiTitle>
+      <EuiText size="xs" color="subdued">
+        Currently breached is a live count (not bound to the period): open or in-progress alerts and open cases past their
+        resolve target. Breaches and escalations in period are the scanner&apos;s events whose time falls in the selected period.
+      </EuiText>
+      <EuiSpacer size="s" />
+      <EuiFlexGroup gutterSize="m" wrap className="wamReportStats">
+        <EuiFlexItem style={{ minWidth: 200 }}>
+          <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+            <EuiStat
+              title={breached ? `${breached.alerts.toLocaleString()} / ${breached.cases.toLocaleString()}` : 'N/A'}
+              description={
+                <>
+                  Currently breached (alerts / cases){' '}
+                  <EuiIconTip
+                    type="questionInCircle"
+                    content="Open or in-progress alerts and open cases that carry a breach stamp or whose resolve due date has passed, as of the last refresh. Not bound to the selected period."
+                  />
+                </>
+              }
+              titleSize="m"
+              titleColor={breached && breached.alerts + breached.cases > 0 ? 'danger' : 'subdued'}
+              data-test-subj="wamReportSlaBreachedNow"
+            />
+            {breached ? (
+              <EuiText size="xs" color="subdued" data-test-subj="wamReportSlaBreachedNowBands">
+                {bandSummary ? `By severity: ${bandSummary}` : 'Nothing is breached right now.'}
+              </EuiText>
+            ) : null}
+          </EuiPanel>
+        </EuiFlexItem>
+        <EuiFlexItem style={{ minWidth: 200 }}>
+          <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+            <EuiStat
+              title={breaches ? breaches.total.toLocaleString() : 'N/A'}
+              description={
+                <>
+                  Breaches in period{' '}
+                  <EuiIconTip
+                    type="questionInCircle"
+                    content="SLA breach events the scanner recorded in the selected period (one per alert or case, when its resolve due date first passed)."
+                  />
+                </>
+              }
+              titleSize="m"
+              titleColor={breaches && breaches.total > 0 ? 'warning' : 'subdued'}
+              data-test-subj="wamReportSlaBreachesInPeriod"
+            />
+            {breaches ? (
+              <EuiText size="xs" color="subdued">
+                {breaches.alerts.toLocaleString()} alerts, {breaches.cases.toLocaleString()} cases
+              </EuiText>
+            ) : null}
+          </EuiPanel>
+        </EuiFlexItem>
+        <EuiFlexItem style={{ minWidth: 200 }}>
+          <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+            <EuiStat
+              title={escalations ? escalations.total.toLocaleString() : 'N/A'}
+              description={
+                <>
+                  Escalations in period{' '}
+                  <EuiIconTip
+                    type="questionInCircle"
+                    content="Escalation rules the scanner applied in the selected period (one event per rule and record)."
+                  />
+                </>
+              }
+              titleSize="m"
+              titleColor={escalations && escalations.total > 0 ? 'accent' : 'subdued'}
+              data-test-subj="wamReportSlaEscalationsInPeriod"
+            />
+            {escalations ? (
+              <EuiText size="xs" color="subdued">
+                {rows.length.toLocaleString()} rule{rows.length === 1 ? '' : 's'} applied
+              </EuiText>
+            ) : null}
+          </EuiPanel>
+        </EuiFlexItem>
+      </EuiFlexGroup>
+      {escalations ? (
+        <>
+          <EuiSpacer size="s" />
+          {rows.length === 0 ? (
+            <EuiText size="s" color="subdued" data-test-subj="wamReportSlaEscalationEmpty">
+              {policyHasNoEscalations
+                ? 'No escalation rules are configured. Add them under Settings > SLA to auto-assign, comment on or raise the severity of records that are running late.'
+                : 'No escalations were applied in this period.'}
+            </EuiText>
+          ) : (
+            <EuiBasicTable
+              className="wamReportSlaEscalationTable"
+              data-test-subj="wamReportSlaEscalationTable"
+              items={rows}
+              columns={[
+                { field: 'name', name: 'Escalation' },
+                { field: 'id', name: 'Rule id' },
+                { field: 'count', name: 'Applied', align: 'right', render: (count: unknown) => Number(count).toLocaleString() },
+              ]}
+            />
+          )}
+        </>
+      ) : null}
+    </div>
+  );
+};
+
 export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
   // start/end are date-math or absolute-ISO strings; the reports API feeds them
   // straight into an OpenSearch range query, which accepts both. EuiSuperDatePicker
@@ -86,6 +305,8 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
   const [end, setEnd] = useState('now');
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<ReportMetrics | null>(null);
+  // The SLA policy the targets text cites (step 3.1); fetched once, independent of the date range.
+  const [slaPolicy, setSlaPolicy] = useState<SlaPolicyResponse | null>(null);
   const [prev, setPrev] = useState<ReportMetrics | null>(null);
   const loadGeneration = useRef(0);
   const onToastRef = useRef(onToast);
@@ -115,6 +336,15 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
   }, [apiService]);
 
   useEffect(() => {
+    let active = true;
+    apiService
+      .fetchSlaPolicy()
+      .then((res) => { if (active) setSlaPolicy(res); })
+      .catch(() => { if (active) setSlaPolicy(null); });
+    return () => { active = false; };
+  }, [apiService]);
+
+  useEffect(() => {
     load(start, end);
     return () => {
       loadGeneration.current += 1;
@@ -134,15 +364,18 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
 
   return (
     <div>
-      <EuiFlexGroup alignItems="center" justifyContent="spaceBetween" gutterSize="m" wrap>
+      <EuiFlexGroup alignItems="center" justifyContent="spaceBetween" gutterSize="m" wrap className="wamReportToolbar">
         <EuiFlexItem>
           <EuiTitle size="s">
-            <h2>Reporting</h2>
+            <h2>Cohort</h2>
           </EuiTitle>
           <EuiText size="s" color="subdued">
-            Operational outcomes for alerts that occurred in the selected cohort.{' '}
+            Alerts that occurred in the selected period, with their current status and outcomes.{' '}
             <EuiIconTip type="iInCircle" content={REPORT_SCOPE} aria-label="Report data scope" />
           </EuiText>
+        </EuiFlexItem>
+        <EuiFlexItem grow={false}>
+          <ReportExportMenu apiService={apiService} from={start} to={end} disabled={loading || !metrics} onToast={onToast} />
         </EuiFlexItem>
         <EuiFlexItem grow={false} className="wamReportDatePicker">
           <EuiSuperDatePicker
@@ -213,23 +446,23 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
           <EuiFlexGroup gutterSize="s" wrap className="wamReportStats">
             <EuiFlexItem style={{ minWidth: 160 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-                <EuiStat title={metrics.totalAlerts.toLocaleString()} description="Alerts in cohort" />
+                <EuiStat title={metrics.totalAlerts.toLocaleString()} description="Alerts in cohort" titleSize="m" />
                 <DeltaChip current={metrics.totalAlerts} previous={prev?.totalAlerts} higherIsBetter={false} />
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 160 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-                <EuiStat title={metrics.statusBreakdown.open} description="Currently open" titleColor="primary" />
+                <EuiStat title={metrics.statusBreakdown.open} description="Currently open" titleColor="primary" titleSize="m" />
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 160 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-                <EuiStat title={metrics.statusBreakdown.in_progress} description="Currently in progress" titleColor="accent" />
+                <EuiStat title={metrics.statusBreakdown.in_progress} description="Currently in progress" titleColor="accent" titleSize="m" />
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 160 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-                <EuiStat title={metrics.statusBreakdown.closed} description="Currently closed" titleColor="subdued" />
+                <EuiStat title={metrics.statusBreakdown.closed} description="Currently closed" titleColor="subdued" titleSize="m" />
               </EuiPanel>
             </EuiFlexItem>
           </EuiFlexGroup>
@@ -238,7 +471,7 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
 
           <EuiFlexGroup gutterSize="m" wrap className="wamReportCharts">
             <EuiFlexItem style={{ minWidth: 320 }}>
-              <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+              <EuiPanel paddingSize="m" hasShadow={false} hasBorder className="wamReportPanel">
                 <EuiTitle size="xxs">
                   <h4>Alert cohort by day</h4>
                 </EuiTitle>
@@ -248,7 +481,7 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 320 }}>
-              <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+              <EuiPanel paddingSize="m" hasShadow={false} hasBorder className="wamReportPanel">
                 <EuiTitle size="xxs">
                   <h4>Current disposition by occurrence date</h4>
                 </EuiTitle>
@@ -260,11 +493,12 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 300 }} grow={false}>
-              <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+              <EuiPanel paddingSize="m" hasShadow={false} hasBorder className="wamReportPanel">
                 <EuiTitle size="xxs">
                   <h4>Current cohort disposition</h4>
                 </EuiTitle>
-                <EuiSpacer size="m" />
+                <EuiText size="xs" color="subdued">Current status of the alerts in the cohort</EuiText>
+                <EuiSpacer size="s" />
                 <DonutBreakdown
                   centerLabel="alerts"
                   segments={[
@@ -366,6 +600,8 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
             </EuiFlexItem>
           </EuiFlexGroup>
 
+          <DispositionsSection metrics={metrics} />
+
           <EuiSpacer size="l" />
           <EuiHorizontalRule margin="none" />
           <EuiSpacer size="m" />
@@ -374,7 +610,7 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
             <h3>SLA breakdown by severity</h3>
           </EuiTitle>
           <EuiText size="xs" color="subdued">
-            Targets: Critical (level 12+) 1h &middot; High (7+) 4h &middot; Medium (4+) 24h &middot; Low 3d
+            {slaTargetsText(slaPolicy, metrics)}
           </EuiText>
           <EuiSpacer size="s" />
           {slaBreakdownWithTotals.length === 0 ? (
@@ -392,11 +628,13 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
                 {
                   field: 'compliancePct',
                   name: 'Compliance',
-                  render: (pct: number | null) => (pct != null ? `${pct.toFixed(0)}%` : 'N/A'),
+                  render: (pct: unknown) => (typeof pct === 'number' ? `${pct.toFixed(0)}%` : 'N/A'),
                 },
               ]}
             />
           )}
+
+          <SlaEnforcementSection metrics={metrics} slaPolicy={slaPolicy} />
 
           <EuiSpacer size="l" />
           <EuiHorizontalRule margin="none" />
@@ -416,15 +654,15 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
             <EuiCallOut title="Case metrics could not be loaded" color="danger" iconType="alert" size="s" />
           ) : (
             <div>
-          <EuiFlexGroup gutterSize="m" wrap>
+          <EuiFlexGroup gutterSize="m" wrap className="wamReportStats">
             <EuiFlexItem style={{ minWidth: 160 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-                <EuiStat title={metrics.cases.totalCases.toLocaleString()} description="Cases created" />
+                <EuiStat title={metrics.cases.totalCases.toLocaleString()} description="Cases created" titleSize="m" />
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 140 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-                <EuiStat title={metrics.cases.statusBreakdown.open} description="Currently open" titleColor="primary" />
+                <EuiStat title={metrics.cases.statusBreakdown.open} description="Currently open" titleColor="primary" titleSize="m" />
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 140 }}>
@@ -433,12 +671,13 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
                   title={metrics.cases.statusBreakdown.in_progress ?? 0}
                   description="Currently in progress"
                   titleColor="accent"
+                  titleSize="m"
                 />
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 140 }}>
               <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
-                <EuiStat title={metrics.cases.statusBreakdown.closed} description="Currently closed" titleColor="subdued" />
+                <EuiStat title={metrics.cases.statusBreakdown.closed} description="Currently closed" titleColor="subdued" titleSize="m" />
               </EuiPanel>
             </EuiFlexItem>
             <EuiFlexItem style={{ minWidth: 200 }}>
@@ -461,13 +700,14 @@ export const ReportsView: React.FC<Props> = ({ apiService, onToast }) => {
               No cases created in this period.
             </EuiText>
           ) : (
-            <EuiFlexGroup gutterSize="m" wrap>
+            <EuiFlexGroup gutterSize="m" wrap className="wamReportCharts">
               <EuiFlexItem style={{ minWidth: 300 }} grow={false}>
-                <EuiPanel paddingSize="m" hasShadow={false} hasBorder>
+                <EuiPanel paddingSize="m" hasShadow={false} hasBorder className="wamReportPanel">
                   <EuiTitle size="xxs">
                     <h4>Cases by severity</h4>
                   </EuiTitle>
-                  <EuiSpacer size="m" />
+                  <EuiText size="xs" color="subdued">Cases created in the period, by severity</EuiText>
+                  <EuiSpacer size="s" />
                   <DonutBreakdown
                     centerLabel="cases"
                     segments={['critical', 'high', 'medium', 'low'].map((k) => ({

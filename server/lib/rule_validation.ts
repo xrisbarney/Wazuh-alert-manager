@@ -1,6 +1,15 @@
 import { createHash } from 'crypto';
-import { ALERT_STATUSES, CASE_SEVERITIES } from '../../common';
+import {
+  ALERT_STATUSES,
+  ASSET_CRITICALITIES,
+  CASE_SEVERITIES,
+  DISPOSITIONS,
+  NOTIFICATION_CHANNEL_ID_PATTERN,
+  RULE_NOTIFY_MAX_CHANNELS,
+} from '../../common';
+import { isAssetCriticality } from './assets/matcher';
 import { validateEntityExpression } from './entity_expression';
+import { isTaskListId } from './task_lists';
 import { CANONICAL_RULE_SCHEMA_VERSION, canonicalizeRuleSchema } from './rule_schema_migration';
 
 export const DEFAULT_RULE_PRIORITY = 100;
@@ -72,6 +81,45 @@ export function mergeRulePatch(current: any, patch: any): any {
   };
 }
 
+/**
+ * The channel ids of a rule's `notify` action (step 1.4), or an empty list.
+ * Tolerates the un-normalised read shape (stored rules are never normalised on
+ * read): a missing / null action and a non-array `channelIds` give [].
+ */
+export function ruleNotifyChannelIds(rule: { actions?: any } | null | undefined): string[] {
+  const ids = rule?.actions?.notify?.channelIds;
+  if (!Array.isArray(ids)) return [];
+  return Array.from(new Set(ids.map((id: unknown) => String(id ?? '').trim()).filter(Boolean)));
+}
+
+function normalizeNotifyAction(notify: unknown): { notify?: any } {
+  if (notify === undefined || notify === null) return {};
+  if (typeof notify !== 'object' || Array.isArray(notify)) return { notify };
+  const ids = (notify as any).channelIds;
+  if (!Array.isArray(ids)) return { notify: { ...(notify as any) } };
+  const channelIds = cleanArray(ids);
+  return channelIds ? { notify: { channelIds } } : {};
+}
+
+function validateNotifyAction(notify: unknown): string[] {
+  if (notify === undefined) return [];
+  if (!notify || typeof notify !== 'object' || Array.isArray(notify) || !Array.isArray((notify as any).channelIds)) {
+    return ['Notify channels must be an object with a channelIds list.'];
+  }
+  const ids: unknown[] = (notify as any).channelIds;
+  const errors: string[] = [];
+  if (ids.length < 1 || ids.length > RULE_NOTIFY_MAX_CHANNELS) {
+    errors.push(`Notify channels must name between 1 and ${RULE_NOTIFY_MAX_CHANNELS} channel ids.`);
+  }
+  const malformed = ids.filter((id) => typeof id !== 'string' || !NOTIFICATION_CHANNEL_ID_PATTERN.test(id));
+  if (malformed.length) {
+    errors.push(
+      `Notify channel id(s) ${malformed.map((id) => JSON.stringify(String(id))).join(', ')} are not valid channel ids (1-64 lowercase letters, digits, "-" or "_").`
+    );
+  }
+  return errors;
+}
+
 /** Canonical write representation. This is intentionally never applied on reads. */
 export function normalizeRule(input: any): any {
   const legacyActions = input.actions ? {} : { createCase: true, caseSeverity: input.caseSeverity };
@@ -97,13 +145,30 @@ export function normalizeRule(input: any): any {
       agentNames: cleanArray(match.agentNames),
       agentNamesMode: match.agentNamesMode || 'any',
       ...(match.minLevel == null ? {} : { minLevel: match.minLevel }),
+      ...(match.minAssetCriticality == null ? {} : { minAssetCriticality: match.minAssetCriticality }),
     },
     trigger,
     actions: {
       createCase: actions.createCase === true,
       ...(actions.caseSeverity == null ? {} : { caseSeverity: actions.caseSeverity }),
       ...(actions.setStatus == null ? { setStatus: null } : { setStatus: actions.setStatus }),
+      // Disposition (step 2.4) only travels with a close: the editor hides the
+      // select for any other status, so a stale value is dropped, not refused.
+      ...(actions.setStatus === 'closed' && actions.disposition != null && actions.disposition !== ''
+        ? { disposition: actions.disposition }
+        : {}),
       assignTo: typeof actions.assignTo === 'string' ? actions.assignTo.trim() || null : actions.assignTo ?? null,
+      // TaskList applied when the rule creates a new case (step 2.2). An empty
+      // string clears it, and so does turning the create case action off (a
+      // stale selection must not block the save); anything else is kept
+      // verbatim so validation can refuse it.
+      ...(actions.applyTaskListId == null || actions.applyTaskListId === '' || actions.createCase !== true
+        ? {}
+        : { applyTaskListId: typeof actions.applyTaskListId === 'string' ? actions.applyTaskListId.trim() : actions.applyTaskListId }),
+      // Notify channels (step 1.4): the ids are trimmed and de-duplicated; an
+      // empty selection (the editor cleared the combo box) means no action, so
+      // the key is dropped. Any other shape is kept verbatim for validation.
+      ...normalizeNotifyAction(actions.notify),
     },
     preconditions: {
       statuses: cleanArray(preconditions.statuses),
@@ -164,9 +229,10 @@ export function normalizeAndValidateRule(input: any): RuleValidationResult {
   if (!['separate_by_group', 'consolidate_overlapping', 'one_per_rule'].includes(trigger.routing)) {
     errors.push('Case routing must be separate_by_group, consolidate_overlapping, or one_per_rule.');
   }
-  if (!actions.createCase && !actions.setStatus && !actions.assignTo) {
-    errors.push('Select at least one action: create case, set status, or assign to an analyst.');
+  if (!actions.createCase && !actions.setStatus && !actions.assignTo && !actions.notify) {
+    errors.push('Select at least one action: create case, set status, assign to an analyst, or notify channels.');
   }
+  errors.push(...validateNotifyAction(actions.notify));
   if (trigger.type === 'per_alert' && [match.ruleGroupsMode, match.ruleIdsMode, match.agentNamesMode].includes('all')) {
     errors.push('All match mode is only supported by burst rules.');
   }
@@ -182,7 +248,26 @@ export function normalizeAndValidateRule(input: any): RuleValidationResult {
     errors.push('The create case action needs a valid case severity.');
   }
   if (actions.setStatus != null && !ALERT_STATUSES.includes(actions.setStatus)) errors.push('Set status is invalid.');
-  const hasMatch = !!(match.ruleGroups?.length || match.ruleIds?.length || match.agentNames?.length || match.minLevel != null);
+  if (actions.disposition !== undefined && !DISPOSITIONS.includes(actions.disposition)) {
+    errors.push('Disposition must be one of true_positive, false_positive, benign, duplicate or undetermined.');
+  }
+  if (actions.applyTaskListId !== undefined) {
+    if (!isTaskListId(actions.applyTaskListId)) {
+      errors.push('Apply task list must be a task list id (1-64 letters, digits, "-" or "_").');
+    } else if (!actions.createCase) {
+      errors.push('Apply task list requires the create case action.');
+    }
+  }
+  if (match.minAssetCriticality != null && !isAssetCriticality(match.minAssetCriticality)) {
+    errors.push(`Minimum asset criticality must be one of ${ASSET_CRITICALITIES.join(', ')}.`);
+  }
+  const hasMatch = !!(
+    match.ruleGroups?.length ||
+    match.ruleIds?.length ||
+    match.agentNames?.length ||
+    match.minLevel != null ||
+    match.minAssetCriticality != null
+  );
   if (!hasMatch && !rule.safety.acknowledgeMatchAll) {
     errors.push('Matching all alerts requires safety.acknowledgeMatchAll=true.');
   }

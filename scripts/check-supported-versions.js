@@ -3,7 +3,10 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 const declared = require(path.join(root, 'supported-wazuh-versions.json'));
-const supportedLines = new Set(['4.12', '4.13', '4.14']);
+// Wazuh lines this plugin targets. 4.x reads `wazuh-alerts-*`; 5.0 reads the
+// `wazuh-findings-v5-*` data streams (see server/lib/source_profile.ts).
+const supportedLines = new Set(['4.12', '4.13', '4.14', '5.0']);
+const FINAL_TAG = /^(4\.(12|13|14)|5\.0)\.\d+$/;
 
 function unique(values) {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
@@ -25,8 +28,13 @@ async function main() {
   const tags = await getJson('https://api.github.com/repos/wazuh/wazuh-dashboard/tags?per_page=100');
   const officialVersions = unique(tags
     .map((tag) => String(tag.name || '').replace(/^v/, ''))
-    .filter((version) => /^4\.(12|13|14)\.\d+$/.test(version)));
-  const declaredVersions = unique(declared.map((entry) => entry.wazuhVersion));
+    .filter((version) => FINAL_TAG.test(version)));
+  // Prerelease rows (release candidates, betas) are tracked deliberately and
+  // are not expected to appear in the final-tag comparison. They are still
+  // verified against the exact upstream OSD version below.
+  const finalDeclared = declared.filter((entry) => !entry.prerelease);
+  const prereleaseDeclared = declared.filter((entry) => entry.prerelease);
+  const declaredVersions = unique(finalDeclared.map((entry) => entry.wazuhVersion));
 
   if (!sameValues(officialVersions, declaredVersions)) {
     const missing = officialVersions.filter((version) => !declaredVersions.includes(version));
@@ -47,7 +55,16 @@ async function main() {
     }
   }
 
-  const expectedOsd = unique(declared.map((entry) => entry.osdVersion));
+  for (const entry of prereleaseDeclared) {
+    const finalTag = entry.wazuhVersion.replace(/-.*$/, '');
+    if (officialVersions.includes(finalTag)) {
+      throw new Error(`Wazuh ${finalTag} is now final upstream; replace the prerelease row ${entry.wazuhVersion}`);
+    }
+  }
+
+  // The installer and release CI must serve every final target. Prerelease
+  // targets are development-only until the owner promotes them.
+  const expectedOsd = unique(finalDeclared.map((entry) => entry.osdVersion));
   const installer = fs.readFileSync(path.join(root, 'install.sh'), 'utf8');
   const installerMatch = installer.match(/^SUPPORTED_OSD_VERSIONS="([^"]+)"/m);
   if (!installerMatch) throw new Error('Could not read SUPPORTED_OSD_VERSIONS from install.sh');
@@ -56,14 +73,23 @@ async function main() {
   const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'build-and-release.yml'), 'utf8');
   const workflowOsd = unique([...workflow.matchAll(/osdVersion:\s*"([^"]+)"/g)].map((match) => match[1]));
 
-  if (!sameValues(expectedOsd, installerOsd)) {
+  const missingFromInstaller = expectedOsd.filter((version) => !installerOsd.includes(version));
+  const unexpectedInInstaller = installerOsd.filter((version) => !expectedOsd.includes(version) &&
+    !prereleaseDeclared.some((entry) => entry.osdVersion === version));
+  if (missingFromInstaller.length || unexpectedInInstaller.length) {
     throw new Error(`Installer targets ${installerOsd.join(', ')}; expected ${expectedOsd.join(', ')}`);
   }
-  if (!sameValues(expectedOsd, workflowOsd)) {
+  const missingFromWorkflow = expectedOsd.filter((version) => !workflowOsd.includes(version));
+  const unexpectedInWorkflow = workflowOsd.filter((version) => !expectedOsd.includes(version) &&
+    !prereleaseDeclared.some((entry) => entry.osdVersion === version));
+  if (missingFromWorkflow.length || unexpectedInWorkflow.length) {
     throw new Error(`Release CI targets ${workflowOsd.join(', ')}; expected ${expectedOsd.join(', ')}`);
   }
 
-  console.log(`Compatibility matrix is current: ${declaredVersions.length} Wazuh patches, ${expectedOsd.length} OSD artifacts.`);
+  console.log(
+    `Compatibility matrix is current: ${declaredVersions.length} Wazuh patches, ${expectedOsd.length} OSD artifacts` +
+      (prereleaseDeclared.length ? `, ${prereleaseDeclared.length} prerelease target(s) tracked` : '') + '.'
+  );
 }
 
 main().catch((error) => {

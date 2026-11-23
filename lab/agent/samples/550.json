@@ -1,0 +1,101 @@
+{
+  "_index": "wazuh-alerts-4.x-2026.11.21",
+  "_score": null,
+  "_source": {
+    "syscheck": {
+      "size_before": "129",
+      "uname_after": "root",
+      "mtime_after": "2026-11-21T21:00:28",
+      "size_after": "167",
+      "gid_after": "0",
+      "md5_before": "f69f4f5ad8dc6c965190b9ef26ed6535",
+      "sha256_before": "e077548fd09d08a3de324c8e64c48794fcf489967253921ad2555f49cf617ef1",
+      "mtime_before": "2026-11-21T20:58:23",
+      "mode": "realtime",
+      "path": "/etc/wam-lab-marker.conf",
+      "sha1_after": "ae5948bd09028c70956de5906bf946e6eae0d013",
+      "changed_attributes": [
+        "size",
+        "mtime",
+        "md5",
+        "sha1",
+        "sha256"
+      ],
+      "gname_after": "root",
+      "uid_after": "0",
+      "perm_after": "rw-r--r--",
+      "event": "modified",
+      "md5_after": "1700ada2b315d52929ef67d3c1ba293a",
+      "sha1_before": "786736ade44b2fe854b24d2132e7aab26f9b2868",
+      "sha256_after": "2ce9f77d55364b99a68c5a8600b4040ac99401ae2dbcfc61ee596d3bc7bdb376",
+      "inode_after": 524921
+    },
+    "agent": {
+      "ip": "10.0.2.15",
+      "name": "wam-lab-agent",
+      "id": "001"
+    },
+    "manager": {
+      "name": "wazuh.manager"
+    },
+    "rule": {
+      "mail": false,
+      "level": 7,
+      "pci_dss": [
+        "11.5"
+      ],
+      "hipaa": [
+        "164.312.c.1",
+        "164.312.c.2"
+      ],
+      "tsc": [
+        "PI1.4",
+        "PI1.5",
+        "CC6.1",
+        "CC6.8",
+        "CC7.2",
+        "CC7.3"
+      ],
+      "description": "Integrity checksum changed.",
+      "groups": [
+        "ossec",
+        "syscheck",
+        "syscheck_entry_modified",
+        "syscheck_file"
+      ],
+      "nist_800_53": [
+        "SI.7"
+      ],
+      "gdpr": [
+        "II_5.1.f"
+      ],
+      "firedtimes": 1,
+      "mitre": {
+        "technique": [
+          "Stored Data Manipulation"
+        ],
+        "id": [
+          "T1565.001"
+        ],
+        "tactic": [
+          "Impact"
+        ]
+      },
+      "id": "550",
+      "gpg13": [
+        "4.11"
+      ]
+    },
+    "decoder": {
+      "name": "syscheck_integrity_changed"
+    },
+    "full_log": "File '/etc/wam-lab-marker.conf' modified\nMode: realtime\nChanged attributes: size,mtime,md5,sha1,sha256\nSize changed from '129' to '167'\nOld modification time was: '1795294703', now it is '1795294828'\nOld md5sum was: 'f69f4f5ad8dc6c965190b9ef26ed6535'\nNew md5sum is : '1700ada2b315d52929ef67d3c1ba293a'\nOld sha1sum was: '786736ade44b2fe854b24d2132e7aab26f9b2868'\nNew sha1sum is : 'ae5948bd09028c70956de5906bf946e6eae0d013'\nOld sha256sum was: 'e077548fd09d08a3de324c8e64c48794fcf489967253921ad2555f49cf617ef1'\nNew sha256sum is : '2ce9f77d55364b99a68c5a8600b4040ac99401ae2dbcfc61ee596d3bc7bdb376'\n",
+    "input": {
+      "type": "log"
+    },
+    "@timestamp": "2026-11-21T21:00:28.423Z",
+    "location": "syscheck",
+    "id": "1795294828.1586762",
+    "timestamp": "2026-11-21T21:00:28.423+0000"
+  }
+}

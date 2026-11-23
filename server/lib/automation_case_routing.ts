@@ -5,6 +5,8 @@ import { reconcileCaseEvidence } from './case_evidence_service';
 import { buildHistoryEntry } from './history';
 import { appendActivityOnce } from './activity';
 import { resolveCase } from './case_index_resolution';
+import { getNotificationEmitter } from './notifications/emitters';
+import { applyTaskListToCase, getTaskList } from './task_lists';
 
 const ACTOR = 'correlation-rule';
 const ACTIVE_CASE_STATUSES = new Set(['open', 'in_progress']);
@@ -34,6 +36,8 @@ export interface AutomationCaseTrigger {
   routing: CorrelationCaseRouting;
   severity: string;
   assignedTo: string | null;
+  /** TaskList applied when this trigger creates a NEW case (step 2.2); ignored on extension. */
+  applyTaskListId?: string | null;
   group: MatchingEntityGroup;
   alertIds: string[];
   threshold: number;
@@ -49,6 +53,7 @@ export interface AutomationCaseRoute {
   routing: CorrelationCaseRouting;
   severity: string;
   assignedTo: string | null;
+  applyTaskListId?: string | null;
   correlationKey: string;
   matchingKeys: string[];
   alertIds: string[];
@@ -64,6 +69,10 @@ export interface AutomationCaseRoutingResult {
   linked: number;
   conflicts: string[];
   caseIds: string[];
+  /** TaskLists applied to cases this call created (step 2.2). */
+  taskListsApplied: number;
+  /** Per-case task list failures (`<caseId>: <message>`); the case itself was created and linked. */
+  taskListErrors: string[];
   /** Deterministic work not attempted because a run-level cap was reached. */
   remainder: AutomationCaseRoute[];
 }
@@ -99,6 +108,7 @@ function routeFor(tasks: AutomationCaseTrigger[]): AutomationCaseRoute {
       first.severity
     ),
     assignedTo: first.assignedTo,
+    applyTaskListId: first.applyTaskListId ?? null,
     correlationKey: `${first.ruleId}|${first.routing}|${digest(scope).slice(0, 40)}`,
     matchingKeys,
     alertIds: Array.from(new Set(tasks.flatMap((task) => task.alertIds))).sort(),
@@ -331,30 +341,56 @@ async function findEvidenceAlertIdsForCases(client: any, caseIds: string[]): Pro
 async function closeDuplicateCases(
   client: any,
   duplicates: any[],
+  survivorId: string,
   now: string,
   fence: AutomationCaseRouteFence
 ): Promise<void> {
+  // A consolidated duplicate is closed with the `duplicate` disposition
+  // (step 2.4) so it carries a badge, answers the Disposition filter / export
+  // and counts in the case report like a manual duplicate close would.
+  const closureReason = `Consolidated into case ${survivorId}`;
   for (const duplicate of duplicates) {
+    const entry: Record<string, any> = buildHistoryEntry({ user: ACTOR, action: 'status_change', from: duplicate._source?.status, to: 'closed' });
+    entry.timestamp = now;
+    entry.disposition = 'duplicate';
     const current = await resolveCase(client, String(duplicate._id));
     if (!ACTIVE_CASE_STATUSES.has(current.source?.status)) {
       throw new Error(`Duplicate case ${duplicate._id} changed state during consolidation`);
     }
     await fence();
+    // The script guards the terminal state itself, so no external
+    // if_seq_no / if_primary_term fence: a search-derived token is only
+    // refresh-visible and would 409 after any refresh:false writer in the same
+    // pass. Same approach as updateActiveCase below.
     await client.update({
       index: current.index,
       id: duplicate._id,
       refresh: false,
-      if_seq_no: current.seqNo,
-      if_primary_term: current.primaryTerm,
+      retry_on_conflict: 50,
       body: {
         script: {
           lang: 'painless',
           source:
-            'if (ctx._source.status != "open" && ctx._source.status != "in_progress") { throw new IllegalStateException("duplicate case is no longer active"); } ctx._source.status = "closed"; ctx._source.closed_at = params.now; ctx._source.updated_at = params.now; ctx._source.updated_by = params.actor;',
-          params: { now, actor: ACTOR },
+            'if (ctx._source.status != "open" && ctx._source.status != "in_progress") { throw new IllegalStateException("duplicate case is no longer active"); } ' +
+            'ctx._source.status = "closed"; ctx._source.closed_at = params.now; ctx._source.updated_at = params.now; ctx._source.updated_by = params.actor; ' +
+            'ctx._source.disposition = params.disposition; ctx._source.closure_reason = params.closure_reason; ' +
+            'if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(params.entry); while (ctx._source.history.size() > 1000) { ctx._source.history.remove(0); }',
+          params: { now, actor: ACTOR, disposition: 'duplicate', closure_reason: closureReason, entry },
         },
       },
     });
+    // Notifications (step 1.3): the consolidation writes no case activity
+    // row for the duplicate, so the `activity.ts` hook never sees this close;
+    // `case.closed` is emitted directly, keyed on the close instant. The
+    // emitter never throws.
+    const emitter = getNotificationEmitter();
+    if (emitter) {
+      await emitter.emitCaseEvent(
+        'case.closed',
+        { ...current.source, status: 'closed', closed_at: now, updated_at: now, updated_by: ACTOR, disposition: 'duplicate', closure_reason: closureReason, id: String(duplicate._id) },
+        { actor: ACTOR, changes: { from: current.source?.status ?? null, to: 'closed' }, key: now, now: new Date(now) }
+      );
+    }
   }
 }
 
@@ -432,7 +468,7 @@ export async function applyAutomationCaseRoutes(
   fence: AutomationCaseRouteFence = async () => undefined
 ): Promise<AutomationCaseRoutingResult> {
   const result: AutomationCaseRoutingResult = {
-    created: 0, extended: 0, linked: 0, conflicts: [], caseIds: [], remainder: [],
+    created: 0, extended: 0, linked: 0, conflicts: [], caseIds: [], remainder: [], taskListsApplied: 0, taskListErrors: [],
   };
   const createdByRule = new Map<string, number>();
   let linksRemaining = Math.max(0, maxLinks);
@@ -504,7 +540,7 @@ export async function applyAutomationCaseRoutes(
     if (relationshipsAddedDuringAdoption.length) {
       throw new Error('Authoritative evidence relationships changed during case consolidation');
     }
-    await closeDuplicateCases(client, found.duplicates, now, fence);
+    await closeDuplicateCases(client, found.duplicates, String(found.id), now, fence);
     linksRemaining -= requested.length;
     result.created += found.created ? 1 : 0;
     if (found.created) createdByRule.set(route.ruleId, ruleCreated + 1);
@@ -518,11 +554,52 @@ export async function applyAutomationCaseRoutes(
       linkage.conflictedAlertIds, now, action, fence
     );
     await fence();
+    // A `case_auto_created_evidence` event is what the notification hook of
+    // `activity.ts` (step 1.3) maps to `case.created`: the case exists and its
+    // evidence is linked by now, and the deterministic id keeps a queue retry
+    // from notifying twice (a 409 "already written" never calls the hook).
     await appendActivityOnce(client, `case-route:${digest(`${found.id}|${action}|${route.correlationKey}|${requested.join('\u0000')}`)}`, {
       targetType: 'case', targetId: found.id, user: ACTOR, action,
       timestamp: now, source: 'automation', operationId: route.correlationKey, ruleRevision: route.revision,
     });
+    if (found.created && route.applyTaskListId) {
+      await applyRouteTaskList(client, found.id, route, now, fence, result);
+    }
   }
   result.conflicts = Array.from(new Set(result.conflicts)).sort();
   return result;
+}
+
+/**
+ * TaskList on creation (step 2.2): only a case this pass created gets the
+ * rule's task list; routing into an existing case never re-applies it. The
+ * apply goes through the same fenced task mutation the UI uses (it reads the
+ * case back, so the `refresh: false` claim update above is retried once from
+ * a realtime GET) and is idempotent per task list per case, so a queue retry
+ * after a partial failure adds nothing twice. A failure is recorded on the
+ * result and never undoes the created case or its evidence.
+ */
+async function applyRouteTaskList(
+  client: any,
+  caseId: string,
+  route: AutomationCaseRoute,
+  now: string,
+  fence: AutomationCaseRouteFence,
+  result: AutomationCaseRoutingResult
+): Promise<void> {
+  // The fence stays outside the catch: a lost lease must abort the whole
+  // routing pass like every other fence call, never be recorded as a task list error.
+  await fence();
+  try {
+    const taskList = await getTaskList(client, String(route.applyTaskListId));
+    const outcome = await applyTaskListToCase(client, caseId, taskList, ACTOR, now, {
+      source: 'automation',
+      operationId: route.correlationKey,
+      ruleRevision: route.revision,
+      activityId: `task-list-apply:${digest(`${caseId}|${taskList.id}`)}`,
+    });
+    if (outcome.applied) result.taskListsApplied += 1;
+  } catch (error: any) {
+    result.taskListErrors.push(`${caseId}: ${error?.message || String(error)}`);
+  }
 }

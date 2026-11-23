@@ -1,0 +1,327 @@
+[
+  {
+    "_index": ".ds-wazuh-findings-v5-system-activity-000001",
+    "_id": "Vw73HoMbt3hqnbtleDs8CA",
+    "_source": {
+      "process": {
+        "name": "useradd",
+        "pid": 39985
+      },
+      "@timestamp": "2026-10-31T15:58:01.648289905Z",
+      "related": {
+        "hosts": [
+          "wazuh-allinone"
+        ],
+        "user": [
+          "wamtest"
+        ]
+      },
+      "host": {
+        "hostname": "wazuh-allinone"
+      },
+      "wazuh": {
+        "cluster": {
+          "node": "node01",
+          "name": "wazuh"
+        },
+        "protocol": {
+          "location": "journald",
+          "queue": 49
+        },
+        "agent": {
+          "host": {
+            "hostname": "wazuh-allinone",
+            "os": {
+              "name": "Ubuntu",
+              "type": "linux",
+              "version": "24.04.3 LTS (Noble Numbat)",
+              "platform": "ubuntu"
+            },
+            "architecture": "x86_64"
+          },
+          "name": "wazuh-allinone",
+          "groups": [
+            "default"
+          ],
+          "id": "001",
+          "version": "v5.0.0"
+        },
+        "integration": {
+          "name": "system-auth",
+          "decoders": [
+            "decoder/core-wazuh-message/0",
+            "decoder/syslog/0",
+            "decoder/system-auth/0"
+          ],
+          "category": "system-activity"
+        },
+        "rule": {
+          "level": "low",
+          "compliance": {
+            "iso_27001": [
+              "A.5.16",
+              "A.5.18",
+              "A.8.15"
+            ],
+            "hipaa": [
+              "164.308.a.1.ii.D",
+              "164.308.a.3",
+              "164.312.a.2.i"
+            ],
+            "pci_dss": [
+              "8.3.2",
+              "10.2.1.5",
+              "11.5.1"
+            ],
+            "tsc": [
+              "CC6.2",
+              "CC7.2",
+              "CC7.3"
+            ],
+            "nis2": [
+              "21.2.a",
+              "21.2.e",
+              "23"
+            ],
+            "nist_800_171": [
+              "3.1.1",
+              "3.1.2",
+              "3.5.1"
+            ],
+            "fedramp": [
+              "AC-2",
+              "AU-6",
+              "IR-4"
+            ],
+            "nist_800_53": [
+              "AC-2",
+              "AU-6",
+              "SI-4"
+            ],
+            "cmmc": [
+              "AC.L1-3.1.1",
+              "AU.L2-3.3.1",
+              "IA.L1-3.5.1"
+            ],
+            "gdpr": [
+              "IV_32.1.a",
+              "IV_33.1",
+              "IV_34.1"
+            ]
+          },
+          "mitre": {
+            "technique": {
+              "name": [
+                "Create Account"
+              ],
+              "id": [
+                "T1136"
+              ]
+            },
+            "subtechnique": {
+              "name": [
+                "Local Account"
+              ],
+              "id": [
+                "T1136.001"
+              ]
+            },
+            "tactic": {
+              "name": [
+                "Persistence"
+              ],
+              "id": [
+                "TA0003"
+              ]
+            }
+          },
+          "id": "452b0548-225c-59ad-b8bd-4d7331871158",
+          "title": "New user account wamtest created",
+          "tags": [
+            "low",
+            "wazuh-generic-1",
+            "attack.persistence",
+            "attack.t1136.001"
+          ],
+          "status": "stable"
+        },
+        "event": {
+          "id": "9ac3e6a0-77dc-4211-9698-92e0b0f80ecb"
+        },
+        "space": {
+          "name": "standard"
+        }
+      },
+      "event": {
+        "original": "Oct 31 15:57:54 wazuh-allinone useradd[39985]: new user: name=wamtest, UID=1999, GID=1999, home=/home/wamtest, shell=/bin/bash",
+        "kind": "event",
+        "start": "2026-10-31T15:57:54.000Z",
+        "action": "user-created",
+        "index": ".ds-wazuh-events-v5-system-activity-000001",
+        "category": [
+          "iam"
+        ],
+        "type": [
+          "user",
+          "creation"
+        ],
+        "dataset": "system-auth",
+        "doc_id": "d2uukqEBZ8jEqhEa0hN_",
+        "outcome": "success"
+      },
+      "message": "new user: name=wamtest, UID=1999, GID=1999, home=/home/wamtest, shell=/bin/bash",
+      "user": {
+        "target": {
+          "name": "wamtest",
+          "id": "1999"
+        }
+      },
+      "group": {
+        "id": "1999"
+      }
+    }
+  },
+  {
+    "_index": ".ds-wazuh-findings-v5-system-activity-000001",
+    "_id": "rOMUuE9PGgCKXTI2Xa_O9Q",
+    "_source": {
+      "process": {
+        "name": "sudo",
+        "pid": 39984,
+        "working_directory": "/",
+        "command_line": "/bin/true"
+      },
+      "@timestamp": "2026-10-31T15:58:01.648289714Z",
+      "related": {
+        "hosts": [
+          "wazuh-allinone"
+        ],
+        "user": [
+          "nobody",
+          "root"
+        ]
+      },
+      "host": {
+        "hostname": "wazuh-allinone"
+      },
+      "wazuh": {
+        "cluster": {
+          "node": "node01",
+          "name": "wazuh"
+        },
+        "protocol": {
+          "location": "journald",
+          "queue": 49
+        },
+        "agent": {
+          "host": {
+            "hostname": "wazuh-allinone",
+            "os": {
+              "name": "Ubuntu",
+              "type": "linux",
+              "version": "24.04.3 LTS (Noble Numbat)",
+              "platform": "ubuntu"
+            },
+            "architecture": "x86_64"
+          },
+          "name": "wazuh-allinone",
+          "groups": [
+            "default"
+          ],
+          "id": "001",
+          "version": "v5.0.0"
+        },
+        "integration": {
+          "name": "system-auth",
+          "decoders": [
+            "decoder/core-wazuh-message/0",
+            "decoder/syslog/0",
+            "decoder/system-auth/0"
+          ],
+          "category": "system-activity"
+        },
+        "rule": {
+          "level": "low",
+          "compliance": {
+            "hipaa": [
+              "164.308(a)(5)(ii)(C)"
+            ],
+            "pci_dss": [
+              "10.2.1.4"
+            ],
+            "nis2": [
+              "IR-3.2"
+            ],
+            "gdpr": [
+              "Article 32",
+              "Article 33",
+              "Article 5"
+            ]
+          },
+          "mitre": {
+            "technique": {
+              "name": [
+                "Brute Force",
+                "Valid Accounts"
+              ],
+              "id": [
+                "T1110",
+                "T1078"
+              ]
+            },
+            "tactic": {
+              "name": [
+                "Credential Access",
+                "Initial Access"
+              ],
+              "id": [
+                "TA0006",
+                "TA0001"
+              ]
+            }
+          },
+          "id": "4df109ef-774d-5c2e-a116-8f6c353898ad",
+          "title": "Failed authentication attempt - nobody",
+          "tags": [
+            "low",
+            "wazuh-generic-1",
+            "attack.credential-access",
+            "attack.initial-access",
+            "attack.t1110",
+            "attack.t1078"
+          ],
+          "status": "stable"
+        },
+        "event": {
+          "id": "db66308f-b962-44fb-9fda-75d1febc9023"
+        },
+        "space": {
+          "name": "standard"
+        }
+      },
+      "event": {
+        "original": "Oct 31 15:57:54 wazuh-allinone sudo[39984]: nobody : user NOT in sudoers ; TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/bin/true",
+        "kind": "event",
+        "start": "2026-10-31T15:57:54.000Z",
+        "action": "authentication-failure",
+        "index": ".ds-wazuh-events-v5-system-activity-000001",
+        "category": [
+          "authentication"
+        ],
+        "type": [
+          "info"
+        ],
+        "dataset": "system-auth",
+        "doc_id": "dWuukqEBZ8jEqhEa0hN_",
+        "outcome": "failure"
+      },
+      "message": "nobody : user NOT in sudoers ; TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/bin/true",
+      "user": {
+        "effective": {
+          "name": "root"
+        },
+        "name": "nobody"
+      }
+    }
+  }
+]

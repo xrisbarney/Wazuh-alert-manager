@@ -2,6 +2,7 @@ import {
   CorrelationEntity,
   CorrelationEntityExpression,
 } from '../../common';
+import { canonicalDomain, canonicalHash, canonicalUrl } from '../../common/indicators';
 
 export const MAX_ENTITY_GROUPS = 5;
 export const MAX_ENTITY_PREDICATES = 5;
@@ -15,6 +16,9 @@ const ENTITIES: CorrelationEntity[] = [
   'user',
   'dstuser',
   'process',
+  'hash',
+  'domain',
+  'url',
 ];
 
 function canonicalIpv4(value: string): string | null {
@@ -81,6 +85,11 @@ export function normalizeEntityValue(entity: CorrelationEntity, input: unknown):
     return Number.isInteger(port) && port >= 0 && port <= 65535 ? String(port) : null;
   }
   if (entity === 'user' || entity === 'dstuser' || entity === 'process') return value.toLowerCase();
+  // Indicator kinds share the canonical forms of common/indicators.ts so a
+  // predicate value matches the extracted indicator byte for byte.
+  if (entity === 'hash') return canonicalHash(value);
+  if (entity === 'domain') return canonicalDomain(value);
+  if (entity === 'url') return canonicalUrl(value)?.url ?? (value.startsWith('/') ? value : null);
   return value;
 }
 
@@ -174,8 +183,15 @@ function valuesFromAlert(entity: CorrelationEntity, alert: any): unknown[] {
     case 'dstport': value = data.dstport; break;
     case 'user': value = data.srcuser; break;
     case 'dstuser': value = data.dstuser; break;
-    case 'process': value = data?.process?.name ?? data?.process; break;
+    case 'process': value = data?.process?.name ?? data?.process ?? data?.audit?.exe; break;
     case 'agent': value = alert?.agent?.name; break;
+    case 'hash': {
+      const syscheck = alert?.syscheck && typeof alert.syscheck === 'object' ? alert.syscheck : {};
+      value = [syscheck.sha256_after, syscheck.sha1_after, syscheck.md5_after].filter((v) => v != null);
+      break;
+    }
+    case 'domain': value = data.hostname; break;
+    case 'url': value = data.url; break;
   }
   return Array.isArray(value) ? value : value == null ? [] : [value];
 }

@@ -3,6 +3,7 @@ import { ALERTS_READ_ALIAS, ACTIVITY_READ_ALIAS, META_INDEX } from '../../common
 import { assertManagedWriteTarget } from './index_namespace';
 import { loadReportActivity, deriveAlertReporting } from './report_metrics';
 import { REPORTING_MERGE_SCRIPT } from './reporting_fields';
+import { getSlaPolicy } from './sla/policy';
 
 const BACKFILL_STATE_ID = 'reporting_backfill_state_v2';
 const PAGE_SIZE = 500;
@@ -66,6 +67,7 @@ function candidateQuery(): any {
  */
 export async function runReportingBackfill(client: any, logger: Logger) {
   let state = await loadState(client);
+  const slaPolicy = await getSlaPolicy(client, logger);
   if (state.completed_at) {
     // Completed in a previous run. Re-scan only if a re-run is explicitly
     // requested; routine startup does nothing.
@@ -99,7 +101,7 @@ export async function runReportingBackfill(client: any, logger: Logger) {
       const updates: any[] = [];
       let pageUpdated = 0;
       for (const hit of hits) {
-        const reporting = deriveAlertReporting(hit._source || {}, activity[hit._id] || []);
+        const reporting = deriveAlertReporting(hit._source || {}, activity[hit._id] || [], Number.POSITIVE_INFINITY, slaPolicy);
         updates.push({ update: { _index: hit._index, _id: hit._id } });
         updates.push({
           script: { lang: 'painless', source: REPORTING_MERGE_SCRIPT, params: { reporting } },

@@ -18,6 +18,7 @@ import {
 import { AlertManagerConfigType } from '../config';
 import { assertManagedWriteTarget, assertSafeSourcePattern } from './index_namespace';
 import { projectLegacyOperationalAlert } from './operational_projection';
+import { getSlaPolicy } from './sla/policy';
 import { canonicalizeRuleSchema } from './rule_schema_migration';
 import { acquireOrRenewLock, generateHolderId, releaseLock } from './sync_lock';
 
@@ -113,13 +114,18 @@ async function sourceLocations(client: any, sourcePattern: string, legacyHits: a
   return resolved;
 }
 
-async function migrateAlertBatch(client: any, hits: any[], sourcePattern: string) {
+async function migrateAlertBatch(client: any, hits: any[], sourcePattern: string, logger?: Logger) {
   const locations = await sourceLocations(client, sourcePattern, hits);
+  // Stored SLA policy, read once per batch (cached 60 s), so a migrated
+  // alert's due timestamps follow the policy like a freshly synced one (3.2).
+  const slaPolicy = await getSlaPolicy(client, logger);
   const projected = hits.map((hit) => {
     const location = locations.get(hit._id);
     const doc = projectLegacyOperationalAlert(
       hit,
-      location ? { index: location._index, id: location._id } : null
+      location ? { index: location._index, id: location._id } : null,
+      undefined,
+      { slaPolicy }
     );
     doc.legacy_id = hit._id;
     doc.migrated_from_legacy = true;
@@ -161,6 +167,7 @@ async function migrateAlertBatch(client: any, hits: any[], sourcePattern: string
           ACTIVITY_WRITE_ALIAS,
           eventId(['legacy-history', legacy._id, entry.timestamp, entry.action, ordinal]),
           {
+            event_uid: eventId(['legacy-history', legacy._id, entry.timestamp, entry.action, ordinal]),
             event_type: 'audit',
             target_type: 'alert',
             target_id: doc.alert_uid,
@@ -323,6 +330,7 @@ async function migrateComments(client: any, batchSize: number) {
       const source = hit._source || {};
       const alertId = source.alert_id ? map.get(source.alert_id) || null : null;
       const doc = {
+        event_uid: hit._id,
         event_type: 'comment',
         target_type: alertId ? 'alert' : 'case',
         target_id: alertId || source.case_id,
@@ -412,7 +420,7 @@ export async function migrateLegacyData(client: any, config: AlertManagerConfigT
         LEGACY_ALERT_STATUS_INDEX,
         { match_all: {} },
         async (hits) => {
-          migrated += await migrateAlertBatch(client, hits, config.sync.sourceIndexPattern);
+          migrated += await migrateAlertBatch(client, hits, config.sync.sourceIndexPattern, logger);
           completedBatches += 1;
           await saveState(client, {
             phase: 'alerts',

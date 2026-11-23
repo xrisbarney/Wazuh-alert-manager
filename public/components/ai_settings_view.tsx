@@ -8,7 +8,6 @@ import {
   EuiFieldText,
   EuiButton,
   EuiSpacer,
-  EuiText,
   EuiBadge,
   EuiPanel,
   EuiAccordion,
@@ -19,6 +18,7 @@ import {
 } from '@elastic/eui';
 import { AiProvider } from '../../common';
 import { AlertsApiService } from '../services/api';
+import { SettingsFormActions, SettingsPageHeader } from './settings_page';
 
 interface Props {
   apiService: AlertsApiService;
@@ -72,22 +72,18 @@ export const AiSettingsView: React.FC<Props> = ({ apiService, onToast }) => {
     }
   };
 
-  if (loading) return <EuiLoadingSpinner size="xl" />;
+  if (loading) return <div className="wamSettingsLoading"><EuiLoadingSpinner size="xl" /></div>;
 
   return (
-    <EuiPanel paddingSize="l" style={{ maxWidth: 640 }}>
-      <EuiTitle size="s">
-        <h3>AI analysis integration</h3>
-      </EuiTitle>
-      <EuiText size="s" color="subdued">
-        Connect an LLM provider so analysts can generate an AI-assisted summary and next-step suggestions when an alert is opened.
-        The API key is encrypted before it is stored and is never sent back to the browser.
-      </EuiText>
-      <EuiSpacer size="l" />
+    <div className="wamSettingsPage wamAiSettings" data-test-subj="wamAiSettings">
+      <SettingsPageHeader
+        title="AI analysis integration"
+        description="Connect an LLM provider so analysts can generate an AI-assisted summary and next-step suggestions when an alert is opened. The API key is encrypted before it is stored and is never sent back to the browser."
+      />
 
       {!encryptionConfigured && (
         <>
-          <EuiCallOut title="Encryption key not configured" color="danger" iconType="lock">
+          <EuiCallOut size="s" title="Encryption key not configured" color="danger" iconType="lock">
             <p>
               Set the <code>WAZUH_ALERT_MANAGER_ENCRYPTION_KEY</code> environment variable (32+ characters) for the
               wazuh-dashboard service and restart it before an API key can be saved. Generate one with:
@@ -96,47 +92,55 @@ export const AiSettingsView: React.FC<Props> = ({ apiService, onToast }) => {
               openssl rand -base64 32
             </EuiCodeBlock>
           </EuiCallOut>
-          <EuiSpacer size="l" />
+          <EuiSpacer size="m" />
         </>
       )}
 
-      <EuiForm>
-        <EuiFormRow label="Enable AI analysis">
-          <EuiSwitch label={enabled ? 'Enabled' : 'Disabled'} checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-        </EuiFormRow>
-
-        <EuiFormRow label="Provider">
-          <EuiSelect options={PROVIDER_OPTIONS} value={provider} onChange={(e) => setProvider(e.target.value as AiProvider)} />
-        </EuiFormRow>
-
-        <EuiFormRow
-          label="API key"
-          labelAppend={configured ? <EuiBadge color="success">Configured</EuiBadge> : <EuiBadge color="hollow">Not set</EuiBadge>}
-          helpText={configured ? 'Leave blank to keep the currently saved key.' : undefined}
-        >
-          <EuiFieldPassword
-            type="dual"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={configured ? '••••••••••••' : 'Paste your API key'}
-          />
-        </EuiFormRow>
-
-        <EuiAccordion id="ai-advanced" buttonContent="Advanced">
-          <EuiSpacer size="s" />
-          <EuiFormRow label="Model override" helpText="Leave blank to use the provider's default model.">
-            <EuiFieldText value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. gpt-4o-mini" />
+      <EuiPanel hasBorder hasShadow={false} paddingSize="m">
+        <EuiTitle size="xs"><h4>Provider</h4></EuiTitle>
+        <EuiSpacer size="s" />
+        <EuiForm>
+          <EuiFormRow label="Enable AI analysis" fullWidth hasChildLabel={false}>
+            <EuiSwitch label={enabled ? 'Enabled' : 'Disabled'} checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
           </EuiFormRow>
-          <EuiFormRow label="API base URL override" helpText="Only needed for self-hosted or proxied endpoints.">
-            <EuiFieldText value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://..." />
-          </EuiFormRow>
-        </EuiAccordion>
 
-        <EuiSpacer size="l" />
-        <EuiButton fill onClick={save} isLoading={saving}>
-          Save AI settings
-        </EuiButton>
-      </EuiForm>
-    </EuiPanel>
+          <EuiFormRow label="Provider" fullWidth>
+            <EuiSelect fullWidth options={PROVIDER_OPTIONS} value={provider} onChange={(e) => setProvider(e.target.value as AiProvider)} />
+          </EuiFormRow>
+
+          <EuiFormRow
+            label="API key"
+            fullWidth
+            labelAppend={configured ? <EuiBadge color="success">Configured</EuiBadge> : <EuiBadge color="hollow">Not set</EuiBadge>}
+            helpText={configured ? 'Leave blank to keep the currently saved key.' : undefined}
+          >
+            <EuiFieldPassword
+              fullWidth
+              type="dual"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={configured ? '••••••••••••' : 'Paste your API key'}
+            />
+          </EuiFormRow>
+
+          <EuiAccordion id="ai-advanced" buttonContent="Advanced">
+            <EuiSpacer size="s" />
+            <EuiFormRow label="Model override" fullWidth helpText="Leave blank to use the provider's default model.">
+              <EuiFieldText fullWidth value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. gpt-4o-mini" />
+            </EuiFormRow>
+            <EuiFormRow label="API base URL override" fullWidth helpText="Only needed for self-hosted or proxied endpoints.">
+              <EuiFieldText fullWidth value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://..." />
+            </EuiFormRow>
+          </EuiAccordion>
+
+          <EuiSpacer size="m" />
+          <SettingsFormActions>
+            <EuiButton size="s" fill iconType="save" onClick={save} isLoading={saving}>
+              Save AI settings
+            </EuiButton>
+          </SettingsFormActions>
+        </EuiForm>
+      </EuiPanel>
+    </div>
   );
 };

@@ -15,10 +15,10 @@
 #        --checksum ./wazuhAlertManager-2.19.6.zip.sha256
 #
 # Recommended, supply-chain-safe form (download + verify the installer first):
-#   curl -fsSLO <base-url>/v2.0.3/install.sh
-#   curl -fsSLO <base-url>/v2.0.3/install.sh.sha256
+#   curl -fsSLO <base-url>/download/v3.0.0-rc.1/install.sh
+#   curl -fsSLO <base-url>/download/v3.0.0-rc.1/install.sh.sha256
 #   sha256sum -c install.sh.sha256
-#   sudo bash install.sh --version 2.0.3
+#   sudo bash install.sh --version 3.0.0-rc.1
 
 set -euo pipefail
 
@@ -34,9 +34,45 @@ PLUGIN_ID="wazuhAlertManager"
 PLUGIN_DIR="$DASHBOARD_ROOT/plugins/$PLUGIN_ID"
 BACKUP_DIR="/var/lib/wazuh-alert-manager/backups"
 
+# The plugin CLI must run as whoever owns the plugins directory. Wazuh 4.x
+# packages hand the whole dashboard tree to the wazuh-dashboard user; Wazuh
+# 5.0 packages keep the tree root-owned (0755) and the service only reads it.
+# Running as the wrong user fails with EACCES on `plugins/.plugin.installing`.
+plugins_owner() {
+  stat -c '%U' "$DASHBOARD_ROOT/plugins" 2>/dev/null || echo wazuh-dashboard
+}
+
+plugin_cli() {
+  local owner
+  owner="$(plugins_owner)"
+  if [ "$owner" = "root" ]; then
+    "$DASHBOARD_ROOT/bin/opensearch-dashboards-plugin" "$@" --allow-root
+  else
+    sudo -u "$owner" "$DASHBOARD_ROOT/bin/opensearch-dashboards-plugin" "$@"
+  fi
+}
+
+# Restore ownership to match the sibling plugins after any root-side write.
+fix_plugin_owner() {
+  local owner group
+  owner="$(plugins_owner)"
+  group="$(stat -c '%G' "$DASHBOARD_ROOT/plugins" 2>/dev/null || echo "$owner")"
+  if [ -d "$PLUGIN_DIR" ]; then
+    chown -R "$owner:$group" "$PLUGIN_DIR" || true
+  fi
+}
+
 # OSD version -> Wazuh release this artifact targets. Anything not listed here
 # is refused: the installer must never guess.
-SUPPORTED_OSD_VERSIONS="2.19.1 2.19.2 2.19.3 2.19.4 2.19.5 2.19.6"
+# 2.19.x = Wazuh 4.12-4.14 (reads wazuh-alerts-*). 3.6.0 = Wazuh 5.0 (reads the
+# wazuh-findings-v5-* data streams); a development target until 5.0 is final.
+SUPPORTED_OSD_VERSIONS="2.19.1 2.19.2 2.19.3 2.19.4 2.19.5 2.19.6 3.6.0"
+
+# OSD versions whose artifact only exists in a pre-release. `/releases/latest`
+# never resolves a GitHub pre-release, so the default (no --version) path would
+# 404 on these - fail early with the tag to pass instead.
+PRERELEASE_ONLY_OSD_VERSIONS="3.6.0"
+PRERELEASE_TAG_HINT="3.0.0-rc.1"
 
 # Optional signature verification (minisign). Not required, but used when both
 # the tool and a trusted public key are present.
@@ -47,6 +83,40 @@ ARTIFACT=""         # local artifact path (offline mode)
 CHECKSUM=""         # local checksum path
 DRY_RUN=0
 NO_RESTART=0
+# Wazuh 5.0: the dashboard's indexer user only READS wazuh-* by default, so the
+# installer grants it ownership of the plugin's own stores (exact prefixes)
+# through a dedicated OpenSearch Security role. Needs the local admin
+# credentials the Wazuh installer publishes on the indexer host.
+DASHBOARD_USER="kibanaserver"
+SKIP_STORE_ROLE=0
+INDEXER_URL="https://127.0.0.1:9200"
+INDEXER_CREDENTIALS_FILE="/etc/wazuh-indexer/export/credentials.env"
+STORE_ROLE="wazuh_alert_manager_store"
+# Trial features (both lines): optional grants, each with an opt-out flag.
+#  - native read: a dedicated read-only role on native asset-state and
+#    threat-intel indices, mapped to the dashboard user. Analysts need the same
+#    role; it is printed so operators can map it to their own groups.
+#  - notifications: a dedicated least-privilege role mapped to the dashboard
+#    user. The dispatcher sends through an inline Alerting monitor execution,
+#    which needs exactly: alerting monitor/execute, notifications configs/get
+#    (to load the channel) and notifications feature/publish, plus read on the
+#    plugin's notification outbox. It deliberately does NOT use the reserved
+#    alerting_full_access role, which is cluster-wide alerting admin plus
+#    metadata read on every index.
+# Indexer admin credentials come from --indexer-admin-password, the
+# WAZUH_INDEXER_ADMIN_PASSWORD environment variable, or (Wazuh 5.0 installs)
+# the credentials file the Wazuh installer leaves on the indexer host.
+SKIP_NATIVE_READ_ROLE=0
+SKIP_NOTIFICATION_ROLE=0
+NATIVE_READ_ROLE="wazuh_alert_manager_native_read"
+NATIVE_READ_PATTERNS='"wazuh-states-*","wazuh-threatintel-enrichments*"'
+NOTIFY_ROLE="wazuh_alert_manager_notify"
+NOTIFY_CLUSTER_PERMISSIONS='"cluster:admin/opendistro/alerting/monitor/execute","cluster:admin/opensearch/notifications/configs/get","cluster:admin/opensearch/notifications/feature/publish"'
+NOTIFICATIONS_INDEX="wazuh-alert-manager-v2-notifications"
+INDEXER_ADMIN_PASSWORD="${WAZUH_INDEXER_ADMIN_PASSWORD:-}"
+# Set by the grant functions so the completion banner can tell the truth.
+GRANTS_APPLIED=""
+GRANTS_NOT_APPLIED=""
 ACTION="install"    # install | rollback | uninstall | remove-data
 REMOVE_DATA_CONFIRM=""
 
@@ -58,11 +128,26 @@ OSD_VERSION=""
 # -k for the local availability check. Downloads below always use $CURL (no -k),
 # so release integrity verification is never relaxed.
 LOCAL_CURL_ARGS=()
-if [ -f /etc/wazuh-indexer/certs/root-ca.pem ]; then
+if [ -r /etc/wazuh-indexer/certs/root-ca.pem ]; then
   LOCAL_CURL_ARGS=(--cacert /etc/wazuh-indexer/certs/root-ca.pem)
 else
   LOCAL_CURL_ARGS=(-k)
 fi
+
+# Wazuh 5.0 signs the dashboard certificate with a per-component CA, so the
+# indexer root CA does not verify https://127.0.0.1. The local probes only
+# establish availability (never integrity), so fall back to -k when the CA
+# does not verify the local dashboard. Called once the service is up.
+settle_local_curl_args() {
+  [ "${LOCAL_CURL_ARGS[0]:-}" = "-k" ] && return 0
+  local code
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "${LOCAL_CURL_ARGS[@]}" "https://127.0.0.1/app/login" 2>/dev/null || true)"
+  if [ "$code" = "000" ]; then
+    if curl -sk -o /dev/null --max-time 5 "https://127.0.0.1/app/login" 2>/dev/null; then
+      LOCAL_CURL_ARGS=(-k)
+    fi
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -89,21 +174,42 @@ Wazuh Alert Manager installer
   install.sh [options]
 
 Install / upgrade:
-  --version V          Install a pinned plugin release (e.g. 2.0.3). Recommended.
+  --version V          Install a pinned plugin release (e.g. 2.0.3, or the
+                       pre-release 3.0.0-rc.1). Recommended.
   --artifact FILE      Install from a local ZIP (offline). Use with --checksum.
   --checksum FILE      SHA-256 checksum file for --artifact.
   --base-url URL       Override the release host (or WAM_RELEASE_BASE_URL).
   --dashboard-root DIR Override the dashboard install root (default $DASHBOARD_ROOT).
   --no-restart         Install but do not stop/restart the dashboard service.
+  --dashboard-user U   Indexer user the dashboard runs as (default kibanaserver).
+                       Wazuh 5.0 only: granted the plugin store role.
+  --indexer-url URL    Indexer API for the role grants (default https://127.0.0.1:9200).
+  --indexer-admin-password P
+                       Indexer admin password for the role grants. Also read
+                       from WAZUH_INDEXER_ADMIN_PASSWORD; on Wazuh 5.0 it
+                       defaults to the installer's credentials file.
+  --skip-store-role    Wazuh 5.0 only: do not create/map the plugin store role.
+  --skip-native-read-role
+                       Do not create/map the read-only role $NATIVE_READ_ROLE
+                       (wazuh-states-*, wazuh-threatintel-enrichments*).
+  --skip-notification-role
+                       Do not create/map the delivery role $NOTIFY_ROLE
+                       (alerting execute + notifications publish + read on
+                       $NOTIFICATIONS_INDEX).
   --dry-run            Resolve and print the plan without changing anything.
 
 Other actions:
   --rollback           Restore the most recent backup of the plugin.
+  --grant-store-role   Wazuh 5.0 only: (re)create the plugin store role and map
+                       --dashboard-user to it, without installing anything.
+  --grant-roles        (Re)apply every role grant (store, native read,
+                       notifications) for --dashboard-user without installing.
   --uninstall-plugin   Remove the plugin while retaining all data.
   --remove-data        Permanently delete plugin-owned OpenSearch indices
                        (requires separate explicit confirmation).
 
-Without --version the latest compatible release is selected.
+Without --version the latest compatible STABLE release is selected; GitHub
+pre-releases (e.g. 3.0.0-rc.1) are only installed when named with --version.
 EOF
   exit 1
 }
@@ -142,6 +248,12 @@ resolve_urls() {
   elif [ -n "$VERSION" ]; then
     ARTIFACT_URL="$BASE_URL/download/v$VERSION/$name"
   else
+    local v
+    for v in $PRERELEASE_ONLY_OSD_VERSIONS; do
+      if [ "$v" = "$OSD_VERSION" ]; then
+        die "OpenSearch Dashboards $OSD_VERSION is only shipped by a pre-release; rerun with --version $PRERELEASE_TAG_HINT (the latest stable release has no wazuhAlertManager-$OSD_VERSION.zip)."
+      fi
+    done
     ARTIFACT_URL="$BASE_URL/latest/download/$name"
   fi
 
@@ -168,14 +280,326 @@ dashboard_ready() {
   # Wait until the dashboard answers HTTPS on localhost (login route). Wazuh
   # dashboard startup is slow after a cold indexer start, so allow generous
   # headroom (up to 5 minutes).
+  # The first start after a plugin install can also rebuild the dashboard's
+  # optimizer cache on OSD 3.x, so allow up to 10 minutes.
   local i
-  for i in $(seq 1 150); do
+  for i in $(seq 1 300); do
     if curl -fsSL -o /dev/null --max-time 3 "${LOCAL_CURL_ARGS[@]}" "https://127.0.0.1/app/login" 2>/dev/null; then
+      return 0
+    fi
+    # Up but not verifiable with the chosen CA: switch the local probes to -k.
+    if [ "${LOCAL_CURL_ARGS[0]:-}" != "-k" ] && curl -fsk -o /dev/null --max-time 3 "https://127.0.0.1/app/login" 2>/dev/null; then
+      LOCAL_CURL_ARGS=(-k)
       return 0
     fi
     sleep 2
   done
   return 1
+}
+
+indexer_curl_args() {
+  # Prefer the CA the dashboard itself trusts for the indexer, then the indexer
+  # root CA. Wazuh 5.0 uses per-component CAs, so verify that the chosen CA
+  # actually validates $INDEXER_URL; for a localhost indexer fall back to -k
+  # (availability only; the admin credentials never leave this host).
+  local ca
+  for ca in /etc/wazuh-dashboard/certs/indexer-ca.pem /etc/wazuh-indexer/certs/root-ca.pem; do
+    if [ -r "$ca" ] && curl -sS -o /dev/null --max-time 5 --cacert "$ca" "$INDEXER_URL" >/dev/null 2>&1; then
+      echo "--cacert $ca"
+      return 0
+    fi
+  done
+  case "$INDEXER_URL" in
+    https://127.0.0.1*|https://localhost*) echo "-k" ;;
+    *) echo "--cacert /nonexistent" ;;
+  esac
+}
+
+store_role_instructions() {
+  cat <<EOF
+    The dashboard's indexer user ($DASHBOARD_USER) must own the plugin's stores.
+    Create this OpenSearch Security role and map the user to it (Dashboard ->
+    Security -> Roles, or the REST API as an administrator):
+
+      PUT _plugins/_security/api/roles/$STORE_ROLE
+      {
+        "cluster_permissions": ["manage_point_in_time", "cluster_composite_ops"],
+        "index_permissions": [{
+          "index_patterns": ["wazuh-alert-status-v2-*", "wazuh-alert-manager-v2-*"],
+          "allowed_actions": ["indices_all"]
+        }]
+      }
+      PUT _plugins/_security/api/rolesmapping/$STORE_ROLE
+      { "users": ["$DASHBOARD_USER"] }
+
+    Native Wazuh storage is not part of this role. Re-run this installer or
+    restart wazuh-dashboard afterwards; the plugin provisions its stores on start.
+EOF
+}
+
+read_admin_password() {
+  # --indexer-admin-password / WAZUH_INDEXER_ADMIN_PASSWORD win; otherwise the
+  # Wazuh 5.0 installer's credentials file (absent on stock 4.x hosts).
+  if [ -n "$INDEXER_ADMIN_PASSWORD" ]; then
+    printf '%s' "$INDEXER_ADMIN_PASSWORD"
+    return 0
+  fi
+  # Value may be quoted; strip one layer of quotes.
+  grep '^WAZUH_INDEXER_ADMIN_PASSWORD=' "$INDEXER_CREDENTIALS_FILE" 2>/dev/null \
+    | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
+# curl reads the admin credential from a config file on a private fd instead
+# of argv, so it is never visible in `ps` or /proc/<pid>/cmdline. Backslashes
+# and double quotes are escaped the way curl's config parser expects.
+curl_admin_auth_config() {
+  local escaped
+  escaped="$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+  printf 'user = "admin:%s"\n' "$escaped"
+}
+
+no_admin_credentials_message() {
+  printf '%s' "No indexer admin credentials (pass --indexer-admin-password, set WAZUH_INDEXER_ADMIN_PASSWORD, or install on a Wazuh 5.0 host with $INDEXER_CREDENTIALS_FILE)."
+}
+
+ensure_store_role() {
+  # Wazuh 4.x already maps the dashboard user to manage_wazuh_index (write on
+  # wazuh-*). Wazuh 5.0 (OSD 3.x) grants read only, so add the plugin role.
+  case "$OSD_VERSION" in
+    2.*) return 0 ;;
+  esac
+  if [ "$SKIP_STORE_ROLE" -eq 1 ]; then
+    log "Skipping store role (--skip-store-role)"
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] ensure OpenSearch Security role $STORE_ROLE for $DASHBOARD_USER via $INDEXER_URL"
+    return 0
+  fi
+  local admin_password
+  admin_password="$(read_admin_password)"
+  if [ -z "$admin_password" ]; then
+    warn "$(no_admin_credentials_message) The plugin store role was NOT created."
+    GRANTS_NOT_APPLIED="$GRANTS_NOT_APPLIED $STORE_ROLE"
+    store_role_instructions
+    return 0
+  fi
+  local code
+  local -a args
+  # shellcheck disable=SC2207
+  args=($(indexer_curl_args))
+  local role_body='{"description":"Wazuh Alert Manager plugin-owned stores (exact prefixes only; native Wazuh storage excluded).","cluster_permissions":["manage_point_in_time","cluster_composite_ops"],"index_permissions":[{"index_patterns":["wazuh-alert-status-v2-*","wazuh-alert-manager-v2-*"],"allowed_actions":["indices_all"]}]}'
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "${args[@]}" -K <(curl_admin_auth_config "$admin_password") \
+    -X PUT -H 'Content-Type: application/json' "$INDEXER_URL/_plugins/_security/api/roles/$STORE_ROLE" \
+    -d "$role_body")" || code="000"
+  case "$code" in
+    200|201) ;;
+    *) warn "Could not create role $STORE_ROLE (HTTP $code)"; GRANTS_NOT_APPLIED="$GRANTS_NOT_APPLIED $STORE_ROLE"; store_role_instructions; return 0 ;;
+  esac
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "${args[@]}" -K <(curl_admin_auth_config "$admin_password") \
+    -X PUT -H 'Content-Type: application/json' "$INDEXER_URL/_plugins/_security/api/rolesmapping/$STORE_ROLE" \
+    -d "{\"users\":[\"$DASHBOARD_USER\"]}")" || code="000"
+  case "$code" in
+    200|201) log "Granted $DASHBOARD_USER the plugin store role $STORE_ROLE (exact plugin prefixes only)"; GRANTS_APPLIED="$GRANTS_APPLIED $STORE_ROLE" ;;
+    *) warn "Could not map $DASHBOARD_USER to $STORE_ROLE (HTTP $code)"; GRANTS_NOT_APPLIED="$GRANTS_NOT_APPLIED $STORE_ROLE"; store_role_instructions ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Trial-feature role grants (both Wazuh lines)
+# ---------------------------------------------------------------------------
+
+# Call the OpenSearch Security REST API as the local admin. Sets
+# SECURITY_API_CODE (HTTP status, 000 on transport failure) and
+# SECURITY_API_RESPONSE (body). ADMIN_PASSWORD must be set by the caller.
+SECURITY_API_CODE="000"
+SECURITY_API_RESPONSE=""
+ADMIN_PASSWORD=""
+security_api() {
+  local method="$1" path="$2" body="${3:-}" raw
+  local -a args
+  # shellcheck disable=SC2207
+  args=($(indexer_curl_args))
+  if [ -n "$body" ]; then
+    raw="$(curl -sS -w '\n%{http_code}' --max-time 20 "${args[@]}" -K <(curl_admin_auth_config "$ADMIN_PASSWORD") \
+      -X "$method" -H 'Content-Type: application/json' "$INDEXER_URL/_plugins/_security/api/$path" \
+      -d "$body")" || raw=$'\n000'
+  else
+    raw="$(curl -sS -w '\n%{http_code}' --max-time 20 "${args[@]}" -K <(curl_admin_auth_config "$ADMIN_PASSWORD") \
+      -X "$method" "$INDEXER_URL/_plugins/_security/api/$path")" || raw=$'\n000'
+  fi
+  SECURITY_API_CODE="${raw##*$'\n'}"
+  SECURITY_API_RESPONSE="${raw%$'\n'*}"
+}
+
+# Read the admin credential once; prints the operator instructions passed as
+# the first argument and returns 1 when it is unavailable.
+require_admin_password() {
+  local instructions="$1"
+  [ -n "$ADMIN_PASSWORD" ] && return 0
+  ADMIN_PASSWORD="$(read_admin_password)"
+  if [ -z "$ADMIN_PASSWORD" ]; then
+    warn "$(no_admin_credentials_message) The role was NOT granted."
+    "$instructions"
+    return 1
+  fi
+  return 0
+}
+
+# PUT a role definition (idempotent: the same body replaces itself).
+ensure_role() {
+  local role="$1" body="$2"
+  security_api PUT "roles/$role" "$body"
+  case "$SECURITY_API_CODE" in
+    200|201) return 0 ;;
+    *) warn "Could not create role $role (HTTP $SECURITY_API_CODE)"; return 1 ;;
+  esac
+}
+
+# True when SECURITY_API_RESPONSE (a rolesmapping GET body) lists $1 inside
+# the mapping's "users" array specifically - not in backend_roles, hosts or
+# the description, where the same name may legitimately appear.
+mapping_lists_user() {
+  local user_re
+  user_re="$(printf '%s' "$1" | sed -e 's/[][\.*^$/]/\\&/g')"
+  printf '%s' "$SECURITY_API_RESPONSE" | tr -d ' \n\r\t' | grep -q "\"users\":\[[^]]*\"$user_re\"[],]"
+}
+
+# Add a user to a role mapping without disturbing anything else mapped to it,
+# then re-read the mapping to confirm the user is really there.
+ensure_role_mapping_user() {
+  local role="$1" user="$2"
+  security_api GET "rolesmapping/$role"
+  case "$SECURITY_API_CODE" in
+    200)
+      if mapping_lists_user "$user"; then
+        log "$user is already mapped to $role"
+        return 0
+      fi
+      security_api PATCH "rolesmapping/$role" "[{\"op\":\"add\",\"path\":\"/users/-\",\"value\":\"$user\"}]"
+      ;;
+    404)
+      security_api PUT "rolesmapping/$role" "{\"users\":[\"$user\"]}"
+      ;;
+    *)
+      warn "Could not read the role mapping for $role (HTTP $SECURITY_API_CODE)"
+      return 1
+      ;;
+  esac
+  case "$SECURITY_API_CODE" in
+    200|201) ;;
+    *) warn "Could not map $user to $role (HTTP $SECURITY_API_CODE)"; return 1 ;;
+  esac
+  security_api GET "rolesmapping/$role"
+  if [ "$SECURITY_API_CODE" = "200" ] && mapping_lists_user "$user"; then
+    log "Mapped $user to $role"
+    return 0
+  fi
+  warn "Mapping $user to $role was accepted but the mapping does not list the user afterwards (HTTP $SECURITY_API_CODE)"
+  return 1
+}
+
+native_read_role_instructions() {
+  cat <<EOF
+    The plugin reads native Wazuh asset state and threat-intel enrichments
+    (read-only) for asset context and indicator verdicts. Create this role and
+    map it to the dashboard's indexer user ($DASHBOARD_USER) AND to every
+    analyst user or backend role that should see those chips:
+
+      PUT _plugins/_security/api/roles/$NATIVE_READ_ROLE
+      {
+        "cluster_permissions": [],
+        "index_permissions": [{
+          "index_patterns": [$NATIVE_READ_PATTERNS],
+          "allowed_actions": ["read"]
+        }]
+      }
+      PUT _plugins/_security/api/rolesmapping/$NATIVE_READ_ROLE
+      { "users": ["$DASHBOARD_USER"], "backend_roles": ["<your analyst group>"] }
+
+    Without it the UI shows "no access" chips; nothing else is affected.
+EOF
+}
+
+ensure_native_read_role() {
+  if [ "$SKIP_NATIVE_READ_ROLE" -eq 1 ]; then
+    log "Skipping native read role (--skip-native-read-role)"
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] ensure OpenSearch Security role $NATIVE_READ_ROLE (read on $NATIVE_READ_PATTERNS) for $DASHBOARD_USER via $INDEXER_URL"
+    return 0
+  fi
+  if ! require_admin_password native_read_role_instructions; then
+    GRANTS_NOT_APPLIED="$GRANTS_NOT_APPLIED $NATIVE_READ_ROLE"
+    return 0
+  fi
+  local role_body
+  role_body="{\"description\":\"Wazuh Alert Manager: read-only access to native Wazuh asset state and threat-intel enrichments. Map to analysts as well as the dashboard user.\",\"cluster_permissions\":[],\"index_permissions\":[{\"index_patterns\":[$NATIVE_READ_PATTERNS],\"allowed_actions\":[\"read\"]}]}"
+  if ! ensure_role "$NATIVE_READ_ROLE" "$role_body" || ! ensure_role_mapping_user "$NATIVE_READ_ROLE" "$DASHBOARD_USER"; then
+    GRANTS_NOT_APPLIED="$GRANTS_NOT_APPLIED $NATIVE_READ_ROLE"
+    native_read_role_instructions
+    return 0
+  fi
+  GRANTS_APPLIED="$GRANTS_APPLIED $NATIVE_READ_ROLE"
+  case "$OSD_VERSION" in
+    2.*) log "Note: on Wazuh 4.x $DASHBOARD_USER already reads wazuh-* through manage_wazuh_index; $NATIVE_READ_ROLE matters for analysts." ;;
+  esac
+  log "Analysts need $NATIVE_READ_ROLE too. Map your analyst group with:"
+  log "  PUT _plugins/_security/api/rolesmapping/$NATIVE_READ_ROLE  { \"users\": [\"$DASHBOARD_USER\"], \"backend_roles\": [\"<analyst group>\"] }"
+}
+
+notification_role_instructions() {
+  cat <<EOF
+    Notification delivery runs as the dashboard's indexer user ($DASHBOARD_USER)
+    through an inline Alerting monitor execution whose action targets a
+    Notifications channel. That needs exactly three cluster permissions plus
+    read on the outbox index - NOT the reserved alerting_full_access role.
+    Create this role and map the user to it as an administrator:
+
+      PUT _plugins/_security/api/roles/$NOTIFY_ROLE
+      {
+        "cluster_permissions": [$NOTIFY_CLUSTER_PERMISSIONS],
+        "index_permissions": [{
+          "index_patterns": ["$NOTIFICATIONS_INDEX*"],
+          "allowed_actions": ["read"]
+        }]
+      }
+      PUT _plugins/_security/api/rolesmapping/$NOTIFY_ROLE
+      { "users": ["$DASHBOARD_USER"] }
+
+    Until mapped, the dispatcher records a 403 as last_error and leaves
+    notifications queued.
+EOF
+}
+
+ensure_notification_role() {
+  if [ "$SKIP_NOTIFICATION_ROLE" -eq 1 ]; then
+    log "Skipping notification role (--skip-notification-role)"
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] ensure OpenSearch Security role $NOTIFY_ROLE (alerting monitor execute, notifications configs/get + publish, read on $NOTIFICATIONS_INDEX*) for $DASHBOARD_USER via $INDEXER_URL"
+    return 0
+  fi
+  if ! require_admin_password notification_role_instructions; then
+    GRANTS_NOT_APPLIED="$GRANTS_NOT_APPLIED $NOTIFY_ROLE"
+    return 0
+  fi
+  local role_body
+  role_body="{\"description\":\"Wazuh Alert Manager: notification delivery for the dashboard user only - execute an inline Alerting monitor, load and publish to Notifications channels, read the plugin's outbox. No monitor or channel administration.\",\"cluster_permissions\":[$NOTIFY_CLUSTER_PERMISSIONS],\"index_permissions\":[{\"index_patterns\":[\"$NOTIFICATIONS_INDEX*\"],\"allowed_actions\":[\"read\"]}]}"
+  if ! ensure_role "$NOTIFY_ROLE" "$role_body" || ! ensure_role_mapping_user "$NOTIFY_ROLE" "$DASHBOARD_USER"; then
+    GRANTS_NOT_APPLIED="$GRANTS_NOT_APPLIED $NOTIFY_ROLE"
+    notification_role_instructions
+    return 0
+  fi
+  GRANTS_APPLIED="$GRANTS_APPLIED $NOTIFY_ROLE"
+  log "Granted $DASHBOARD_USER notification delivery rights ($NOTIFY_ROLE: alerting execute + notifications publish + read on $NOTIFICATIONS_INDEX)"
+}
+
+ensure_trial_roles() {
+  ensure_native_read_role
+  ensure_notification_role
 }
 
 verify_plugin_runtime() {
@@ -225,7 +649,7 @@ install_artifact() {
         log "[dry-run] verify minisign from $SIG_URL"
       fi
     fi
-    log "[dry-run] sudo -u wazuh-dashboard $DASHBOARD_ROOT/bin/opensearch-dashboards-plugin install file://<artifact>"
+    log "[dry-run] run $DASHBOARD_ROOT/bin/opensearch-dashboards-plugin install file://<artifact> as $(plugins_owner) (plugins directory owner)"
     return 0
   fi
 
@@ -288,11 +712,12 @@ install_artifact() {
     rm -rf "$PLUGIN_DIR"
   fi
 
-  if ! sudo -u wazuh-dashboard "$DASHBOARD_ROOT/bin/opensearch-dashboards-plugin" install "file://$name"; then
+  if ! plugin_cli install "file://$name"; then
     warn "Plugin install failed; attempting automatic rollback"
     rollback
     exit 1
   fi
+  fix_plugin_owner
 
   if [ "$NO_RESTART" -eq 1 ]; then
     log "Installed (skipped restart per --no-restart)"
@@ -328,6 +753,7 @@ rollback() {
   service_action stop
   rm -rf "$PLUGIN_DIR"
   tar xzf "$backup" -C "$DASHBOARD_ROOT/plugins"
+  fix_plugin_owner
   service_action start
   log "Rolled back to $backup"
 }
@@ -370,7 +796,15 @@ parse_args() {
       --dashboard-root) DASHBOARD_ROOT="${2:-}"; shift 2 ;;
       --dry-run) DRY_RUN=1; shift ;;
       --no-restart) NO_RESTART=1; shift ;;
+      --dashboard-user) DASHBOARD_USER="${2:-}"; [ -n "$DASHBOARD_USER" ] || die "--dashboard-user requires a value"; shift 2 ;;
+      --indexer-url) INDEXER_URL="${2:-}"; [ -n "$INDEXER_URL" ] || die "--indexer-url requires a URL"; shift 2 ;;
+      --indexer-admin-password) INDEXER_ADMIN_PASSWORD="${2:-}"; [ -n "$INDEXER_ADMIN_PASSWORD" ] || die "--indexer-admin-password requires a value"; shift 2 ;;
+      --skip-store-role) SKIP_STORE_ROLE=1; shift ;;
+      --skip-native-read-role) SKIP_NATIVE_READ_ROLE=1; shift ;;
+      --skip-notification-role) SKIP_NOTIFICATION_ROLE=1; shift ;;
       --rollback) ACTION="rollback"; shift ;;
+      --grant-store-role) ACTION="grant-store-role"; shift ;;
+      --grant-roles) ACTION="grant-roles"; shift ;;
       --uninstall-plugin) ACTION="uninstall"; shift ;;
       --remove-data) ACTION="remove-data"; shift ;;
       --yes-i-really-want-to-remove-data) REMOVE_DATA_CONFIRM="yes-remove-wazuh-alert-manager-data"; shift ;;
@@ -410,6 +844,18 @@ main() {
       remove_data
       exit 0
       ;;
+    grant-store-role)
+      detect_osd_version
+      ensure_store_role
+      exit 0
+      ;;
+    grant-roles)
+      detect_osd_version
+      ensure_store_role
+      ensure_trial_roles
+      grants_summary >&2
+      exit 0
+      ;;
   esac
 
   detect_osd_version
@@ -418,11 +864,15 @@ main() {
   log "Plan: $ACTION wazuhAlertManager for OpenSearch Dashboards $OSD_VERSION"
   log "Artifact: $ARTIFACT_URL"
   if [ "$DRY_RUN" -eq 1 ]; then
+    ensure_store_role
+    ensure_trial_roles
     install_artifact
     log "Dry run complete."
     exit 0
   fi
 
+  ensure_store_role
+  ensure_trial_roles
   install_artifact
 
   cat <<EOF
@@ -432,13 +882,34 @@ main() {
     Open it from the Wazuh dashboard side nav ("Wazuh alert manager").
 
     First startup provisions the plugin's own indices automatically; native
-    wazuh-alerts-* are treated as read-only and are never modified. Existing
-    plugin data is preserved across upgrades.
+    Wazuh storage (4.x wazuh-alerts-*, 5.0 wazuh-events-v5-* / wazuh-findings-v5-*)
+    is treated as read-only and is never modified. Existing plugin data is
+    preserved across upgrades.
+
+$(grants_summary)
 
     Roll back by re-running this installer with --rollback.
     One-line form:
       curl -fsSL $BASE_URL/latest/download/install.sh | sudo bash -s -- --rollback
 EOF
+}
+
+# Honest summary of the role grants: what was applied, what was not and why.
+grants_summary() {
+  if [ -n "$GRANTS_APPLIED" ]; then
+    printf '    Role grants applied for the dashboard user (%s):%s.\n' "$DASHBOARD_USER" "$GRANTS_APPLIED"
+    case "$GRANTS_APPLIED" in
+      *"$NATIVE_READ_ROLE"*) printf '    Map %s to your analyst groups as well (see the rolesmapping call above).\n' "$NATIVE_READ_ROLE" ;;
+    esac
+  fi
+  if [ -n "$GRANTS_NOT_APPLIED" ]; then
+    printf '    Role grants NOT applied:%s. Re-run with\n' "$GRANTS_NOT_APPLIED"
+    printf '      --grant-roles --indexer-admin-password <admin password>\n'
+    printf '    (or WAZUH_INDEXER_ADMIN_PASSWORD) or apply the printed REST calls by hand.\n'
+  fi
+  if [ -z "$GRANTS_APPLIED" ] && [ -z "$GRANTS_NOT_APPLIED" ]; then
+    printf '    No role grants were attempted (skipped by flags or dry run); re-apply any time with --grant-roles.\n'
+  fi
 }
 
 main "$@"

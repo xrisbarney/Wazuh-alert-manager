@@ -19,6 +19,10 @@ import {
   AUTOMATION_QUEUE_INDEX,
   AUTOMATION_DLQ_INDEX,
   AUTOMATION_EXECUTIONS_INDEX,
+  ENRICHMENT_CACHE_INDEX,
+  ATTACHMENTS_INDEX,
+  TASK_LISTS_INDEX,
+  NOTIFICATIONS_INDEX,
 } from '../../common';
 import {
   alertStatusMapping,
@@ -32,6 +36,10 @@ import {
   automationQueueMapping,
   automationDlqMapping,
   automationExecutionMapping,
+  enrichmentCacheMapping,
+  attachmentsMapping,
+  taskListsMapping,
+  notificationsMapping,
 } from './mappings';
 import { assertManagedWriteTarget } from './index_namespace';
 
@@ -39,7 +47,7 @@ import { assertManagedWriteTarget } from './index_namespace';
 // A fresh install creates indices with the current mapping and records this
 // version; an upgraded install has an older (or absent) version and runs
 // ensureMappingAdditions() once to PUT the new fields onto its existing indices.
-const MAPPING_VERSION = 12;
+export const MAPPING_VERSION = 25;
 const MAPPING_VERSION_DOC_ID = 'mapping_version';
 
 const MANAGED_INDICES: Array<[string, any]> = [
@@ -50,11 +58,15 @@ const MANAGED_INDICES: Array<[string, any]> = [
   [AUTOMATION_QUEUE_INDEX, automationQueueMapping],
   [AUTOMATION_DLQ_INDEX, automationDlqMapping],
   [AUTOMATION_EXECUTIONS_INDEX, automationExecutionMapping],
+  [ENRICHMENT_CACHE_INDEX, enrichmentCacheMapping],
+  [ATTACHMENTS_INDEX, attachmentsMapping],
+  [TASK_LISTS_INDEX, taskListsMapping],
+  [NOTIFICATIONS_INDEX, notificationsMapping],
 ];
 
 // PUT mapping through read aliases so every retained rollover generation gets
 // additive fields, not only the current writer.
-const ADDITIVE_MAPPING_TARGETS: Array<[string, any]> = [
+export const ADDITIVE_MAPPING_TARGETS: Array<[string, any]> = [
   [ALERTS_READ_ALIAS, alertStatusMapping],
   [ACTIVITY_READ_ALIAS, activityMapping],
   [EVIDENCE_READ_ALIAS, evidenceMapping],
@@ -72,7 +84,10 @@ function verifyProperties(expected: any, actual: any, path = ''): void {
     const field = actual?.[name];
     const fieldPath = path ? `${path}.${name}` : name;
     if (!field) throw new Error(`required mapping field ${fieldPath} is missing`);
-    if (definition.type && field.type !== definition.type) {
+    // Get-mapping omits `type: "object"` for an object field that has
+    // `properties` (it is the implicit default), so a missing type is an object.
+    const actualType = field.type ?? (field.properties ? 'object' : undefined);
+    if (definition.type && actualType !== definition.type) {
       throw new Error(`required mapping field ${fieldPath} must have type ${definition.type}`);
     }
     if (definition.enabled === false && field.enabled !== false) {
@@ -95,21 +110,90 @@ async function verifyMapping(client: any, index: string, expected: any): Promise
   }
 }
 
-async function ensureIndex(client: any, index: string, mappings: any, logger: Logger) {
+/** Wazuh 5.0 pins `cluster.blocks.create_index: true`; the explicit create API is refused for everyone. */
+export function isCreateIndexBlocked(error: any): boolean {
+  const type = error?.body?.error?.type || error?.meta?.body?.error?.type || error?.meta?.body?.error?.root_cause?.[0]?.type;
+  if (type === 'index_create_block_exception') return true;
+  return /create-index blocked/i.test(String(error?.message || error?.meta?.body?.error?.reason || ''));
+}
+
+const BOOTSTRAP_DOC_ID = '_wam_bootstrap';
+const TEMPLATE_PREFIX = 'wazuh-alert-manager-v2-template-';
+
+/**
+ * Create a plugin-owned index. Explicit creation is the normal path. When the
+ * cluster blocks the create-index API (Wazuh 5.0 sets
+ * `cluster.blocks.create_index` persistently), fall back to the only paths
+ * that cluster still allows for its own indices: a plugin-owned index
+ * template carrying the mappings and aliases, plus one bootstrap write that
+ * auto-creates the index and is deleted immediately. The template matches
+ * this exact index name only and is removed once the index exists, so it can
+ * never influence a native index. Returns false when the index already existed.
+ */
+async function createManagedIndex(
+  client: any,
+  index: string,
+  body: { mappings: any; aliases?: Record<string, any> },
+  logger: Logger
+): Promise<boolean> {
+  assertManagedWriteTarget(index);
+  try {
+    await client.indices.create({ index, body });
+    return true;
+  } catch (e: any) {
+    if (isResourceAlreadyExists(e)) return false;
+    if (!isCreateIndexBlocked(e)) throw e;
+  }
+  const name = assertManagedWriteTarget(`${TEMPLATE_PREFIX}${index}`);
+  await client.indices.putIndexTemplate({
+    name,
+    body: {
+      index_patterns: [index],
+      priority: 500,
+      template: { mappings: body.mappings, ...(body.aliases ? { aliases: body.aliases } : {}) },
+      _meta: { owner: 'wazuhAlertManager', purpose: 'bootstrap while cluster.blocks.create_index is set' },
+    },
+  });
+  try {
+    try {
+      await client.index({
+        index: assertManagedWriteTarget(index),
+        id: BOOTSTRAP_DOC_ID,
+        body: { document_type: 'bootstrap' },
+        refresh: true,
+      });
+    } catch (e: any) {
+      if (!isResourceAlreadyExists(e)) throw e;
+    }
+    try {
+      await client.delete({ index: assertManagedWriteTarget(index), id: BOOTSTRAP_DOC_ID, refresh: true });
+    } catch (e: any) {
+      if (e?.meta?.statusCode !== 404) throw e;
+    }
+  } finally {
+    try {
+      await client.indices.deleteIndexTemplate({ name });
+    } catch (e: any) {
+      (logger.debug || logger.info).call(logger, `wazuh-alert-manager: bootstrap template ${name} cleanup failed: ${e?.message}`);
+    }
+  }
+  logger.info(
+    `Created ${index} through a bootstrap write (this cluster blocks the create-index API; mappings and aliases came from a temporary plugin-owned template)`
+  );
+  return true;
+}
+
+export async function ensureIndex(client: any, index: string, mappings: any, logger: Logger) {
   assertManagedWriteTarget(index);
   const exists = await client.indices.exists({ index });
   if (exists.body) {
     return;
   }
   try {
-    await client.indices.create({ index, body: { mappings } });
-    logger.info(`Created index ${index}`);
+    if (await createManagedIndex(client, index, { mappings }, logger)) logger.info(`Created index ${index}`);
   } catch (e: any) {
-    // Another dashboard node may have created it concurrently.
-    if (!isResourceAlreadyExists(e)) {
-      logger.error(`Failed to create index ${index}: ${e.message}`);
-      throw e;
-    }
+    logger.error(`Failed to create index ${index}: ${e.message}`);
+    throw e;
   }
 }
 
@@ -198,26 +282,26 @@ export async function ensureRolloverFamily(
   let writeExists = Boolean((await client.indices.existsAlias({ name: writeAlias })).body);
 
   if (!readExists && !writeExists && !(await client.indices.exists({ index })).body) {
-    try {
-      await client.indices.create({
-        index,
-        body: {
-          aliases: {
-            [readAlias]: {},
-            [writeAlias]: { is_write_index: true },
-          },
-          mappings,
+    const created = await createManagedIndex(
+      client,
+      index,
+      {
+        aliases: {
+          [readAlias]: {},
+          [writeAlias]: { is_write_index: true },
         },
-      });
+        mappings,
+      },
+      logger
+    );
+    if (created) {
       logger.info(`Created rollover family ${index} (${readAlias}, ${writeAlias})`);
       return;
-    } catch (e: any) {
-      if (!isResourceAlreadyExists(e)) throw e;
-      // A concurrent node may have created the complete family. Re-read its
-      // topology rather than applying aliases from the stale existence checks.
-      readExists = Boolean((await client.indices.existsAlias({ name: readAlias })).body);
-      writeExists = Boolean((await client.indices.existsAlias({ name: writeAlias })).body);
     }
+    // A concurrent node may have created the complete family. Re-read its
+    // topology rather than applying aliases from the stale existence checks.
+    readExists = Boolean((await client.indices.existsAlias({ name: readAlias })).body);
+    writeExists = Boolean((await client.indices.existsAlias({ name: writeAlias })).body);
   }
 
   const [readResult, writeResult]: any[] = await Promise.all([

@@ -1,5 +1,6 @@
-import { AlertStatus, CorrelationRule } from '../../common';
+import { AlertStatus, CorrelationRule, DISPOSITIONS, Disposition } from '../../common';
 import { evaluateAlertMatch } from './correlation';
+import { ruleNotifyChannelIds } from './rule_validation';
 
 export const DEFAULT_AUTOMATION_PRIORITY = 100;
 export const DEFAULT_AUTOMATION_SORT_ORDER = 0;
@@ -24,7 +25,7 @@ export interface AutomationAlertInput {
   executionEligibleRuleIds?: ReadonlySet<string>;
 }
 
-export type AutomationAction = 'rule' | 'status' | 'assignment';
+export type AutomationAction = 'rule' | 'status' | 'assignment' | 'notify';
 export type AutomationSkipReason =
   | 'disabled'
   | 'not_matched'
@@ -53,6 +54,14 @@ export interface AutomationConflict {
 export interface AutomationMutation {
   status?: AlertStatus;
   assigned_to?: string;
+  /** Written together with `status: 'closed'` when the chosen rule carries one (step 2.4). */
+  disposition?: Disposition;
+}
+
+/** Step 1.4: one matched rule's `notify` action for this alert (the rule's channel ids, in rule order). */
+export interface AutomationNotifyPlan {
+  ruleId: string;
+  channelIds: string[];
 }
 
 export interface AlertAutomationPlan {
@@ -67,6 +76,13 @@ export interface AlertAutomationPlan {
   rulesApplied: string[];
   stopReason: { ruleId: string; reason: 'rule_requested_stop' } | null;
   mutation: AutomationMutation | null;
+  /**
+   * Notifications to enqueue (step 1.4), one entry per matched rule that
+   * carries `notify`. Not a field write and never in conflict: every matched
+   * rule notifies its own channels. Preconditions guard the field mutations,
+   * not this action, so it follows `matched` like case creation does.
+   */
+  notify: AutomationNotifyPlan[];
 }
 
 const compareStrings = (left: string, right: string): number => (left < right ? -1 : left > right ? 1 : 0);
@@ -116,7 +132,8 @@ export function planAlertAutomation(
   const skipped: AutomationSkip[] = [];
   const conflicts: AutomationConflict[] = [];
   const rulesApplied: string[] = [];
-  let chosenStatus: { value: AlertStatus; ruleId: string } | null = null;
+  const notify: AutomationNotifyPlan[] = [];
+  let chosenStatus: { value: AlertStatus; ruleId: string; disposition: Disposition | null } | null = null;
   let chosenAssignment: { value: string; ruleId: string } | null = null;
   let stopReason: AlertAutomationPlan['stopReason'] = null;
 
@@ -151,7 +168,12 @@ export function planAlertAutomation(
       if (!rule.preconditions.statuses.includes(source.status)) {
         skipped.push({ ruleId: rule.id, action: 'status', reason: 'status_precondition' });
       } else if (!chosenStatus) {
-        chosenStatus = { value: status, ruleId: rule.id };
+        const disposition = rule.actions?.disposition;
+        chosenStatus = {
+          value: status,
+          ruleId: rule.id,
+          disposition: status === 'closed' && disposition && (DISPOSITIONS as readonly string[]).includes(disposition) ? disposition : null,
+        };
         if (source.status === status) skipped.push({ ruleId: rule.id, action: 'status', reason: 'already_satisfied' });
         else addAppliedRule(rulesApplied, rule.id);
       } else if (chosenStatus.value !== status) {
@@ -186,6 +208,16 @@ export function planAlertAutomation(
       }
     }
 
+    const channelIds = ruleNotifyChannelIds(rule);
+    if (channelIds.length) {
+      hasMutatingAction = true;
+      notify.push({ ruleId: rule.id, channelIds });
+      // `rulesApplied` is the plan, not the outcome: the evaluator claims the
+      // rule in the execution record only when at least one outbox entry was
+      // written (channel state and duplicates are resolved there).
+      addAppliedRule(rulesApplied, rule.id);
+    }
+
     if (!hasMutatingAction) skipped.push({ ruleId: rule.id, action: 'rule', reason: 'no_mutating_action' });
     if (rule.processingMode === 'stop') {
       stopReason = { ruleId: rule.id, reason: 'rule_requested_stop' };
@@ -194,7 +226,10 @@ export function planAlertAutomation(
   }
 
   const mutation: AutomationMutation = {};
-  if (chosenStatus && chosenStatus.value !== source.status) mutation.status = chosenStatus.value;
+  if (chosenStatus && chosenStatus.value !== source.status) {
+    mutation.status = chosenStatus.value;
+    if (chosenStatus.value === 'closed' && chosenStatus.disposition) mutation.disposition = chosenStatus.disposition;
+  }
   if (chosenAssignment && chosenAssignment.value !== source.assigned_to) mutation.assigned_to = chosenAssignment.value;
   return {
     alertId: alert.id,
@@ -208,6 +243,7 @@ export function planAlertAutomation(
     rulesApplied,
     stopReason,
     mutation: Object.keys(mutation).length ? mutation : null,
+    notify,
   };
 }
 

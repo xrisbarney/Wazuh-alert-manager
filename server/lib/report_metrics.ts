@@ -1,4 +1,27 @@
 import { REPORTING_FIELD_VERSION, slaForLevel } from './reporting_fields';
+import {
+  ACTIVITY_READ_ALIAS,
+  ALERT_STATUS_INDEX,
+  CASES_INDEX,
+  DEFAULT_DISPOSITION,
+  DISPOSITIONS,
+  DISPOSITION_RULE_BUCKETS_MAX,
+  SLA_BANDS,
+  SLA_BREACHED_ACTION,
+  SLA_ESCALATED_ACTION,
+} from '../../common/constants';
+import type {
+  Disposition,
+  FalsePositiveByRuleRow,
+  SlaBand,
+  SlaBreachesInPeriod,
+  SlaCurrentlyBreached,
+  SlaEscalationTarget,
+  SlaEscalationsInPeriod,
+  SlaPolicy,
+} from '../../common/types';
+import { effectiveLevel } from '../../common/severity';
+import { bandClause, thresholdInstant } from './sla/escalation';
 
 export interface ReportHistoryEntry {
   timestamp: string;
@@ -170,11 +193,14 @@ export function deriveAlertTiming(
 export function deriveAlertReporting(
   source: any,
   activity: ReportHistoryEntry[] = [],
-  throughMs: number = Number.POSITIVE_INFINITY
+  throughMs: number = Number.POSITIVE_INFINITY,
+  policy?: SlaPolicy | null
 ): Record<string, any> {
   const timing = deriveAlertTiming(source, activity, throughMs);
-  const level = source?.rule?.level != null ? Number(source.rule.level) : 0;
-  const tier = slaForLevel(level);
+  // 4.x: the numeric level. 5.0: the lowest level of the label's band, so a
+  // label never claims a stricter SLA tier than the equivalent 4.x alert.
+  const level = effectiveLevel(source) ?? 0;
+  const tier = slaForLevel(level, policy);
   const reporting: Record<string, any> = {
     first_assigned_at: timing.firstAssignedAt,
     assign_minutes: timing.assignMinutes,
@@ -223,4 +249,217 @@ export async function collectCompositeBuckets(
     afterKey = agg.after_key;
   }
   return buckets;
+}
+
+// ---------------------------------------------------------------------------
+// SLA enforcement figures (step 3.4). Pure request builders and parsers; the
+// collector in report_schedules/metrics.ts runs them. Every count is an exact
+// aggregation (`track_total_hits`, filter buckets, bounded terms buckets).
+// ---------------------------------------------------------------------------
+
+export const SLA_ESCALATION_BUCKETS_MAX = 50;
+
+/** Alerts: the two active statuses. Cases: anything not closed (the breach pass uses the same clauses). */
+function activeStatusClause(target: SlaEscalationTarget): any {
+  return target === 'alert'
+    ? { terms: { status: ['open', 'in_progress'] } }
+    : { bool: { must_not: [{ term: { status: 'closed' } }] } };
+}
+
+const DUE_FIELD: Record<SlaEscalationTarget, string> = { alert: 'reporting.sla_due_at', case: 'sla_due_at' };
+const READ_INDEX: Record<SlaEscalationTarget, string> = { alert: ALERT_STATUS_INDEX, case: CASES_INDEX };
+
+/**
+ * "Currently breached" is bound to `now`, never to the report range: active
+ * records that carry the scanner's `sla.breached_at` stamp OR whose resolve
+ * due date has passed (the scanner may not have ticked yet). The per-band
+ * filters reuse the scanner's band clause so a 5.0 label and a 4.x level land
+ * in the same band here as in the escalation pass.
+ *
+ * Cases written before step 3.2 carry no `sla_due_at` (the due backfill covers
+ * alerts only). With a policy the case query therefore also accepts, exactly
+ * like the scanner's `breachQuery`, a record without `sla_due_at` whose
+ * `created_at` plus its band's resolve target has passed, so the figure does
+ * not depend on the scanner being enabled or having ticked.
+ */
+export function slaCurrentlyBreachedRequest(
+  target: SlaEscalationTarget,
+  now: string,
+  policy?: SlaPolicy | null
+): any {
+  const byBand: Record<string, any> = {};
+  for (const band of SLA_BANDS) byBand[band] = bandClause(target, band);
+  const should: any[] = [{ exists: { field: 'sla.breached_at' } }, { range: { [DUE_FIELD[target]]: { lt: now } } }];
+  if (target === 'case' && policy) {
+    for (const band of SLA_BANDS) {
+      should.push({
+        bool: {
+          filter: [bandClause('case', band), { range: { created_at: { lte: thresholdInstant(policy, band, 100, now) } } }],
+          must_not: [{ exists: { field: 'sla_due_at' } }],
+        },
+      });
+    }
+  }
+  return {
+    index: READ_INDEX[target],
+    ignore_unavailable: true,
+    allow_no_indices: true,
+    body: {
+      size: 0,
+      track_total_hits: true,
+      query: {
+        bool: {
+          filter: [activeStatusClause(target), { bool: { should, minimum_should_match: 1 } }],
+        },
+      },
+      aggs: { by_band: { filters: { filters: byBand } } },
+    },
+  };
+}
+
+export function parseSlaCurrentlyBreached(alertResult: any, caseResult: any, now: string): SlaCurrentlyBreached {
+  const byBand = Object.fromEntries(SLA_BANDS.map((band) => [band, 0])) as Record<SlaBand, number>;
+  for (const result of [alertResult, caseResult]) {
+    const buckets = result?.body?.aggregations?.by_band?.buckets || {};
+    for (const band of SLA_BANDS) byBand[band] += buckets[band]?.doc_count ?? 0;
+  }
+  return {
+    asOf: now,
+    alerts: alertResult?.body?.hits?.total?.value ?? 0,
+    cases: caseResult?.body?.hits?.total?.value ?? 0,
+    byBand,
+  };
+}
+
+/**
+ * The scanner's `sla_breached` / `sla_escalated` audit events whose
+ * `timestamp` is in the report range. The activity mapping keeps `details`
+ * unindexed (`enabled: false`), so the escalation is read from the indexed
+ * keywords the event carries: `from` = escalation id, `to` = escalation
+ * name (`applyEscalation`); breaches are split by `target_type`. Bounded:
+ * at most `SLA_ESCALATION_BUCKETS_MAX` rules (the policy holds 20).
+ */
+export function slaEventsInPeriodRequest(range: { from: string; to: string }): any {
+  return {
+    index: ACTIVITY_READ_ALIAS,
+    // A missing or retired activity alias answers zero events instead of
+    // failing the whole metrics response (the Overview never depended on it).
+    ignore_unavailable: true,
+    allow_no_indices: true,
+    body: {
+      size: 0,
+      query: {
+        bool: {
+          filter: [
+            { term: { event_type: 'audit' } },
+            { terms: { action: [SLA_BREACHED_ACTION, SLA_ESCALATED_ACTION] } },
+            { range: { timestamp: { gte: range.from, lte: range.to } } },
+          ],
+        },
+      },
+      aggs: {
+        breaches: {
+          filter: { term: { action: SLA_BREACHED_ACTION } },
+          aggs: { by_target: { terms: { field: 'target_type', size: 2 } } },
+        },
+        escalations: {
+          filter: { term: { action: SLA_ESCALATED_ACTION } },
+          aggs: {
+            by_escalation: {
+              terms: { field: 'from', size: SLA_ESCALATION_BUCKETS_MAX, missing: '' },
+              aggs: { name: { terms: { field: 'to', size: 1 } } },
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Dispositions (step 2.4). One exact, bounded aggregation over the alerts
+// closed in the report range: `status: closed` AND `reporting.closed_at` in
+// the range (the write-time close stamp every close path merges; a reopen
+// clears it, so a reopened alert is not "closed in period"). A closed alert
+// without a stored disposition (closed before this step, or through a client
+// that sent none) counts as `undetermined` through the `missing` bucket.
+// ---------------------------------------------------------------------------
+
+export function dispositionsRequest(range: { from: string; to: string }): any {
+  const byDisposition = {
+    terms: { field: 'disposition', size: DISPOSITIONS.length, missing: DEFAULT_DISPOSITION },
+  };
+  return {
+    index: ALERT_STATUS_INDEX,
+    ignore_unavailable: true,
+    allow_no_indices: true,
+    body: {
+      size: 0,
+      track_total_hits: true,
+      query: {
+        bool: {
+          filter: [
+            { term: { status: 'closed' } },
+            { range: { 'reporting.closed_at': { gte: range.from, lte: range.to } } },
+          ],
+        },
+      },
+      aggs: {
+        by_disposition: byDisposition,
+        by_rule: {
+          terms: { field: 'rule.id', size: DISPOSITION_RULE_BUCKETS_MAX },
+          aggs: {
+            description: { terms: { field: 'rule.description.keyword', size: 1 } },
+            by_disposition: byDisposition,
+          },
+        },
+      },
+    },
+  };
+}
+
+function dispositionCounts(buckets: any[] = []): Record<Disposition, number> {
+  const counts = Object.fromEntries(DISPOSITIONS.map((value) => [value, 0])) as Record<Disposition, number>;
+  for (const bucket of buckets) {
+    const key = String(bucket?.key ?? '');
+    if ((DISPOSITIONS as readonly string[]).includes(key)) counts[key as Disposition] += bucket.doc_count ?? 0;
+    else counts[DEFAULT_DISPOSITION] += bucket.doc_count ?? 0;
+  }
+  return counts;
+}
+
+export function parseDispositions(result: any): { dispositions: Record<Disposition, number>; falsePositiveByRule: FalsePositiveByRuleRow[] } {
+  const aggs = result?.body?.aggregations || {};
+  const dispositions = dispositionCounts(aggs.by_disposition?.buckets || []);
+  const falsePositiveByRule: FalsePositiveByRuleRow[] = (aggs.by_rule?.buckets || []).map((bucket: any) => {
+    const closed = bucket.doc_count ?? 0;
+    const counts = dispositionCounts(bucket.by_disposition?.buckets || []);
+    const description = bucket.description?.buckets?.[0]?.key;
+    return {
+      rule_id: String(bucket.key ?? ''),
+      description: description != null && description !== '' ? String(description) : null,
+      closed,
+      false_positive: counts.false_positive,
+      rate: closed > 0 ? counts.false_positive / closed : 0,
+    };
+  });
+  return { dispositions, falsePositiveByRule };
+}
+
+export function parseSlaEventsInPeriod(result: any): { breaches: SlaBreachesInPeriod; escalations: SlaEscalationsInPeriod } {
+  const aggs = result?.body?.aggregations || {};
+  const breaches: SlaBreachesInPeriod = { total: aggs.breaches?.doc_count ?? 0, alerts: 0, cases: 0 };
+  for (const bucket of aggs.breaches?.by_target?.buckets || []) {
+    if (bucket.key === 'alert') breaches.alerts = bucket.doc_count ?? 0;
+    else if (bucket.key === 'case') breaches.cases = bucket.doc_count ?? 0;
+  }
+  const byEscalation = (aggs.escalations?.by_escalation?.buckets || []).map((bucket: any) => {
+    const id = String(bucket.key ?? '');
+    const name = bucket.name?.buckets?.[0]?.key;
+    return { id, name: name != null && name !== '' ? String(name) : id, count: bucket.doc_count ?? 0 };
+  });
+  return {
+    breaches,
+    escalations: { total: aggs.escalations?.doc_count ?? 0, byEscalation },
+  };
 }

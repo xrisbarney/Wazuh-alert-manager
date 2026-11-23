@@ -76,3 +76,43 @@ describe('exact automation preview', () => {
     expect(result.rateLimited).toBe(true);
   });
 });
+
+describe('notify action in preview (step 1.4)', () => {
+  test('reports the outbox entries the notify action would write: alerts the rule fires on times its channel ids', () => {
+    const candidate = rule({ trigger: { type: 'per_alert' }, actions: { createCase: false, notify: { channelIds: ['slack', 'mail'] } } });
+    const result = simulateAutomationPreview(candidate, [alert('a', 58), alert('b', 59), alert('other', 59, { rule: { id: '999' } })], [], new Set(), { now, lookbackHours: 1 });
+    expect(result.matchingAlerts).toBe(2);
+    expect(result.notifications).toBe(4);
+    expect(result.statusChanges).toBe(0);
+    expect(result.casesCreated).toBe(0);
+  });
+
+  test('a rule without the action reports zero notifications', () => {
+    const result = simulateAutomationPreview(rule({ trigger: { type: 'per_alert' } }), [alert('a', 59)], [], new Set(), { now, lookbackHours: 1 });
+    expect(result.notifications).toBe(0);
+    expect(result.notificationsSkipped).toBe(0);
+  });
+
+  test('with the stored settings a disabled or unknown channel counts as skipped, as execution counts it', () => {
+    const candidate = rule({ trigger: { type: 'per_alert' }, actions: { createCase: false, notify: { channelIds: ['slack', 'off', 'ghost'] } } });
+    const notificationSettings = {
+      enabled: true,
+      channels: [
+        { id: 'slack', name: 'SOC', kind: 'indexer_channel', enabled: true, events: [] },
+        { id: 'off', name: 'Retired', kind: 'webhook', enabled: false, events: [] },
+      ],
+    } as any;
+    const alerts = [alert('a', 58), alert('b', 59)];
+    const result = simulateAutomationPreview(candidate, alerts, [], new Set(), { now, lookbackHours: 1, notificationSettings });
+    expect(result.notifications).toBe(2);
+    expect(result.notificationsSkipped).toBe(4);
+
+    const disabled = simulateAutomationPreview(candidate, alerts, [], new Set(), { now, lookbackHours: 1, notificationSettings: { ...notificationSettings, enabled: false } });
+    expect(disabled.notifications).toBe(0);
+    expect(disabled.notificationsSkipped).toBe(6);
+
+    const none = simulateAutomationPreview(candidate, alerts, [], new Set(), { now, lookbackHours: 1, notificationSettings: null });
+    expect(none.notifications).toBe(0);
+    expect(none.notificationsSkipped).toBe(6);
+  });
+});

@@ -34,6 +34,10 @@ env:
 jobs:
   plan:
     name: Resolve release and matrix
+    # The floating `:<wazuh version>` tag tracks the latest STABLE release, so a
+    # GitHub pre-release (v3.0.0-rc.1) must never republish these images; build
+    # one on demand with workflow_dispatch if a pre-release image is wanted.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false }}
     runs-on: ubuntu-latest
     outputs:
       plugin_version: ${{ steps.resolve.outputs.plugin_version }}

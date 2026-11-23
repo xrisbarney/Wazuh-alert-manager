@@ -1,0 +1,77 @@
+{
+  "_index": "wazuh-alerts-4.x-2026.11.21",
+  "_score": null,
+  "_source": {
+    "agent": {
+      "ip": "10.0.2.15",
+      "name": "wam-lab-agent",
+      "id": "001"
+    },
+    "manager": {
+      "name": "wazuh.manager"
+    },
+    "data": {
+      "audit": {
+        "syscall": "257",
+        "gid": "0",
+        "fsgid": "0",
+        "session": "18",
+        "pid": "15095",
+        "suid": "0",
+        "type": "SYSCALL",
+        "directory": {
+          "inode": "524289",
+          "mode": "040755",
+          "name": "/etc/"
+        },
+        "uid": "0",
+        "egid": "0",
+        "exe": "/usr/bin/bash",
+        "file": {
+          "inode": "524921",
+          "mode": "0100644",
+          "name": "/etc/wam-lab-marker.conf"
+        },
+        "sgid": "0",
+        "id": "2151",
+        "key": "audit-wazuh-w",
+        "auid": "1000",
+        "euid": "0",
+        "command": "bash",
+        "ppid": "15091",
+        "fsuid": "0",
+        "exit": "3",
+        "cwd": "/home/vagrant",
+        "success": "yes",
+        "tty": "(none)",
+        "arch": "c000003e"
+      }
+    },
+    "rule": {
+      "firedtimes": 1,
+      "mail": false,
+      "level": 3,
+      "description": "Audit: Watch - Write access: /etc/wam-lab-marker.conf.",
+      "groups": [
+        "audit",
+        "audit_watch_write"
+      ],
+      "id": "80781",
+      "gdpr": [
+        "IV_30.1.g"
+      ]
+    },
+    "decoder": {
+      "parent": "auditd",
+      "name": "auditd"
+    },
+    "full_log": "type=SYSCALL msg=audit(1795294828.363:2151): arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c a1=57b370fd13e0 a2=241 a3=1b6 items=2 ppid=15091 pid=15095 auid=1000 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=18 comm=\"bash\" exe=\"/usr/bin/bash\" subj=unconfined key=\"audit-wazuh-w\"\u001dARCH=x86_64 SYSCALL=openat AUID=\"vagrant\" UID=\"root\" GID=\"root\" EUID=\"root\" SUID=\"root\" FSUID=\"root\" EGID=\"root\" SGID=\"root\" FSGID=\"root\" type=CWD msg=audit(1795294828.363:2151): cwd=\"/home/vagrant\" type=PATH msg=audit(1795294828.363:2151): item=0 name=\"/etc/\" inode=524289 dev=fc:00 mode=040755 ouid=0 ogid=0 rdev=00:00 nametype=PARENT cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0\u001dOUID=\"root\" OGID=\"root\" type=PATH msg=audit(1795294828.363:2151): item=1 name=\"/etc/wam-lab-marker.conf\" inode=524921 dev=fc:00 mode=0100644 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0\u001dOUID=\"root\" OGID=\"root\" type=PROCTITLE msg=audit(1795294828.363:2151): proctitle=62617368002F76616772616E742F67656E65726174652E7368",
+    "input": {
+      "type": "log"
+    },
+    "@timestamp": "2026-11-21T21:00:28.640Z",
+    "location": "/var/log/audit/audit.log",
+    "id": "1795294828.1595421",
+    "timestamp": "2026-11-21T21:00:28.640+0000"
+  }
+}

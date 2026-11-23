@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { schema } from '@osd/config-schema';
 import { IRouter } from '../../../../src/core/server';
 import { API_ROOT, COMMENTS_INDEX, ACTIVITY_WRITE_ALIAS, CommentListResponse } from '../../common';
@@ -97,7 +98,12 @@ export function defineCommentRoutes(router: IRouter) {
       }
       const user = await getCurrentUsername(context, request);
       const client = context.core.opensearch.client.asCurrentUser;
+      const createdAt = new Date().toISOString();
+      // `event_uid` doubles as the `_id` and `timestamp` mirrors `created_at`
+      // so the case timeline (step 2.3) sorts and pages comments like every
+      // other activity event.
       const doc = {
+        event_uid: randomUUID(),
         event_type: 'comment',
         target_type: alertId ? 'alert' : 'case',
         target_id: alertId || caseId,
@@ -105,13 +111,14 @@ export function defineCommentRoutes(router: IRouter) {
         case_id: caseId ?? null,
         text,
         author: user,
-        created_at: new Date().toISOString(),
+        created_at: createdAt,
+        timestamp: createdAt,
       };
 
       try {
         const alertIndex = alertId ? await alertIndexOrThrow(client, alertId) : null;
         if (caseId) await resolveCase(client, caseId);
-        const result: any = await client.index({ index: ACTIVITY_WRITE_ALIAS, body: doc, refresh: 'wait_for' });
+        const result: any = await client.index({ index: ACTIVITY_WRITE_ALIAS, id: doc.event_uid, body: doc, refresh: 'wait_for' });
 
         if (alertId) {
           // Best-effort visibility into the alert's audit trail; comment

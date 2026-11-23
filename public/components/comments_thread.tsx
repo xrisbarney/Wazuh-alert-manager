@@ -1,16 +1,24 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { EuiCommentList, EuiComment, EuiTextArea, EuiButton, EuiSpacer, EuiLoadingSpinner, EuiText } from '@elastic/eui';
+import { EuiTextArea, EuiButton, EuiButtonEmpty, EuiSpacer, EuiLoadingSpinner, EuiText, EuiFlexGroup, EuiFlexItem } from '@elastic/eui';
 import { Comment } from '../../common';
 import { AlertsApiService } from '../services/api';
+import { formatAbsolute } from '../design';
 
 interface Props {
   apiService: AlertsApiService;
   target: { alertId?: string; caseId?: string };
   onError: (message: string) => void;
   onToast?: (title: string, color: 'success' | 'danger' | 'primary', text?: string) => void;
+  /** Reports the thread total so the case flyout nav can badge it (step 8.1); never triggers a fetch. */
+  onCountChanged?: (total: number) => void;
 }
 
-export const CommentsThread: React.FC<Props> = ({ apiService, target, onError, onToast }) => {
+/**
+ * Comment thread of an alert or a case. Rows sit on the shared history grid
+ * (time | author + text, step 8.2) so comments, audit history and related
+ * alerts line up inside a flyout; the composer sits below the list.
+ */
+export const CommentsThread: React.FC<Props> = ({ apiService, target, onError, onToast, onCountChanged }) => {
   const [comments, setComments] = useState<Comment[]>([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState('');
@@ -26,6 +34,7 @@ export const CommentsThread: React.FC<Props> = ({ apiService, target, onError, o
       setComments(res?.comments || []);
       setNextCursor(res?.nextCursor || null);
       setTotal(res?.total || 0);
+      onCountChanged?.(res?.total || 0);
     } catch (e) {
       onError('Failed to load comments');
     } finally {
@@ -60,6 +69,7 @@ export const CommentsThread: React.FC<Props> = ({ apiService, target, onError, o
       setComments((current) => [...current, ...(res.comments || [])]);
       setNextCursor(res.nextCursor);
       setTotal(res.total);
+      onCountChanged?.(res.total || 0);
     } catch (e) {
       onError('Failed to load more comments');
     } finally {
@@ -70,45 +80,56 @@ export const CommentsThread: React.FC<Props> = ({ apiService, target, onError, o
   if (loading) return <EuiLoadingSpinner size="m" />;
 
   return (
-    <div>
+    <div className="wamCommentsThread" data-test-subj="wamCommentsThread">
       {comments.length === 0 ? (
-        <EuiText size="s" color="subdued">
+        <EuiText size="s" color="subdued" data-test-subj="wamCommentsEmpty">
           No comments yet.
         </EuiText>
       ) : (
-        <EuiCommentList>
+        <ol className="wamHistoryList" data-test-subj="wamCommentsList">
           {comments.map((c) => (
-            <EuiComment
-              key={c.id}
-              username={c.author}
-              timestamp={new Date(c.created_at).toLocaleString()}
-              event="commented"
-            >
-              <EuiText size="s">{c.text}</EuiText>
-            </EuiComment>
+            <li key={c.id} className="wamHistoryRow" data-test-subj="wamCommentRow">
+              <span className="wamHistoryRow__time" title={c.created_at}>
+                {formatAbsolute(c.created_at)}
+              </span>
+              <div className="wamHistoryRow__body">
+                <EuiText size="s" className="wamHistoryRow__event">
+                  <span className="wamHistoryRow__actor">{c.author}</span> <span className="wamHistoryRow__action">commented</span>
+                </EuiText>
+                <EuiText size="s" className="wamHistoryRow__details wamCommentText">
+                  {c.text}
+                </EuiText>
+              </div>
+            </li>
           ))}
-        </EuiCommentList>
+        </ol>
       )}
       {nextCursor && (
         <>
           <EuiSpacer size="s" />
-          <EuiButton size="s" onClick={loadMore} isLoading={loadingMore}>
+          <EuiButtonEmpty size="s" flush="left" onClick={loadMore} isLoading={loadingMore}>
             Load more comments ({comments.length} of {total})
-          </EuiButton>
+          </EuiButtonEmpty>
         </>
       )}
       <EuiSpacer size="m" />
       <EuiTextArea
         fullWidth
+        compressed
         placeholder="Add a comment..."
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         rows={3}
+        aria-label="New comment"
       />
       <EuiSpacer size="s" />
-      <EuiButton size="s" onClick={submit} isLoading={submitting} isDisabled={!draft.trim()}>
-        Add comment
-      </EuiButton>
+      <EuiFlexGroup justifyContent="flexEnd" gutterSize="s" responsive={false}>
+        <EuiFlexItem grow={false}>
+          <EuiButton size="s" onClick={submit} isLoading={submitting} isDisabled={!draft.trim()}>
+            Add comment
+          </EuiButton>
+        </EuiFlexItem>
+      </EuiFlexGroup>
     </div>
   );
 };

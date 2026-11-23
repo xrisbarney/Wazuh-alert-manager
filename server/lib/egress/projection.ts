@@ -22,6 +22,8 @@ export interface ProjectedAlert {
   timestamp: string | null;
   rule_id: string | null;
   rule_level: number | null;
+  /** Wazuh 5.0 severity label (4.x alerts: null). */
+  severity_label: string | null;
   rule_description: string | null;
   rule_groups: string[];
   agent_name: string | null;
@@ -76,6 +78,7 @@ export function projectAlert(source: any): ProjectedAlert {
     timestamp: str(s['@timestamp']),
     rule_id: str(s.rule?.id),
     rule_level: typeof s.rule?.level === 'number' ? s.rule.level : null,
+    severity_label: typeof s.severity_label === 'string' ? truncate(s.severity_label, 32) : null,
     rule_description: truncate(s.rule?.description, 500),
     rule_groups: asStringArray(s.rule?.groups),
     agent_name: str(s.agent?.name),

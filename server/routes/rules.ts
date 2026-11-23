@@ -9,11 +9,16 @@ import {
   CORRELATION_ENTITIES,
   ALERT_STATUSES,
   AUTOMATION_MAX_ENABLED_RULES,
+  ASSET_CRITICALITIES,
+  DISPOSITIONS,
+  RULE_NOTIFY_MAX_CHANNELS,
+  correlationRuleExecutionId,
 } from '../../common';
 import { getCurrentUsername } from '../lib/opensearch';
 import { requirePluginAdmin } from '../lib/authorization';
 import { appendActivity, appendActivityOnce, reportActivityFailure } from '../lib/activity';
-import { mergeRulePatch, normalizeAndValidateRule, ruleDefinitionFingerprint } from '../lib/rule_validation';
+import { mergeRulePatch, normalizeAndValidateRule, ruleDefinitionFingerprint, ruleNotifyChannelIds } from '../lib/rule_validation';
+import { loadNotificationSettings } from '../lib/notifications/settings';
 import { runAutomationPreview } from '../lib/automation_preview';
 
 const modeSchema = schema.maybe(schema.oneOf([schema.literal('any'), schema.literal('all')]));
@@ -25,6 +30,8 @@ const matchSchema = schema.object({
   agentNames: schema.maybe(schema.arrayOf(schema.string(), { maxSize: 50 })),
   agentNamesMode: modeSchema,
   minLevel: schema.maybe(schema.number({ min: 0, max: 16 })),
+  /** Alert `asset.criticality` floor (step 6.4a). */
+  minAssetCriticality: schema.maybe(schema.nullable(schema.oneOf(ASSET_CRITICALITIES.map((value) => schema.literal(value)) as any))),
 });
 const entitySchema = schema.oneOf(CORRELATION_ENTITIES.map((value) => schema.literal(value)) as any);
 const predicateSchema = schema.object({
@@ -74,8 +81,20 @@ const actionsSchema = schema.object({
   createCase: schema.maybe(schema.boolean()),
   caseSeverity: schema.maybe(schema.oneOf(CASE_SEVERITIES.map((value) => schema.literal(value)) as any)),
   setStatus: schema.maybe(schema.nullable(schema.oneOf(ALERT_STATUSES.map((value) => schema.literal(value)) as any))),
+  // Disposition written with setStatus: 'closed' (step 2.4); semantics in rule_validation.ts.
+  disposition: schema.maybe(schema.nullable(schema.oneOf(DISPOSITIONS.map((value) => schema.literal(value)) as any))),
   assignTo: schema.maybe(schema.nullable(schema.string({ maxLength: 256 }))),
+  // TaskList applied when the rule creates a new case (step 2.2); semantics in rule_validation.ts.
+  applyTaskListId: schema.maybe(schema.nullable(schema.string({ maxLength: 64 }))),
+  // Notify channels (step 1.4): ids of channels bound in Settings > Notifications.
+  // An empty list is accepted here and normalised to "no action"; the 1..20
+  // bound, the id shape and the stored-channel check live in rule_validation.ts
+  // and requireKnownNotifyChannels.
+  notify: schema.maybe(schema.nullable(schema.object({
+    channelIds: schema.arrayOf(schema.string({ minLength: 1, maxLength: 64 }), { maxSize: RULE_NOTIFY_MAX_CHANNELS }),
+  }))),
 });
+export { actionsSchema };
 const preconditionsSchema = schema.object({
   statuses: schema.maybe(
     schema.arrayOf(schema.oneOf(ALERT_STATUSES.map((value) => schema.literal(value)) as any), { maxSize: 3 })
@@ -218,6 +237,43 @@ export async function requireEnabledRuleCapacity(client: any, current: any, next
   }
 }
 
+/**
+ * Step 1.4: a rule's `notify.channelIds` must all be channels of the stored
+ * notification settings (any kind, enabled or not: a disabled channel is
+ * skipped and counted at execution time, so disabling one never breaks a
+ * saved rule). Unknown ids are refused with a 400 that names them (the route
+ * answers them as `attributes.unknownChannelIds`: OSD keeps only `message`
+ * and `attributes` on an error payload). A rule
+ * without the action reads nothing.
+ */
+/**
+ * Whether `PUT /rules/{id}` re-validates the merged rule's `notify.channelIds`
+ * against the stored notification settings: only when the patch itself
+ * carries `actions.notify`, or when the resulting rule is enabled. Execution
+ * tolerates and skips an id whose channel was removed from the settings, so
+ * a rule naming one must stay editable, and in particular must be disableable
+ * (`{ enabled: false }`), without first touching its channel list.
+ */
+export function shouldValidateNotifyChannels(patch: any, mergedRule: any): boolean {
+  if (patch?.actions && Object.prototype.hasOwnProperty.call(patch.actions, 'notify')) return true;
+  return mergedRule?.enabled === true;
+}
+
+export async function requireKnownNotifyChannels(client: any, rule: any): Promise<void> {
+  const ids = ruleNotifyChannelIds(rule);
+  if (!ids.length) return;
+  const settings = await loadNotificationSettings(client);
+  const known = new Set((settings.channels || []).map((channel) => channel.id));
+  const unknown = ids.filter((id) => !known.has(id));
+  if (!unknown.length) return;
+  const error: any = new Error(
+    `Unknown notification channel id(s): ${unknown.join(', ')}. Bind the channel in Settings > Notifications first.`
+  );
+  error.statusCode = 400;
+  error.body = { message: error.message, unknownChannelIds: unknown };
+  throw error;
+}
+
 const publicRuleSource = (source: any) => {
   const { pending_operation: pendingOperation, ...rule } = source || {};
   return { ...rule, revision: Number(rule.revision || 1) };
@@ -229,6 +285,41 @@ export const ruleResponse = (hit: any) => ({
   if_primary_term: hit._primary_term,
 });
 const withConcurrency = ruleResponse;
+
+/**
+ * Step 12.3: join the per-rule execution state (`rule-execution:<id>`
+ * companions the automation worker upserts) onto rule responses, so the list
+ * and the runtime card read `matchCount` / `lastFired` / `counters` the
+ * runtime actually wrote. One `mget`; a missing companion leaves the fields
+ * as the rule document carries them (legacy telemetry or nothing), and a
+ * failed read is logged and leaves the responses untouched.
+ */
+export async function attachRuleExecutionState<T extends { id: string }>(client: any, rules: T[], observer: any = console): Promise<T[]> {
+  if (!rules.length) return rules;
+  try {
+    const result: any = await client.mget({
+      index: RULES_INDEX,
+      body: { ids: rules.map((rule) => correlationRuleExecutionId(rule.id)) },
+    });
+    const byRule = new Map<string, any>();
+    for (const doc of result?.body?.docs || []) {
+      if (doc?.found && doc._source?.document_type === 'rule_execution' && doc._source.rule_id) byRule.set(doc._source.rule_id, doc._source);
+    }
+    return rules.map((rule) => {
+      const state = byRule.get(rule.id);
+      if (!state) return rule;
+      return {
+        ...rule,
+        matchCount: Number(state.matchCount || 0),
+        lastFired: state.lastFired || null,
+        counters: state.counters || undefined,
+      };
+    });
+  } catch (error: any) {
+    observer?.warn?.(`wazuh-alert-manager rules: execution state unavailable: ${error?.message || error}`);
+    return rules;
+  }
+}
 
 export const buildRollbackRule = (current: any, definition: any, revision: number, updatedAt: string) => ({
   ...current,
@@ -467,7 +558,7 @@ export function defineRuleRoutes(router: IRouter) {
         if (!hasMore) await closeRulesPit(client, pit).catch(() => undefined);
         return response.ok({
           body: {
-            rules: repaired.map(withConcurrency),
+            rules: await attachRuleExecutionState(client, repaired.map(withConcurrency), observer),
             nextCursor:
               hasMore && page.length
                 ? encodeCursor({ v: 1, pit, sort: page[page.length - 1].sort as [number], includeDeleted })
@@ -489,11 +580,17 @@ export function defineRuleRoutes(router: IRouter) {
         return response.forbidden({ body: { message: e.message } });
       }
       const validation = normalizeAndValidateRule(request.body);
-      if (validation.errors.length) return response.badRequest({ body: { message: validation.errors[0], errors: validation.errors } });
+      if (validation.errors.length) return response.badRequest({ body: { message: validation.errors[0], attributes: { errors: validation.errors } } });
       if (validation.rule.enabled) {
         return response.badRequest({ body: { message: 'New rules must be created disabled, then previewed before activation.' } });
       }
       const client = context.core.opensearch.client.asCurrentUser;
+      try {
+        await requireKnownNotifyChannels(client, validation.rule);
+      } catch (e: any) {
+        if (e?.statusCode === 400) return response.badRequest({ body: { message: e.message, attributes: { unknownChannelIds: e.body?.unknownChannelIds } } });
+        return response.customError({ statusCode: e?.meta?.statusCode || 500, body: { message: e.message } });
+      }
       const user = await getCurrentUsername(context, request);
       const now = new Date().toISOString();
       const id = randomBytes(16).toString('hex');
@@ -525,7 +622,8 @@ export function defineRuleRoutes(router: IRouter) {
           },
           (context as any).wazuhAlertManager?.logger || console
         );
-        return response.ok({ body: withConcurrency(repaired) });
+        const [withState] = await attachRuleExecutionState(client, [withConcurrency(repaired)], (context as any).wazuhAlertManager?.logger || console);
+        return response.ok({ body: withState });
       } catch (e: any) {
         return response.customError({ statusCode: e?.meta?.statusCode || 500, body: { message: e.message } });
       }
@@ -552,7 +650,7 @@ export function defineRuleRoutes(router: IRouter) {
       }
       const { id, revision, lookbackHours = 24, ...input } = request.body as any;
       const validation = normalizeAndValidateRule(input);
-      if (validation.errors.length) return response.badRequest({ body: { message: validation.errors[0], errors: validation.errors } });
+      if (validation.errors.length) return response.badRequest({ body: { message: validation.errors[0], attributes: { errors: validation.errors } } });
       const client = context.core.opensearch.client.asCurrentUser;
       const user = await getCurrentUsername(context, request);
       try {
@@ -694,7 +792,7 @@ export function defineRuleRoutes(router: IRouter) {
         }
         const revisionResult: any = await client.get({ index: RULES_INDEX, id: revisionId(id, targetRevision) });
         const validation = normalizeAndValidateRule(revisionResult.body._source.snapshot);
-        if (validation.errors.length) return response.badRequest({ body: { message: validation.errors[0], errors: validation.errors } });
+        if (validation.errors.length) return response.badRequest({ body: { message: validation.errors[0], attributes: { errors: validation.errors } } });
         const now = new Date().toISOString();
         const doc: any = applyRuleActivationMetadata(
           current,
@@ -719,7 +817,8 @@ export function defineRuleRoutes(router: IRouter) {
           { _id: id, _source: doc, _seq_no: result.body._seq_no, _primary_term: result.body._primary_term },
           (context as any).wazuhAlertManager?.logger || console
         );
-        return response.ok({ body: withConcurrency(finalized) });
+        const [withState] = await attachRuleExecutionState(client, [withConcurrency(finalized)], (context as any).wazuhAlertManager?.logger || console);
+        return response.ok({ body: withState });
       } catch (e: any) {
         return response.customError({ statusCode: e?.meta?.statusCode || 500, body: { message: e.message } });
       }
@@ -741,7 +840,8 @@ export function defineRuleRoutes(router: IRouter) {
           { _id: id, _source: result.body._source, _seq_no: result.body._seq_no, _primary_term: result.body._primary_term },
           (context as any).wazuhAlertManager?.logger || console
         );
-        return response.ok({ body: withConcurrency(repaired) });
+        const [withState] = await attachRuleExecutionState(client, [withConcurrency(repaired)], (context as any).wazuhAlertManager?.logger || console);
+        return response.ok({ body: withState });
       } catch (e: any) {
         return response.customError({ statusCode: e?.meta?.statusCode || 500, body: { message: e.message } });
       }
@@ -787,7 +887,15 @@ export function defineRuleRoutes(router: IRouter) {
           return response.customError({ statusCode: 409, body: { message: 'Deleted rules must be restored through rollback.' } });
         }
         const validation = normalizeAndValidateRule(mergeRulePatch(current, patch));
-        if (validation.errors.length) return response.badRequest({ body: { message: validation.errors[0], errors: validation.errors } });
+        if (validation.errors.length) return response.badRequest({ body: { message: validation.errors[0], attributes: { errors: validation.errors } } });
+        if (shouldValidateNotifyChannels(patch, validation.rule)) {
+          try {
+            await requireKnownNotifyChannels(client, validation.rule);
+          } catch (e: any) {
+            if (e?.statusCode === 400) return response.badRequest({ body: { message: e.message, attributes: { unknownChannelIds: e.body?.unknownChannelIds } } });
+            throw e;
+          }
+        }
         requireDisabledEntityGroupEdit(current, validation.rule);
         const now = new Date().toISOString();
         let doc: any = {
@@ -820,7 +928,8 @@ export function defineRuleRoutes(router: IRouter) {
           { _id: id, _source: doc, _seq_no: result.body._seq_no, _primary_term: result.body._primary_term },
           (context as any).wazuhAlertManager?.logger || console
         );
-        return response.ok({ body: withConcurrency(finalized) });
+        const [withState] = await attachRuleExecutionState(client, [withConcurrency(finalized)], (context as any).wazuhAlertManager?.logger || console);
+        return response.ok({ body: withState });
       } catch (e: any) {
         return response.customError({ statusCode: e.statusCode || e?.meta?.statusCode || 500, body: { message: e.message } });
       }

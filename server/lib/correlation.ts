@@ -1,4 +1,6 @@
 import { CorrelationEntity, CorrelationRule } from '../../common';
+import { bandsAtOrAboveLevel, meetsMinLevel } from '../../common/severity';
+import { criticalitiesAtOrAbove, meetsMinAssetCriticality } from './assets/matcher';
 
 export type RuleMatchResult =
   | { supported: true; matched: boolean }
@@ -20,7 +22,16 @@ export function entityField(entity: CorrelationEntity): string {
     case 'dstuser':
       return 'data.dstuser';
     case 'process':
+      // Aggregations group on the decoder's process name only; the auditd
+      // binary path (data.audit.exe) is read per alert by entityValueFromAlert
+      // but cannot share one terms bucket with data.process.name.
       return 'data.process.name';
+    case 'hash':
+      return 'syscheck.sha256_after';
+    case 'domain':
+      return 'data.hostname';
+    case 'url':
+      return 'data.url';
     case 'agent':
     default:
       return 'agent.name';
@@ -44,7 +55,20 @@ export function entityValueFromAlert(entity: CorrelationEntity, source: any): st
       v = data.dstuser;
       break;
     case 'process':
-      v = data?.process?.name ?? data?.process;
+      // auditd SYSCALL alerts (4.x 80700-80799) carry the binary in
+      // data.audit.exe and no data.process (step 9.4).
+      v = data?.process?.name ?? data?.process ?? data?.audit?.exe;
+      break;
+    case 'hash': {
+      const syscheck = source?.syscheck && typeof source.syscheck === 'object' ? source.syscheck : {};
+      v = syscheck.sha256_after ?? syscheck.sha1_after ?? syscheck.md5_after;
+      break;
+    }
+    case 'domain':
+      v = data.hostname;
+      break;
+    case 'url':
+      v = data.url;
       break;
     case 'agent':
     default:
@@ -69,7 +93,25 @@ export function buildMatchFilters(match: CorrelationRule['match']): any[] {
   if (match.ruleGroups?.length) filter.push({ terms: { 'rule.groups': match.ruleGroups } });
   if (match.ruleIds?.length) filter.push({ terms: { 'rule.id': match.ruleIds.map(String) } });
   if (match.agentNames?.length) filter.push({ terms: { 'agent.name': match.agentNames } });
-  if (match.minLevel != null) filter.push({ range: { 'rule.level': { gte: match.minLevel } } });
+  // A numeric floor applies to 4.x `rule.level` directly and to 5.0 label-only
+  // records through the severity bands it covers (see common/severity.ts).
+  if (match.minLevel != null) {
+    const bands = bandsAtOrAboveLevel(match.minLevel);
+    filter.push({
+      bool: {
+        should: [
+          { range: { 'rule.level': { gte: match.minLevel } } },
+          ...(bands.length ? [{ terms: { severity_label: bands } }] : []),
+        ],
+        minimum_should_match: 1,
+      },
+    });
+  }
+  // Asset criticality floor (step 6.4a): same shape as minLevel, over the
+  // `asset.criticality` stamped at projection time. Unstamped records never match.
+  if (match.minAssetCriticality) {
+    filter.push({ terms: { 'asset.criticality': criticalitiesAtOrAbove(match.minAssetCriticality) } });
+  }
   return filter;
 }
 
@@ -93,7 +135,10 @@ export function evaluateAlertMatch(rule: CorrelationRule, source: any): RuleMatc
     return { supported: false, matched: false, reason: 'all_mode_requires_burst' };
   }
   const m = rule.match;
-  if (m.minLevel != null && !(Number(source?.rule?.level ?? 0) >= m.minLevel)) return { supported: true, matched: false };
+  if (m.minLevel != null && !meetsMinLevel(source, m.minLevel)) return { supported: true, matched: false };
+  if (m.minAssetCriticality && !meetsMinAssetCriticality(source, m.minAssetCriticality)) {
+    return { supported: true, matched: false };
+  }
   if (m.ruleIds?.length && !m.ruleIds.map(String).includes(String(source?.rule?.id))) {
     return { supported: true, matched: false };
   }

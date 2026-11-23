@@ -6,8 +6,12 @@ import {
   MAX_AUTO_CASES_PER_RUN,
   RULES_INDEX,
 } from '../../common';
+import type { NotificationSettings } from '../../common/types';
 import { buildMatchFilters, evaluateAlertMatch } from './correlation';
 import { normalizeAutomationRules, planAutomation } from './automation_planner';
+import { resolveNotificationChannels } from './notifications/emitters';
+import { loadNotificationSettings } from './notifications/settings';
+import { ruleNotifyChannelIds } from './rule_validation';
 import {
   AutomationAlertSample,
   AutomationTriggerState,
@@ -38,6 +42,12 @@ export interface AutomationPreviewOptions {
   triggerStates?: Readonly<Record<string, AutomationTriggerState>>;
   rateLimitReservations?: Readonly<Record<string, Array<{ id: string; timestamp: string }>>>;
   effectiveFrom?: string;
+  /**
+   * Step 1.4: the stored notification settings the candidate's `notify`
+   * channel ids are resolved against (`null` = none stored: everything is
+   * skipped). `undefined` (pure simulation) counts the raw ids.
+   */
+  notificationSettings?: NotificationSettings | null;
 }
 
 const timestamp = (alert: PreviewAlert) => Date.parse(String(alert.source?.['@timestamp'] || ''));
@@ -122,6 +132,28 @@ export function simulateAutomationPreview(
     allRules
   );
   const candidatePlans = plans.filter((plan) => plan.matched.includes(candidate.id));
+  // Step 1.4: outbox entries the candidate's `notify` action would write (one
+  // per alert it fires on and channel the stored settings resolve: an unknown
+  // or disabled id, or a globally disabled outbox, counts as skipped exactly
+  // as execution counts it). Without settings (pure simulation in tests) the
+  // raw id count is reported.
+  let notifications = 0;
+  let notificationsSkipped = 0;
+  for (const plan of candidatePlans) {
+    const ids = plan.notify.find((entry) => entry.ruleId === candidate.id)?.channelIds || [];
+    if (!ids.length) continue;
+    if (options.notificationSettings === undefined) {
+      notifications += ids.length;
+      continue;
+    }
+    const resolved = resolveNotificationChannels(options.notificationSettings, 'rule.action', ids);
+    if (!resolved.enabled) {
+      notificationsSkipped += new Set(ids).size;
+      continue;
+    }
+    notifications += resolved.channels.length;
+    notificationsSkipped += resolved.unknown.length + resolved.disabled.length;
+  }
   let actionsUsed = 0;
   let statusChanges = 0;
   let assignments = 0;
@@ -213,6 +245,8 @@ export function simulateAutomationPreview(
     casesExtended,
     statusChanges,
     assignments,
+    notifications,
+    notificationsSkipped,
     skips: candidatePlans.reduce((sum, plan) => sum + plan.skipped.filter((item) => item.ruleId === candidate.id).length, 0),
     conflicts: conflictPlans.flatMap((plan) => plan.conflicts.map((conflict) => ({ alertId: plan.alertId, ...conflict }))),
     skippedBySafety: skippedBySafety + caseCapSkipped,
@@ -316,8 +350,16 @@ export async function runAutomationPreview(client: any, candidate: CorrelationRu
     });
     for (const hit of response?.body?.hits?.hits || []) if (hit._source?.correlation_key) existingKeys.add(hit._source.correlation_key);
   }
+  // Step 1.4: the notify count follows the stored channel state, so the
+  // preview number matches the execution counters; the document is read only
+  // when the candidate carries the action (a read failure fails the preview).
+  let notificationSettings = options.notificationSettings;
+  if (notificationSettings === undefined && ruleNotifyChannelIds(canonicalCandidate as any).length) {
+    const loaded = await loadNotificationSettings(client);
+    notificationSettings = { enabled: loaded.enabled, channels: loaded.channels };
+  }
   const result = simulateAutomationPreview(canonicalCandidate, alerts, enabledRules, existingKeys, {
-    ...options, triggerStates, rateLimitReservations,
+    ...options, triggerStates, rateLimitReservations, notificationSettings,
   });
   result.totalAlerts = total;
   result.truncated = total > maxAlerts;

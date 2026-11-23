@@ -1,0 +1,81 @@
+{
+  "_index": "wazuh-alerts-4.x-2026.11.21",
+  "_score": null,
+  "_source": {
+    "@timestamp": "2026-11-21T20:39:47.457Z",
+    "agent": {
+      "id": "001",
+      "ip": "10.0.2.15",
+      "name": "wam-lab-agent"
+    },
+    "decoder": {
+      "name": "syscheck_new_entry"
+    },
+    "full_log": "File '/etc/wam-lab-marker.conf' added\nMode: realtime\n",
+    "id": "1795293587.1218211",
+    "input": {
+      "type": "log"
+    },
+    "location": "syscheck",
+    "manager": {
+      "name": "wazuh.manager"
+    },
+    "rule": {
+      "description": "File added to the system.",
+      "firedtimes": 1,
+      "gdpr": [
+        "II_5.1.f"
+      ],
+      "gpg13": [
+        "4.11"
+      ],
+      "groups": [
+        "ossec",
+        "syscheck",
+        "syscheck_entry_added",
+        "syscheck_file"
+      ],
+      "hipaa": [
+        "164.312.c.1",
+        "164.312.c.2"
+      ],
+      "id": "554",
+      "level": 5,
+      "mail": false,
+      "nist_800_53": [
+        "SI.7"
+      ],
+      "pci_dss": [
+        "11.5"
+      ],
+      "tsc": [
+        "PI1.4",
+        "PI1.5",
+        "CC6.1",
+        "CC6.8",
+        "CC7.2",
+        "CC7.3"
+      ]
+    },
+    "syscheck": {
+      "event": "added",
+      "gid_after": "0",
+      "gname_after": "root",
+      "inode_after": 524920,
+      "md5_after": "2a47bfa8197b3bd8f6efe4938be8c2ef",
+      "mode": "realtime",
+      "mtime_after": "2026-11-21T20:39:46",
+      "path": "/etc/wam-lab-marker.conf",
+      "perm_after": "rw-r--r--",
+      "sha1_after": "515aaa7c25cb02f0510a6184e6560a9445a4062c",
+      "sha256_after": "25360d946b3760a2a6103677adc91b9c8a946fac056639282c963f804bc05793",
+      "size_after": "91",
+      "uid_after": "0",
+      "uname_after": "root"
+    },
+    "timestamp": "2026-11-21T20:39:47.457+0000"
+  },
+  "sort": [
+    1795293587457
+  ]
+}

@@ -3,14 +3,82 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22093124.svg)](https://doi.org/10.5281/zenodo.22093124)
 
 An OpenSearch Dashboards plugin that turns Wazuh alerts into a small SOC
-work desk: status workflow, comments, audit history, cross-alert linking,
-case management with multi-alert bulk actions, dropdown-based filtering,
+work desk: status workflow, dispositions, comments, audit history,
+cross-alert linking, case management with tasks and reusable task lists,
+attachments, SLA targets and escalation, threat-intelligence enrichment and
+asset context, ingestion-time automation rules, notifications through your
+existing channels, CSV/HTML/Markdown/JSON exports and scheduled summaries,
 and optional AI-assisted analysis via OpenAI, DeepSeek, Gemini or Claude.
 
 Release artifacts are built against official Wazuh Dashboard source for
-**Wazuh 4.12.0–4.14.10**; the full browser bench runs on **Wazuh 4.14.9 / OSD
-2.19.6**. See [SUPPORTED_VERSIONS.md](./SUPPORTED_VERSIONS.md) for the exact
-version-to-artifact matrix.
+**Wazuh 4.12.0–4.14.10**; the full browser bench runs on **Wazuh 4.14.10 / OSD
+2.19.6**. **Wazuh 5.0.0-rc2** (OSD 3.6.0) is a **preview** target: the same
+plugin reads 5.0's `wazuh-findings-v5-*` data streams instead of 4.x
+`wazuh-alerts-*`, detected automatically per build, and is re-verified when
+5.0 is final. See [SUPPORTED_VERSIONS.md](./SUPPORTED_VERSIONS.md) for the
+exact version-to-artifact matrix.
+
+The 3.0 line ships first as the pre-release **v3.0.0-rc.1**; **v2.0.3 remains
+the latest stable release**. See
+[RELEASE_NOTES_v3.0.0.md](./RELEASE_NOTES_v3.0.0.md).
+
+---
+
+## What's new in v3.0
+
+**One plugin for Wazuh 4.x and Wazuh 5.0.** The same source tree, plugin id and
+`*-v2-*` storage serve both lines. Each artifact is compiled for one exact
+OpenSearch Dashboards version and knows which Wazuh line it targets, so a 4.x
+build reads `wazuh-alerts-*` and a 5.0 build reads the `wazuh-findings-v5-*`
+data streams. Source detection runs every sync tick and its outcome
+(`ready` / `waiting` / `blocked`, with the reason) is shown in Storage Health.
+5.0 severity labels are kept verbatim in `severity_label`; nothing invents a
+numeric level.
+
+On top of that, 3.0 adds:
+
+- **Threat-intelligence enrichment and asset context.** Indicators (IPs,
+  domains, URLs, hashes, users, processes, hosts) are extracted from every
+  record, aggregated per case, and can be looked up against AbuseIPDB, MISP, a
+  generic HTTP source, or — on Wazuh 5.0 — the local CTI catalog
+  (`wazuh_cti_local`, reading `wazuh-threatintel-enrichments*`). Verdicts are
+  cached, badged in the queue and stored on the alert. Asset criticality rules
+  (name / glob / group / 4.x label) stamp `asset.criticality` at sync time, and
+  the flyouts show OS, addresses, open ports, vulnerability and SCA chips read
+  from `wazuh-states-*` with deep links to IT Hygiene, Vulnerability Detection
+  and (4.x) Configuration Assessment.
+- **Case structure.** Tasks on a case, reusable **task lists** applied manually
+  or by an automation rule, a merged **timeline** (alerts, comments, audit
+  events, task due dates), **attachments** (links and small files, 2 MiB cap,
+  allowlisted media types) and **dispositions** (true positive / false positive
+  / benign / duplicate / undetermined) with a closure reason, propagated from a
+  case close onto the alerts it closes. On Wazuh 5.0 a finding's native
+  `wazuh.case.*` fields are projected read-only as a "Native case" chip; the
+  plugin never writes them back.
+- **SLA enforcement.** Per-band assign/resolve targets editable under
+  **Settings > SLA**, due timestamps on every alert and case, Due columns with
+  Breached / Due-soon badges and quick filters, a background scanner that
+  stamps breaches and applies escalation rules (assign, raise severity,
+  comment, notify), and "currently breached" / "escalations in period" figures
+  in Reporting.
+- **Output.** Streaming `GET /alerts/export.csv` and `/cases/export.csv`,
+  a per-case report (Markdown or self-contained HTML with a print stylesheet —
+  the Print / Save as PDF path), a Reporting export menu (HTML, Markdown, CSV,
+  JSON, Print / Save as PDF), scheduled Markdown summaries delivered through
+  the notification channels, and optional Discover / OpenSearch Reporting
+  index patterns and saved searches.
+- **Notifications.** Deliver through the indexer's existing **Notifications**
+  channels (Slack, Teams, chime, email, SNS, webhook) via an inline Alerting
+  `_execute`, or through a direct HMAC-signed webhook from the dashboard
+  server. A durable outbox with backoff, dead letters and an administrator
+  retry sits in front of both. Events: `case.created`, `case.assigned`,
+  `case.severity_raised`, `case.closed`, `sla.breached`, `sla.escalated`,
+  `rule.action`, `report.scheduled`. Automation rules gained a **notify**
+  action.
+- **UI.** Both flyouts and Settings sit on a collapsible section rail with
+  grouped navigation; the case flyout has its own **Assets** section with one
+  collapsible row per agent; the Overviews are grouped metadata grids; the
+  queues fit a 1280px viewport without horizontal scrolling.
 
 ---
 
@@ -51,7 +119,7 @@ bit more:
   alert) and a **time-window filter** ("created in the last 24h/7d/...")
   alongside status/assignee/search in the Cases tab.
 - **Cross-alert linking**: relate alerts to each other directly (not just
-  through a case) from the alert flyout's "Related Alerts" tab.
+  through a case) from the alert flyout's "Related alerts" section.
 - **Full-screen flyouts**: the alert and case detail panels have an
   expand toggle in the header (top-right) to go full width when you need
   the room - e.g. reading the raw JSON or a long AI analysis.
@@ -93,7 +161,10 @@ server/
     constants.ts          (in common/) single source of truth for index/alias names
     mappings.ts           explicit v2 index mappings this plugin owns
     provision.ts          idempotent "create index + alias if missing"
-    sync_job.ts           copies wazuh-alerts-* into the v2 alert store on a timer
+    sync_job.ts           copies new native alerts/findings into the v2 alert store on a timer
+    source_profile.ts     the two read-only native families: 4.x wazuh-alerts-*, 5.0 wazuh-findings-v5-*
+    source_runtime.ts     per-tick source detection (build target + config) -> ready / waiting / blocked
+    adapters/             wazuh4_alert_adapter (v2 behaviour), wazuh5_finding_adapter (WCS -> canonical)
     sync_lock.ts          leader-lock doc so N dashboard replicas sync safely
     lifecycle.ts          plugin-managed rollover + retention marking
     alert_retirement.ts   case-safe carry-forward retirement, guarded restore, purge
@@ -107,16 +178,39 @@ server/
     history.ts            shared painless snippet for audit-trail append
     opensearch.ts         best-effort "who is the logged in user" lookup
     ai_providers.ts       one function per AI provider's HTTP API
-    egress/               AI egress allowlist projection (raw _source cannot cross)
+    egress/               boundedFetch + validateEgressUrl; AI egress allowlist projection
+                          (raw _source cannot cross the AI boundary)
+    native_read.ts        read-only search of native indices outside the alert family
+    wazuh_api.ts          optional wazuhCore server-API client (4.x agent groups)
+    lease.ts              generic leader lease for the background jobs
+    plugin_settings.ts    typed settings docs in the meta index, secrets encrypted + masked
+    http_download.ts      downloadResponse + CSV escaping/streaming helpers
     attack_graph.ts       entity/kill-chain/hop extraction from a case's alerts
+    case_report.ts        per-case Markdown/HTML report; attack_graph_svg.ts renders it
+    case_timeline.ts      merged case timeline (alerts, comments, audit, task dues)
+    case_tasks.ts         pure task-list operations; task_lists.ts the reusable sets
+    enrichment/           threat-intel sources, cache, providers
+    assets/               asset criticality matcher; asset_context.ts the state chips
+    sla/                  policy, due backfill, escalation scanner
+    notifications/        settings, outbox, dispatcher, transports, emitters, rule action
+    report_schedules/     metrics, Markdown/HTML/CSV/JSON render, scheduler
   routes/
-    alerts.ts             search/count/bulk-update/get/related/suggested/precedent
+    alerts.ts             search/count/bulk-update/get/related/suggested/precedent/export.csv
     comments.ts           comments + audit on an alert or a case
-    cases.ts              case CRUD + linking alerts + attack-path
+    cases.ts              case CRUD + linking alerts + timeline + report + export.csv
+    case_tasks.ts         tasks on a case; task_lists.ts reusable task lists + apply
+    attachments.ts        case attachments (links + small files)
+    evidence.ts           case-alert relationships, holds
+    attack_path.ts        attack graph / kill chain for a case
+    indicators.ts         per-case indicator aggregation
+    enrichment.ts         enrichment settings, lookup, per-source test
+    assets.ts             asset context chips from native wazuh-states-*
+    sla.ts                SLA policy, due backfill, escalation status
+    notifications.ts      channel settings, outbox, retry, dispatcher status
     filters.ts            dropdown option aggregations
     ai.ts                 AI settings + on-demand analysis generation
     users.ts              real dashboard users, for the assignee picker
-    reports.ts            SLA / MTTA / MTTR metrics for a time period
+    reports.ts            SLA / MTTA / MTTR metrics, schedules, export
     rules.ts              automation (correlation) rules CRUD + preview
     system.ts             storage health, lifecycle settings, rollover, retirement, restore, purge
 public/
@@ -131,20 +225,42 @@ public/
 ### Data model
 
 The plugin owns a set of **v2** indices, all auto-created (and aliased) on first
-server start. It never writes to Wazuh's native `wazuh-alerts-*` indices — those
-are read-only evidence sources.
+server start. It never writes to Wazuh's native storage — 4.x `wazuh-alerts-*`
+indices and 5.0 `wazuh-events-v5-*` / `wazuh-findings-v5-*` data streams are
+read-only evidence sources. A build compiled for Wazuh 4.x reads alerts; a
+build compiled for Wazuh 5.0 reads findings and follows a finding's
+`event.index` / `event.doc_id` to its underlying event only when an analyst
+opens it. Both produce the same bounded canonical record (plus
+`source_family`, and for 5.0 the verbatim `severity_label`, since 5.0 rule
+levels are labels rather than the 4.x 0–16 integers).
+
+**Alias-backed families** (read alias, write alias, numeric rollover generations
+starting at `-000001`):
+
+| Family | Purpose |
+|---|---|
+| `wazuh-alert-status-v2-{read,write}` | Aliases over numbered alert generations. Each document is a bounded operational projection plus workflow state (status, assignee, disposition, SLA due dates, enrichment, asset, native-case projection). |
+| `wazuh-alert-manager-v2-activity-{read,write}` | Aliases over numbered comment/audit generations, keyed by `alert_id` or `case_id`. |
+| `wazuh-alert-manager-v2-cases-{read,write}` | Aliases over numbered case generations. Cases keep an exact `evidence_count`, nested `tasks[]`, applied task lists and bounded alert-ID/history previews. |
+| `wazuh-alert-manager-v2-evidence-{read,write}` | Aliases over the authoritative, paginated case-alert relationship family, including provenance, holds, lifecycle state, compact snapshots and trusted archive locations. |
+
+**Fixed single indices** (one stable name, no rollover; the documents are still
+mutable):
 
 | Index | Purpose |
 |---|---|
-| `wazuh-alert-status-v2-{read,write}` | Aliases over numbered alert generations. Each document is a bounded operational projection plus workflow state. |
-| `wazuh-alert-manager-v2-activity-{read,write}` | Aliases over numbered comment/audit generations, keyed by `alert_id` or `case_id`. |
-| `wazuh-alert-manager-v2-cases-{read,write}` | Aliases over numbered case generations. Cases keep an exact `evidence_count` and bounded alert-ID/history previews. |
-| `wazuh-alert-manager-v2-evidence-{read,write}` | Aliases over the authoritative, paginated case-alert relationship family, including provenance, holds, lifecycle state, compact snapshots and trusted archive locations. |
+| `wazuh-alert-manager-v2-meta` | Internal state and settings documents: sync cursor(s), leases/leader lock, lifecycle settings, AI settings, enrichment sources, asset rules, SLA policy, notification channels, report schedules and their last runs, source state, retirement records. |
 | `wazuh-alert-manager-v2-rules` | Automation rule definitions and revisions. |
-| `wazuh-alert-manager-v2-meta` | Internal state: sync watermark, leader lock, lifecycle settings, AI settings, retirement records. |
+| `wazuh-alert-manager-v2-task-lists` | Reusable case task sets ("task lists") applied to a case manually or by a rule. |
+| `wazuh-alert-manager-v2-attachments` | Case attachments: links and small files (2 MiB decoded cap, allowlisted media types, base64 body stored but not indexed). |
+| `wazuh-alert-manager-v2-enrichment-cache` | Cached threat-intel verdicts, keyed by `sha256(source:type:value)` with an `expires_at`. |
+| `wazuh-alert-manager-v2-notifications` | Delivery outbox: one document per (event, channel) with attempts, backoff and dead-letter state. |
 | `wazuh-alert-manager-v2-migration` | Legacy v1 -> v2 migration progress/checkpoint. |
 | `wazuh-alert-manager-v2-sync-dlq` | Dead-letter queue for alerts that fail to sync. |
 | `wazuh-alert-manager-v2-automation-{queue,executions,dlq}` | Durable ingestion-time work, idempotent execution records and recoverable failures. |
+
+The authoritative list is `MANAGED_INDICES` in `server/lib/provision.ts`; the
+names themselves live in `common/constants.ts`.
 
 Legacy v1 indices (`wazuh-alert-status`, `wazuh-alert-manager-comments`,
 `wazuh-alert-manager-cases`, `wazuh-alert-manager-meta`, `wazuh-alert-manager-rules`)
@@ -192,7 +308,12 @@ touches and what shape of request it accepts.
 `install.sh` detects the installed Wazuh Dashboard / OpenSearch Dashboards
 version, picks the matching artifact, verifies its SHA-256 (and, when
 configured, a minisign signature), backs up the current plugin, and swaps it
-in with automatic rollback on failure. It never modifies `wazuh-alerts-*`, never
+in with automatic rollback on failure. On Wazuh 5.0 it also grants the
+dashboard's indexer user a least-privilege OpenSearch Security role
+(`wazuh_alert_manager_store`, write access to the two exact plugin prefixes
+only), because 5.0 ships that user read-only on `wazuh-*`; on a distributed
+install without local admin credentials it prints the role to create instead.
+It never modifies `wazuh-alerts-*` or 5.0 events/findings, never
 deletes plugin data on upgrade, and fails closed on an unsupported dashboard
 version.
 
@@ -208,6 +329,15 @@ curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/
 curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.3/install.sh.sha256
 sha256sum -c install.sh.sha256
 sudo bash install.sh --version 2.0.3
+
+# Pre-release (v3.0.0-rc.1). `latest` stays on the stable 2.0.3 release, so the
+# pre-release must be installed with its OWN installer, downloaded from the RC
+# tag: the 2.0.3 installer does not know OSD 3.6.0 (the Wazuh 5.0 preview) and
+# predates the RC's new role grants.
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v3.0.0-rc.1/install.sh
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v3.0.0-rc.1/install.sh.sha256
+sha256sum -c install.sh.sha256
+sudo bash install.sh --version 3.0.0-rc.1
 ```
 
 It also handles `--dry-run`, `--no-restart`, `--rollback`,
@@ -236,15 +366,102 @@ checksum/signature tooling (`scripts/make-release-artifacts.sh`).
 
 3. (Optional) Configure AI analysis - see **AI analysis integration** below.
 
+### Configuration reference (`wazuh_alert_manager.*`)
+
+Every key below is optional; the plugin runs with no configuration at all.
+Overrides go in `opensearch_dashboards.yml` under the **snake_case**
+`wazuh_alert_manager` path — see the config-loading note below before relying
+on that on a Wazuh-packaged dashboard.
+
+| Key | Default | What it does |
+|---|---|---|
+| `enabled` | `true` | Turns the whole plugin off. |
+| `sync.enabled` | `true` | Runs the background sync job. |
+| `sync.intervalSeconds` | `60` (min 15) | Seconds between sync ticks. |
+| `sync.sourceMode` | `auto` | `auto` \| `wazuh4_alerts` \| `wazuh5_findings`. An explicit value must still be eligible for the build. |
+| `sync.sourceIndexPattern` | the family default | Optional override; must stay inside the selected family, otherwise sync stops safely and says so in Storage Health. |
+| `sync.initialLookbackMinutes` | `10` | How far back the first tick reads. |
+| `sync.batchSize` | `10000` (100–10000) | Source hits per tick. |
+| `sync.minRuleLevel` | unset | **Wazuh 4.x only**: numeric `rule.level` floor applied at the source. |
+| `sync.minSeverityLabel` | unset | **Wazuh 5.0 only**: label floor (`informational` … `critical`) applied to `wazuh.rule.level` at the source. |
+| `sync.overlapSeconds` | `120` (0–3600) | Replay window; partial upserts make the overlap safe. |
+| `lifecycle.enabled` | `true` | Plugin-managed rollover and retention marking. |
+| `lifecycle.rolloverAge` / `.rolloverPrimarySize` | `7d` / `20gb` | Rollover thresholds. |
+| `lifecycle.operationalRetentionDays` | `90` (min 7) | Alert generations marked due for review. |
+| `lifecycle.activityRetentionDays` | `365` (min 30) | Activity generations. |
+| `lifecycle.caseRetentionDays` | `365` (min 30) | Case generations. |
+| `lifecycle.evidenceRetentionDays` | `730` (min 30) | Evidence generations. |
+| `migration.enabled` / `.batchSize` / `.shadowWriteDays` | `true` / `1000` / `14` | Legacy v1 → v2 migration. |
+| `sla.escalation.enabled` | `true` | The SLA breach/escalation scanner. |
+| `sla.escalation.tickSeconds` | `60` (15–3600) | Scanner tick. |
+| `sla.escalation.breachNotifyGraceMinutes` | `1440` (0 = notify on every breach) | A record overdue longer than this is stamped but sends no `sla.breached` notification, so enabling SLA on a backlog does not flood channels. |
+| `notifications.dashboardUrl` | unset | Public base URL (http/https, include `server.basePath`) used for deep links in notification payloads; unset means app-relative links. |
+| `notifications.dispatcher.enabled` | `true` | The outbox dispatcher. |
+| `notifications.dispatcher.tickSeconds` | `5` (1–300) | Dispatcher tick. |
+| `reports.scheduler.enabled` | `true` | The scheduled-summary renderer. |
+| `reports.scheduler.tickSeconds` | `60` (15–3600) | Scheduler tick. |
+
+The SLA policy, enrichment sources, asset criticality rules, notification
+channels and report schedules are **not** yml settings: they are edited under
+**Settings** and stored as documents in the plugin's meta index.
+
+Two environment variables on the dashboard service complete the picture:
+
+- `WAZUH_ALERT_MANAGER_ENCRYPTION_KEY` — required before any secret (AI
+  provider key, enrichment API key, webhook HMAC secret) can be saved. See
+  **AI analysis integration** below.
+- `WAZUH_ALERT_MANAGER_EGRESS_ALLOWED_HOSTS` — a comma-separated hostname
+  allowlist. By default outbound requests (enrichment lookups, direct
+  webhooks) must be https to a public name; a host named here may be a
+  private or `.local`/`.internal` receiver. `localhost` and IP literals are
+  never accepted. This is the supported way to reach an on-premises webhook
+  receiver or a lab MISP.
+
 ### Configuring the sync job
 
 Defaults live in `server/config.ts` (`sync.enabled`, `sync.intervalSeconds`,
-`sync.sourceIndexPattern`, `sync.initialLookbackMinutes`, `sync.batchSize`,
-`sync.minRuleLevel`). These are meant to be overridable via
-`opensearch_dashboards.yml` (e.g. `wazuhAlertManager.sync.intervalSeconds: 30`)
+`sync.sourceMode`, `sync.sourceIndexPattern`, `sync.initialLookbackMinutes`,
+`sync.batchSize`, `sync.minRuleLevel`). `sync.sourceMode` is `auto` by
+default: a Wazuh 4.x build reads `wazuh-alerts-*`, a Wazuh 5.0 build reads
+`wazuh-findings-v5-*`; an explicit `wazuh4_alerts` / `wazuh5_findings` value
+must still be eligible for the build. `sync.sourceIndexPattern` is an
+optional override that must stay inside the selected family (anything else
+stops sync safely and is explained in Storage Health). `sync.minRuleLevel`
+is a 4.x numeric floor applied at the source; its 5.0 counterpart is
+`sync.minSeverityLabel` (`informational` | `low` | `medium` | `high` |
+`critical`), applied to `wazuh.rule.level` at the source. Each is ignored by
+the other line. These are meant to be overridable via
+`opensearch_dashboards.yml` (e.g. `wazuh_alert_manager.sync.intervalSeconds: 30`
+— the path is the snake_cased plugin id)
 the standard OSD way - **but see the config-loading caveat below** before
 relying on that on a Wazuh-packaged dashboard. If you hit it, change the
 default in `server/config.ts` and rebuild instead.
+
+### Role grants
+
+The core workbench needs nothing beyond what a stock Wazuh install already
+gives the dashboard user on Wazuh 4.x. Three optional grants unlock the 3.0
+features that touch storage or indexer plugins the base plugin never used.
+`install.sh` applies them when it has indexer admin credentials (on Wazuh 5.0
+it reads `/etc/wazuh-indexer/export/credentials.env`; on 4.x pass
+`--indexer-admin-password` or set `WAZUH_INDEXER_ADMIN_PASSWORD`), prints a
+banner listing which were applied, and can re-apply them later with
+`--grant-roles`:
+
+| Role | Who needs it | What it allows | Opt out |
+|---|---|---|---|
+| `wazuh_alert_manager_store` | the dashboard's indexer user, **Wazuh 5.0 only** | Write access to the two exact plugin prefixes (5.0 ships that user read-only on `wazuh-*`) plus point-in-time and bulk | `--skip-store-role` |
+| `wazuh_alert_manager_native_read` | the dashboard's indexer user **and every analyst** who should see asset chips and local CTI verdicts | Read-only search of `wazuh-states-*` and (5.0) `wazuh-threatintel-enrichments*` | `--skip-native-read-role` |
+| `wazuh_alert_manager_notify` | the dashboard's indexer user only | Execute an inline Alerting monitor whose action targets a Notifications channel, read a channel config, publish to it, and read the plugin's outbox index — nothing else | `--skip-notification-role` |
+
+The installer maps `wazuh_alert_manager_native_read` to the dashboard user and
+prints the exact `rolesmapping` call for your analyst groups; analysts who pick
+delivery channels also need the reserved `notifications_read_access`, which the
+installer deliberately does not grant. Without any of these the plugin
+degrades rather than fails: asset and enrichment chips read "no access" and the
+dispatcher records a 403 as `last_error` and leaves notifications queued.
+Every grant is read-only or delivery-only; the plugin still never writes to
+native Wazuh storage.
 
 ### AI analysis integration
 
@@ -309,19 +526,23 @@ computes, for a selected time period (last 24h/7d/30d/90d):
 - **Mean time to resolve (MTTR)**: average of (last "closed" status-change
   timestamp - alert timestamp), across alerts closed in the period.
 - **SLA compliance**: each closed alert is checked against a target
-  resolution time based on its rule level:
+  resolution time based on its severity band. These are the **defaults**,
+  editable under **Settings > SLA**:
 
-  | Severity | Rule level | Target |
-  |---|---|---|
-  | Critical | 12+ | 1 hour |
-  | High | 7-11 | 4 hours |
-  | Medium | 4-6 | 24 hours |
-  | Low | 0-3 | 3 days |
+  | Severity | Rule level (4.x) | Assign within | Resolve within |
+  |---|---|---|---|
+  | Critical | 12+ | 15 minutes | 1 hour |
+  | High | 7-11 | 1 hour | 4 hours |
+  | Medium | 4-6 | 6 hours | 24 hours |
+  | Low | 0-3 | 18 hours | 3 days |
 
   Compliance % = alerts resolved within their tier's target / all resolved
   alerts with a tracked SLA in the period. The breakdown table shows this
   per severity tier so you can see e.g. "Critical: 8/10 within SLA" rather
-  than just one blended number.
+  than just one blended number. On Wazuh 5.0 the severity label maps onto
+  the same bands (`informational` counts as Low). Alerts and cases also
+  carry due timestamps, and a background scanner stamps breaches and applies
+  the policy's escalation rules — see `wiki/Reporting.md`.
 
 Both MTTA and MTTR are derived from each alert's own `history` array (the
 same audit trail the flyout shows you), not a separate metrics pipeline -
@@ -502,15 +723,16 @@ alert whose timestamp falls into a later run's window gets overwritten.
 
 `.github/workflows/build-and-release.yml` builds this plugin against the
 *real* wazuh-dashboard source tree for all six OSD versions used by supported
-Wazuh patches (2.19.1 through 2.19.6) - the same process documented
+Wazuh patches (2.19.1 through 2.19.6) plus the prerelease Wazuh 5.0.0-rc2 /
+OSD 3.6.0 entry - the same process documented
 under **Building from source**, not just a relabeled manifest. Building
 this way is the point: it catches real API incompatibilities between OSD
 releases, not just a version-string mismatch.
 
 - **Manual run**: use the "Run workflow" button on the Actions tab for a
-  one-off build of all six versions (e.g. to sanity-check a branch)
+  one-off build of every matrix entry (e.g. to sanity-check a branch)
   without cutting a release. Zips land as downloadable workflow artifacts.
-- **Release**: push a tag matching `v*` to build all six versions and
+- **Release**: push a tag matching `v*` to build every matrix entry and
   attach the zips to a GitHub Release automatically.
 
 The workflow bakes in every gotcha this session hit doing the same build
@@ -539,19 +761,20 @@ Roughly in priority order:
   Marching, Heat Method) are specific to continuous mesh surfaces and
   don't transfer to a discrete alert graph - only the classical
   graph-search family does.
-- **"Suggest related alerts."** A lighter-weight cousin of the above: given
-  an open alert, suggest other open/unlinked alerts sharing a host, user,
-  or technique within a recent window, as one-click candidates for the
-  existing "Related Alerts" linking feature - no new search algorithm
-  needed, just a scoped query against data that already exists.
-- **Configurable SLA policy.** The severity -> resolution-time targets in
-  `server/routes/reports.ts` are currently a source-level constant; making
-  them editable from AI Settings-style UI (with sane defaults) is on the
-  list once there's a real need for per-deployment targets.
-- **Saved/scheduled reports.** Exporting or emailing the Reports tab's
-  metrics on a schedule, rather than only viewing them live.
+- **Identity context.** An enrichment source kind asked only for `user`
+  indicators, answering an allowlisted projection (display name, title,
+  department, manager, account enabled, last sign-in, groups, risk level)
+  through the existing cache, secrets and egress policy; Microsoft Entra ID
+  and Okta over https, anything else through the generic HTTP source.
+- **Disposition-driven detection tuning.** Feeding the false-positive rate per
+  rule back into a silencing or tuning workflow. Today the plugin reports the
+  rate but never silences a detection itself.
 
-None of these are started - this section exists so the project's
+"Suggest related alerts" and scheduled/exported reports, which this section
+used to list, are shipped: see the alert flyout's **Related alerts** section and
+**Settings > Reports** / the Reporting **Export** menu.
+
+None of the items above are started - this section exists so the project's
 direction is visible in the repo itself.
 
 ---
@@ -584,9 +807,25 @@ direction is visible in the repo itself.
   fields are materialized by a resumable background backfill; until that finishes
   the report shows an explicit "backfill pending" notice instead of a silent
   sample. See `wiki/Reporting.md`.
-- The SLA policy (severity level -> resolution time target) is defined in
-  `server/lib/reporting_fields.ts` - if you need different thresholds, that's
-  currently a source edit + rebuild, not a UI setting.
+- The SLA policy (per-band assign and resolve targets, plus escalation rules)
+  is edited under **Settings > SLA** and stored in the plugin's meta index;
+  `server/lib/sla/policy.ts` only holds the defaults. A changed target applies
+  to records closed from then on; existing due dates are recomputed by a
+  throttled background backfill that the save schedules, and each dashboard
+  replica picks a change up within 60 seconds.
+- Scheduled summaries render in **UTC only** (no DST handling) and a missed
+  slot is rendered once at the next tick rather than back-filled.
+- An automation rule that matched but acted on nothing still shows
+  "Last fired: Never": the per-rule execution companion is written only for
+  the rules that applied an action in the batch.
+- Entity-group edits to an automation rule still need the rule disabled (the
+  server answers 409); other edits save as a new revision while it is enabled.
+- On Wazuh 5.0, findings carry a severity label, not a number. The 4.x
+  source floor `sync.minRuleLevel` is ignored there; use
+  `sync.minSeverityLabel` instead. Numeric thresholds elsewhere (rule
+  minimum level, level filters, SLA tiers) apply to 5.0 records through
+  severity bands (0-3 low, 4-6 medium, 7-11 high, 12+ critical). Wazuh 5.0
+  itself is prerelease; the 5.0 target is re-verified when 5.0 is final.
 
 ## Disclaimer
 

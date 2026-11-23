@@ -1,5 +1,10 @@
 # Supported versions
 
+The 3.0 line ships first as the pre-release **v3.0.0-rc.1**, with Wazuh 4.12
+through 4.14 supported and Wazuh 5.0.0-rc2 labelled **preview**; **v2.0.3
+remains the latest stable release**. See
+[RELEASE_NOTES_v3.0.0.md](./RELEASE_NOTES_v3.0.0.md).
+
 OpenSearch Dashboards enforces an exact match between a plugin's
 `opensearch_dashboards.json` -> `opensearchDashboardsVersion` and the
 running dashboard's own version before it will load the plugin at all.
@@ -29,6 +34,17 @@ in README.md) - the plugin zip `COPY`'d into the image must match the
 | 4.14.2–4.14.4 | 2.19.4 | `wazuhAlertManager-2.19.4.zip` | `v4.14.4` |
 | 4.14.5–4.14.7 | 2.19.5 | `wazuhAlertManager-2.19.5.zip` | `v4.14.7` |
 | 4.14.8–4.14.10 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` | `v4.14.10`; browser-tested on 4.14.9 (4.14.10 ships the same OSD 2.19.6) |
+| 5.0.0-rc2 (**preview**) | 3.6.0 | `wazuhAlertManager-3.6.0.zip` | `v5.0.0-rc2`; built and exercised on a live rc2 stack, re-verified against 5.0 GA before 3.0.0 final |
+
+One plugin, one source tree, one plugin id, one set of `*-v2-*` stores: the
+same code is compiled once per exact OSD version above. Each build records
+the Wazuh line it targets (`TARGET_WAZUH_VERSION` in `common/build_info.ts`)
+and reads only that line's native, read-only source: Wazuh 4.x alerts from
+`wazuh-alerts-*`, or Wazuh 5.0 findings from the `wazuh-findings-v5-*` data
+streams (following a finding's `event.index`/`event.doc_id` to its
+`wazuh-events-v5-*` event only on demand). The installer picks the zip for
+the running OSD version, so the operator never chooses between "4.x" and
+"5.0" artifacts by hand.
 
 These mappings come from each official `wazuh/wazuh-dashboard` release tag.
 The one-line installer reads the installed dashboard's `package.json` and

@@ -34,6 +34,9 @@ export async function resolveCases(client: any, ids: string[]): Promise<Map<stri
       body: {
         size: 10000,
         track_total_hits: true,
+        // Carry the concurrency token so callers can update with
+        // if_seq_no / if_primary_term (case tasks, evidence metadata).
+        seq_no_primary_term: true,
         query: { ids: { values: chunk } },
         _source: true,
       },

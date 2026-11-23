@@ -1,0 +1,85 @@
+{
+  "_index": "wazuh-alerts-4.x-2026.11.21",
+  "_score": null,
+  "_source": {
+    "@timestamp": "2026-11-21T20:39:21.798Z",
+    "agent": {
+      "id": "001",
+      "ip": "10.0.2.15",
+      "name": "wam-lab-agent"
+    },
+    "data": {
+      "srcip": "10.0.2.77",
+      "srcuser": "baduser"
+    },
+    "decoder": {
+      "name": "sshd",
+      "parent": "sshd"
+    },
+    "full_log": "2026-11-21T20:39:21.012833+00:00 wam-lab-agent sshd[12236]: Failed password for invalid user baduser from 10.0.2.77 port 49349 ssh2",
+    "id": "1795293561.1196539",
+    "input": {
+      "type": "log"
+    },
+    "location": "/var/log/auth.log",
+    "manager": {
+      "name": "wazuh.manager"
+    },
+    "predecoder": {
+      "program_name": "sshd",
+      "timestamp": "2026-11-21T20:39:21.012833+00:00"
+    },
+    "previous_output": "Nov 21 20:39:21 wam-lab-agent sshd[12236]: Failed password for invalid user baduser from 10.0.2.77 port 49349 ssh2\n2026-11-21T20:39:18.526263+00:00 wam-lab-agent sshd[12236]: Invalid user baduser from 10.0.2.77 port 49349\nNov 21 20:39:18 wam-lab-agent sshd[12236]: Invalid user baduser from 10.0.2.77 port 49349\nNov 21 20:39:17 wam-lab-agent sshd[12103]: Failed password for invalid user baduser from 10.0.2.77 port 49463 ssh2\n2026-11-21T20:39:17.145627+00:00 wam-lab-agent sshd[12103]: Failed password for invalid user baduser from 10.0.2.77 port 49463 ssh2\n2026-11-21T20:39:15.068129+00:00 wam-lab-agent sshd[12103]: Invalid user baduser from 10.0.2.77 port 49463\nNov 21 20:39:15 wam-lab-agent sshd[12103]: Invalid user baduser from 10.0.2.77 port 49463",
+    "rule": {
+      "description": "sshd: brute force trying to get access to the system. Non existent user.",
+      "firedtimes": 1,
+      "frequency": 8,
+      "gdpr": [
+        "IV_35.7.d",
+        "IV_32.2"
+      ],
+      "groups": [
+        "syslog",
+        "sshd",
+        "authentication_failures"
+      ],
+      "hipaa": [
+        "164.312.b"
+      ],
+      "id": "5712",
+      "level": 10,
+      "mail": false,
+      "mitre": {
+        "id": [
+          "T1110"
+        ],
+        "tactic": [
+          "Credential Access"
+        ],
+        "technique": [
+          "Brute Force"
+        ]
+      },
+      "nist_800_53": [
+        "SI.4",
+        "AU.14",
+        "AC.7"
+      ],
+      "pci_dss": [
+        "11.4",
+        "10.2.4",
+        "10.2.5"
+      ],
+      "tsc": [
+        "CC6.1",
+        "CC6.8",
+        "CC7.2",
+        "CC7.3"
+      ]
+    },
+    "timestamp": "2026-11-21T20:39:21.798+0000"
+  },
+  "sort": [
+    1795293561798
+  ]
+}

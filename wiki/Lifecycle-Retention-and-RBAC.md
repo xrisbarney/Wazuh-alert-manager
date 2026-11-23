@@ -110,4 +110,4 @@ closed alert to remain operational forever. See
 
 ## Storage boundary
 
-The only writable families are `wazuh-alert-status-v2-*` and `wazuh-alert-manager-v2-*`. The server rejects all other write targets before issuing an OpenSearch request. Native `wazuh-alerts-*` indices are read-only evidence sources and are never attached to plugin aliases, rollover, retirement, or purge operations.
+The only writable families are `wazuh-alert-status-v2-*` and `wazuh-alert-manager-v2-*`. The server rejects all other write targets before issuing an OpenSearch request. Native Wazuh storage (`wazuh-alerts-*` on 4.x; `wazuh-findings-v5-*` and `wazuh-events-v5-*` data streams, with their ISM policies, on 5.0) is a read-only evidence source and is never attached to plugin aliases, rollover, retirement, or purge operations.

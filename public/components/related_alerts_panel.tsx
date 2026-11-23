@@ -1,15 +1,16 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  EuiBasicTable,
   EuiSpacer,
   EuiText,
+  EuiTitle,
   EuiButtonIcon,
-  EuiButton,
+  EuiButtonEmpty,
   EuiLoadingSpinner,
   EuiBadge,
   EuiFlexGroup,
   EuiFlexItem,
-  EuiHorizontalRule,
+  EuiPanel,
+  EuiToolTip,
 } from '@elastic/eui';
 import { Alert } from '../../common';
 import { AlertsApiService } from '../services/api';
@@ -29,19 +30,63 @@ interface Props {
   onError: (message: string) => void;
   onToast?: (title: string, color: 'success' | 'danger' | 'primary', text?: string) => void;
   onOpenAlert: (alert: Alert) => void;
+  /** Reports the linked (not suggested) total after every load, for the flyout's section rail (11.1). */
+  onCountChanged?: (total: number) => void;
 }
 
-export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onError, onToast, onOpenAlert }) => {
+/**
+ * One related / suggested alert on the shared history grid (step 8.2):
+ * time | description + agent + shared keys | actions. The same row classes
+ * as the audit history so the two lists align inside the flyout.
+ */
+const RelatedAlertRow: React.FC<{
+  source: any;
+  reasons?: string[];
+  actions: React.ReactNode;
+  testSubj: string;
+}> = ({ source, reasons, actions, testSubj }) => (
+  <li className="wamHistoryRow wamHistoryRow--actions" data-test-subj={testSubj}>
+    <span className="wamHistoryRow__time" title={source?.['@timestamp']}>
+      {formatAbsolute(source?.['@timestamp'])}
+    </span>
+    <div className="wamHistoryRow__body">
+      <EuiText size="s" className="wamHistoryRow__event">
+        <span className="wamHistoryRow__actor">{source?.agent?.name || '—'}</span>{' '}
+        <span className="wamHistoryRow__action">{source?.rule?.description || '—'}</span>
+      </EuiText>
+      {reasons && reasons.length > 0 ? (
+        <span className="wamHistoryRow__details wamHistoryRow__chips">
+          {reasons.map((r) => (
+            <EuiBadge color="hollow" key={r}>
+              {r}
+            </EuiBadge>
+          ))}
+        </span>
+      ) : null}
+    </div>
+    <span className="wamHistoryRow__actions">{actions}</span>
+  </li>
+);
+
+export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onError, onToast, onOpenAlert, onCountChanged }) => {
   const [related, setRelated] = useState<Alert[]>([]);
   const [suggested, setSuggested] = useState<Suggested[]>([]);
   const [loading, setLoading] = useState(true);
   const [linking, setLinking] = useState(false);
+  // Held in a ref so an inline callback from the host never re-keys `load`
+  // (and the mount effect) — the list is fetched once per alert id.
+  const onCountRef = useRef(onCountChanged);
+  useEffect(() => {
+    onCountRef.current = onCountChanged;
+  });
 
   const load = useCallback(async () => {
     try {
       setLoading(true);
       const res: any = await apiService.fetchRelatedAlerts(alertId);
-      setRelated(res?.alerts || []);
+      const alerts: Alert[] = res?.alerts || [];
+      setRelated(alerts);
+      onCountRef.current?.(alerts.length);
     } catch (e) {
       onError('Failed to load related alerts');
     } finally {
@@ -97,92 +142,103 @@ export const RelatedAlertsPanel: React.FC<Props> = ({ alertId, apiService, onErr
   };
 
   return (
-    <div>
-      <EuiText size="s">
-        <h4>Currently linked</h4>
-      </EuiText>
-      <EuiSpacer size="s" />
-      {loading ? (
-        <EuiLoadingSpinner size="m" />
-      ) : related.length === 0 ? (
-        <EuiText size="s" color="subdued">
-          No related alerts linked yet.
-        </EuiText>
-      ) : (
-        <EuiBasicTable
-          items={related}
-          columns={[
-            { field: '_source', name: 'Timestamp', render: (v: Alert['_source']) => formatAbsolute(v['@timestamp']) },
-            { field: '_source', name: 'Description', render: (v: Alert['_source']) => v.rule?.description || '—' },
-            { field: '_source', name: 'Agent', render: (v: Alert['_source']) => v.agent?.name || '—' },
-            {
-              name: 'Actions',
-              actions: [
-                { render: (a: Alert) => <EuiButtonIcon iconType="eye" aria-label="View" onClick={() => onOpenAlert(a)} /> },
-                { render: (a: Alert) => <EuiButtonIcon iconType="unlink" aria-label="Unlink" onClick={() => unlink(a._id)} /> },
-              ],
-            },
-          ]}
-        />
-      )}
+    <div className="wamRelatedAlerts" data-test-subj="wamRelatedAlerts">
+      <EuiPanel hasBorder paddingSize="m" className="wamRelatedAlertsPanel" data-test-subj="wamRelatedLinked">
+        <EuiFlexGroup gutterSize="s" alignItems="center" responsive={false} className="wamPanelHeader">
+          <EuiFlexItem>
+            <EuiTitle size="xs">
+              <h3>Currently linked</h3>
+            </EuiTitle>
+          </EuiFlexItem>
+          {related.length > 0 ? (
+            <EuiFlexItem grow={false}>
+              <EuiText size="xs" color="subdued">
+                {related.length} linked
+              </EuiText>
+            </EuiFlexItem>
+          ) : null}
+        </EuiFlexGroup>
+        <EuiSpacer size="s" />
+        {loading ? (
+          <EuiLoadingSpinner size="m" />
+        ) : related.length === 0 ? (
+          <EuiText size="s" color="subdued">
+            No related alerts linked yet.
+          </EuiText>
+        ) : (
+          <ol className="wamHistoryList" data-test-subj="wamRelatedLinkedList">
+            {related.map((a) => (
+              <RelatedAlertRow
+                key={a._id}
+                source={a._source}
+                testSubj="wamRelatedLinkedRow"
+                actions={
+                  <>
+                    <EuiToolTip content="View">
+                      <EuiButtonIcon iconType="eye" aria-label="View" onClick={() => onOpenAlert(a)} />
+                    </EuiToolTip>
+                    <EuiToolTip content="Unlink">
+                      <EuiButtonIcon iconType="unlink" aria-label="Unlink" onClick={() => unlink(a._id)} />
+                    </EuiToolTip>
+                  </>
+                }
+              />
+            ))}
+          </ol>
+        )}
+      </EuiPanel>
 
       {suggested.length > 0 && (
         <>
-          <EuiSpacer size="l" />
-          <EuiHorizontalRule margin="none" />
           <EuiSpacer size="m" />
-          <EuiText size="s">
-            <h4>Suggested</h4>
-          </EuiText>
-          <EuiText size="xs" color="subdued">
-            Alerts near this one in time that share a host, source IP, user, or rule. Ranked by overlap.
-          </EuiText>
-          <EuiSpacer size="s" />
-          <EuiBasicTable
-            items={suggested}
-            columns={[
-              { field: '_source', name: 'Timestamp', render: (v: any) => formatAbsolute(v['@timestamp']) },
-              { field: '_source', name: 'Description', render: (v: any) => v.rule?.description || '—' },
-              {
-                name: 'Shared',
-                render: (s: Suggested) => (
-                  <EuiFlexGroup gutterSize="xs" wrap responsive={false}>
-                    {s.reasons.map((r) => (
-                      <EuiFlexItem grow={false} key={r}>
-                        <EuiBadge color="hollow">{r}</EuiBadge>
-                      </EuiFlexItem>
-                    ))}
-                  </EuiFlexGroup>
-                ),
-              },
-              {
-                name: 'Actions',
-                width: '150px',
-                actions: [
-                  { render: (s: Suggested) => <EuiButtonIcon iconType="eye" aria-label="View" onClick={() => onOpenAlert({ _id: s._id, _source: s._source })} /> },
-                  {
-                    render: (s: Suggested) => (
-                      <EuiButton size="s" iconType="link" onClick={() => linkOne(s._id)} isDisabled={linking}>
+          <EuiPanel hasBorder paddingSize="m" className="wamRelatedAlertsPanel" data-test-subj="wamRelatedSuggested">
+            <EuiFlexGroup gutterSize="s" alignItems="center" responsive={false} className="wamPanelHeader">
+              <EuiFlexItem>
+                <EuiTitle size="xs">
+                  <h3>Suggested</h3>
+                </EuiTitle>
+              </EuiFlexItem>
+            </EuiFlexGroup>
+            <EuiSpacer size="s" />
+            <EuiText size="xs" color="subdued">
+              Alerts near this one in time that share a host, source IP, user, or rule. Ranked by overlap.
+            </EuiText>
+            <EuiSpacer size="s" />
+            <ol className="wamHistoryList" data-test-subj="wamRelatedSuggestedList">
+              {suggested.map((s) => (
+                <RelatedAlertRow
+                  key={s._id}
+                  source={s._source}
+                  reasons={s.reasons}
+                  testSubj="wamRelatedSuggestedRow"
+                  actions={
+                    <>
+                      <EuiToolTip content="View">
+                        <EuiButtonIcon iconType="eye" aria-label="View" onClick={() => onOpenAlert({ _id: s._id, _source: s._source })} />
+                      </EuiToolTip>
+                      <EuiButtonEmpty size="xs" iconType="link" onClick={() => linkOne(s._id)} isDisabled={linking}>
                         Link
-                      </EuiButton>
-                    ),
-                  },
-                ],
-              },
-            ]}
-          />
+                      </EuiButtonEmpty>
+                    </>
+                  }
+                />
+              ))}
+            </ol>
+          </EuiPanel>
         </>
       )}
 
-      <EuiSpacer size="l" />
-      <AlertMultiPicker
-        apiService={apiService}
-        excludeIds={[alertId]}
-        onLinkSelected={linkSelected}
-        linking={linking}
-        buttonLabel="Link selected"
-        title="Link another alert"
-      />
+      <EuiSpacer size="m" />
+      <EuiPanel hasBorder paddingSize="m" className="wamRelatedAlertsPanel" data-test-subj="wamRelatedPicker">
+        <AlertMultiPicker
+          apiService={apiService}
+          excludeIds={[alertId]}
+          onLinkSelected={linkSelected}
+          linking={linking}
+          buttonLabel="Link selected"
+          title="Link another alert"
+        />
+      </EuiPanel>
     </div>
   );
 };

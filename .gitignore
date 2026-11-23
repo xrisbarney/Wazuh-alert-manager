@@ -1,4 +1,5 @@
 /build
+/build-archive
 /target
 /node_modules
 /package-lock.json
@@ -10,3 +11,12 @@
 /.env.e2e.local
 /benchmark/results/
 /benchmark/__pycache__/
+/lab/agent/.vagrant/
+/lab/**/*.log
+/lab/misp/.env
+/lab/misp/data/
+/lab/agent5/.vagrant/
+/lab/agent5/.enrollment-token
+
+/runtime-evidence/automation-live
+/e2e/__pycache__/

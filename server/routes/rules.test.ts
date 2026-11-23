@@ -1,4 +1,12 @@
+jest.mock('../lib/notifications/settings', () => {
+  const actual = jest.requireActual('../lib/notifications/settings');
+  return { ...actual, loadNotificationSettings: jest.fn() };
+});
+import { loadNotificationSettings } from '../lib/notifications/settings';
 import {
+  actionsSchema,
+  requireKnownNotifyChannels,
+  shouldValidateNotifyChannels,
   buildRollbackRule,
   applyRuleActivationMetadata,
   canonicalTriggerSchema,
@@ -12,9 +20,11 @@ import {
   requireCurrentPreview,
   requireEnabledRuleCapacity,
   ruleResponse,
+  attachRuleExecutionState,
+  defineRuleRoutes,
 } from './rules';
-import { META_INDEX } from '../../common';
-import { normalizeAndValidateRule, ruleDefinitionFingerprint } from '../lib/rule_validation';
+import { API_ROOT, META_INDEX } from '../../common';
+import { mergeRulePatch, normalizeAndValidateRule, ruleDefinitionFingerprint } from '../lib/rule_validation';
 
 const pending = {
   operation_id: 'rule-operation:r1:000000000002',
@@ -117,6 +127,36 @@ describe('rule response and history contracts', () => {
   });
 });
 
+describe('rule execution state join (step 12.3)', () => {
+  const rules = [
+    { id: 'r1', name: 'Fired', enabled: true, revision: 2 },
+    { id: 'r2', name: 'Idle', enabled: true, revision: 1, lastFired: null },
+  ];
+
+  test('joins matchCount / lastFired / counters from the rule-execution companions with one mget', async () => {
+    const client: any = {
+      mget: jest.fn(async () => ({ body: { docs: [
+        { _id: 'rule-execution:r1', found: true, _source: { document_type: 'rule_execution', rule_id: 'r1', matchCount: 44, lastFired: '2026-11-22T14:08:00.000Z', counters: { matchedAlerts: 44, triggeredEntities: 3 } } },
+        { _id: 'rule-execution:r2', found: false },
+      ] } })),
+    };
+    const joined = await attachRuleExecutionState(client, rules);
+    expect(client.mget).toHaveBeenCalledTimes(1);
+    expect(client.mget.mock.calls[0][0]).toEqual({ index: expect.stringContaining('wazuh-alert-manager-v2-rules'), body: { ids: ['rule-execution:r1', 'rule-execution:r2'] } });
+    expect(joined[0]).toEqual({ ...rules[0], matchCount: 44, lastFired: '2026-11-22T14:08:00.000Z', counters: { matchedAlerts: 44, triggeredEntities: 3 } });
+    expect(joined[1]).toBe(rules[1]);
+  });
+
+  test('an unavailable companion read leaves the responses untouched and is logged', async () => {
+    const observer = { warn: jest.fn() };
+    const client: any = { mget: jest.fn(async () => { throw new Error('mget refused'); }) };
+    await expect(attachRuleExecutionState(client, rules, observer)).resolves.toEqual(rules);
+    expect(observer.warn).toHaveBeenCalledWith(expect.stringContaining('mget refused'));
+    await expect(attachRuleExecutionState(client, [], observer)).resolves.toEqual([]);
+    expect(client.mget).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('rule activation preview gate', () => {
   const draft = () =>
     normalizeAndValidateRule({
@@ -194,6 +234,29 @@ describe('rule activation preview gate', () => {
   });
 });
 
+describe('match scope asset criticality floor', () => {
+  const current = () => ({
+    name: 'Floor',
+    enabled: false,
+    match: { ruleGroups: ['authentication_failed'], minAssetCriticality: 'high' },
+    trigger: { type: 'per_alert' },
+    actions: { setStatus: 'in_progress' },
+  });
+
+  test('PUT { match: { minAssetCriticality: null } } clears a stored floor', () => {
+    const merged = mergeRulePatch(current(), { match: { minAssetCriticality: null } });
+    const result = normalizeAndValidateRule(merged);
+    expect(result.errors).toEqual([]);
+    expect(result.rule.match.minAssetCriticality).toBeUndefined();
+    expect(result.rule.match.ruleGroups).toEqual(['authentication_failed']);
+  });
+
+  test('a patch that omits the field keeps the stored floor', () => {
+    const result = normalizeAndValidateRule(mergeRulePatch(current(), { match: { ruleIds: ['5710'] } }));
+    expect(result.rule.match.minAssetCriticality).toBe('high');
+  });
+});
+
 describe('canonical mutation contract', () => {
   const trigger = () => ({
     type: 'burst',
@@ -257,5 +320,102 @@ describe('canonical mutation contract', () => {
     });
     await expect(requireEnabledRuleCapacity(client, { enabled: true }, { enabled: true })).resolves.toBeUndefined();
     expect(client.count).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('notify action on the rule routes (step 1.4)', () => {
+  const settings = (ids: string[]) => ({
+    enabled: true,
+    channels: ids.map((id) => ({ id, name: id, kind: 'webhook', enabled: id !== 'off', events: [] })),
+  });
+
+  test('actionsSchema accepts notify channel ids (nullable, empty allowed) and caps the list at 20', () => {
+    expect(actionsSchema.validate({ notify: { channelIds: ['soc-slack'] } })).toEqual({ notify: { channelIds: ['soc-slack'] } });
+    expect(actionsSchema.validate({ notify: { channelIds: [] } })).toEqual({ notify: { channelIds: [] } });
+    expect(actionsSchema.validate({ notify: null })).toEqual({ notify: null });
+    expect(actionsSchema.validate({ createCase: true, caseSeverity: 'high', notify: { channelIds: ['a', 'b'] } })).toMatchObject({ createCase: true, notify: { channelIds: ['a', 'b'] } });
+    expect(() => actionsSchema.validate({ notify: { channelIds: Array.from({ length: 21 }, (_, i) => `c${i}`) } })).toThrow();
+    expect(() => actionsSchema.validate({ notify: { channelIds: [''] } })).toThrow();
+    expect(() => actionsSchema.validate({ notify: 'soc-slack' })).toThrow();
+  });
+
+  test('requireKnownNotifyChannels refuses unknown ids with a 400 naming them, accepts disabled channels, reads nothing without the action', async () => {
+    const client = { get: jest.fn() };
+    (loadNotificationSettings as jest.Mock).mockResolvedValue(settings(['soc-slack', 'off']));
+
+    await expect(requireKnownNotifyChannels(client, { actions: { notify: { channelIds: ['soc-slack', 'off'] } } })).resolves.toBeUndefined();
+
+    await expect(requireKnownNotifyChannels(client, { actions: { notify: { channelIds: ['soc-slack', 'ghost', 'gone'] } } })).rejects.toMatchObject({
+      statusCode: 400,
+      message: 'Unknown notification channel id(s): ghost, gone. Bind the channel in Settings > Notifications first.',
+      body: { unknownChannelIds: ['ghost', 'gone'] },
+    });
+    expect(loadNotificationSettings).toHaveBeenCalledTimes(2);
+
+    await expect(requireKnownNotifyChannels(client, { actions: { createCase: true } })).resolves.toBeUndefined();
+    await expect(requireKnownNotifyChannels(client, { actions: { notify: null } })).resolves.toBeUndefined();
+    expect(loadNotificationSettings).toHaveBeenCalledTimes(2);
+  });
+
+  test('PUT re-validates the channel ids only when the patch names them or the rule ends up enabled (a rule whose channel is gone can be disabled)', async () => {
+    (loadNotificationSettings as jest.Mock).mockResolvedValue(settings(['soc-slack']));
+    const stored = { name: 'Notify rule', enabled: true, actions: { notify: { channelIds: ['gone'] } } };
+
+    // Channel removed from the settings afterwards: disabling the rule must not be refused.
+    const disabling = mergeRulePatch(stored, { enabled: false });
+    expect(shouldValidateNotifyChannels({ enabled: false }, disabling)).toBe(false);
+    // ...and a plain edit of a disabled rule neither.
+    expect(shouldValidateNotifyChannels({ name: 'Renamed' }, mergeRulePatch({ ...stored, enabled: false }, { name: 'Renamed' }))).toBe(false);
+    // Enabling it, or touching the notify action, validates (and here refuses) the ids.
+    const enabling = mergeRulePatch({ ...stored, enabled: false }, { enabled: true });
+    expect(shouldValidateNotifyChannels({ enabled: true }, enabling)).toBe(true);
+    await expect(requireKnownNotifyChannels({}, enabling)).rejects.toMatchObject({ statusCode: 400, body: { unknownChannelIds: ['gone'] } });
+    expect(shouldValidateNotifyChannels({ actions: { notify: { channelIds: ['gone'] } } }, mergeRulePatch({ ...stored, enabled: false }, { actions: { notify: { channelIds: ['gone'] } } }))).toBe(true);
+    expect(shouldValidateNotifyChannels({ actions: { notify: null } }, mergeRulePatch({ ...stored, enabled: false }, { actions: { notify: null } }))).toBe(true);
+    // An edit of an enabled rule that leaves the action alone still validates (the stored ids are read, a valid list passes).
+    const enabledEdit = mergeRulePatch({ ...stored, actions: { notify: { channelIds: ['soc-slack'] } } }, { name: 'Renamed' });
+    expect(shouldValidateNotifyChannels({ name: 'Renamed' }, enabledEdit)).toBe(true);
+    await expect(requireKnownNotifyChannels({}, enabledEdit)).resolves.toBeUndefined();
+  });
+
+  test('a storage failure while reading the channel list is not a 400', async () => {
+    (loadNotificationSettings as jest.Mock).mockRejectedValue(Object.assign(new Error('meta unavailable'), { meta: { statusCode: 503 } }));
+    await expect(requireKnownNotifyChannels({}, { actions: { notify: { channelIds: ['soc-slack'] } } })).rejects.toMatchObject({ message: 'meta unavailable', meta: { statusCode: 503 } });
+  });
+});
+
+describe('single-rule routes carry the execution state (step 12.3 fix)', () => {
+  const handlerFor = (method: 'get' | 'post' | 'put', path: string) => {
+    const router: any = { get: jest.fn(), post: jest.fn(), put: jest.fn(), delete: jest.fn() };
+    defineRuleRoutes(router);
+    const registration = router[method].mock.calls.find(([config]: any[]) => config.path === `${API_ROOT}${path}`);
+    expect(registration).toBeDefined();
+    return registration![1];
+  };
+  const responses = () => ({
+    ok: jest.fn((payload: any) => ({ status: 200, ...payload })),
+    notFound: jest.fn((payload: any) => ({ status: 404, ...payload })),
+    customError: jest.fn((payload: any) => ({ status: payload.statusCode, ...payload })),
+  });
+
+  test('GET /rules/{id} joins the rule-execution companion with one mget', async () => {
+    const client: any = {
+      get: jest.fn(async () => ({ body: { _id: 'r1', _seq_no: 7, _primary_term: 2, _source: { name: 'Fired', enabled: true, revision: 2, pending_operation: pending, created_by: 'analyst' } } })),
+      index: jest.fn(async () => ({ body: {} })),
+      mget: jest.fn(async () => ({ body: { docs: [
+        { _id: 'rule-execution:r1', found: true, _source: { document_type: 'rule_execution', rule_id: 'r1', matchCount: 44, lastFired: '2026-11-22T14:08:00.000Z', counters: { matchedAlerts: 44, triggeredEntities: 3 } } },
+      ] } })),
+    };
+    const response = responses();
+    const result: any = await handlerFor('get', '/rules/{id}')(
+      { core: { opensearch: { client: { asCurrentUser: client } } }, wazuhAlertManager: { logger: { warn: jest.fn(), error: jest.fn() } } },
+      { params: { id: 'r1' } },
+      response
+    );
+    expect(response.ok).toHaveBeenCalledTimes(1);
+    expect(client.mget).toHaveBeenCalledTimes(1);
+    expect(client.mget.mock.calls[0][0].body).toEqual({ ids: ['rule-execution:r1'] });
+    expect(result.body).toEqual(expect.objectContaining({ id: 'r1', name: 'Fired', revision: 2, matchCount: 44, lastFired: '2026-11-22T14:08:00.000Z', counters: { matchedAlerts: 44, triggeredEntities: 3 } }));
+    expect(result.body.pending_operation).toBeUndefined();
   });
 });

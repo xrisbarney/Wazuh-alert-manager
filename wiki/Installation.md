@@ -46,6 +46,40 @@ dashboard refuses to load it:
 | 4.14.2–4.14.4 | 2.19.4 | `wazuhAlertManager-2.19.4.zip` |
 | 4.14.5–4.14.7 | 2.19.5 | `wazuhAlertManager-2.19.5.zip` |
 | 4.14.8–4.14.10 | 2.19.6 | `wazuhAlertManager-2.19.6.zip` |
+| 5.0.0-rc2 (**preview**) | 3.6.0 | `wazuhAlertManager-3.6.0.zip` |
+
+The same plugin serves both Wazuh lines. A build for Wazuh 4.x reads
+`wazuh-alerts-*`; a build for Wazuh 5.0 reads the `wazuh-findings-v5-*` data
+streams. The installer picks the artifact from the running dashboard's exact
+OpenSearch Dashboards version, so there is nothing to choose by hand. Wazuh
+5.0.0-rc2 is a **preview** target while 5.0 is prerelease and is re-verified
+against 5.0 GA; see [[Architecture#one-plugin-for-wazuh-4x-and-50]].
+
+The 3.0 line ships first as the pre-release **v3.0.0-rc.1**; **v2.0.3 remains
+the latest stable release**. Pin the version you want with
+`--version <version>`.
+
+### Wazuh 5.0 specifics
+
+Two platform differences on Wazuh 5.0 are handled for you:
+
+- **Store ownership.** The dashboard's indexer user (`kibanaserver`) is read-only on
+  `wazuh-*` on 5.0. The installer creates the OpenSearch Security role
+  `wazuh_alert_manager_store` (`indices_all` on `wazuh-alert-status-v2-*` and
+  `wazuh-alert-manager-v2-*` only, plus point-in-time and bulk cluster
+  permissions) and maps that user to it, using the admin credentials the Wazuh
+  installer leaves in `/etc/wazuh-indexer/export/credentials.env`. On a
+  distributed deployment without those credentials it prints the exact role to
+  create. Native Wazuh storage is not part of the role. Use `--dashboard-user`,
+  `--indexer-url` or `--skip-store-role` to adjust.
+- **Blocked create-index API.** The 5.0 indexer sets
+  `cluster.blocks.create_index: true`. The plugin provisions each of its stores
+  through a temporary plugin-owned index template and a bootstrap write (which
+  auto-creates the index with the right mappings and aliases), then removes
+  both the bootstrap document and the template. Rollover generations are
+  unaffected. You will see `Created ... through a bootstrap write` in the
+  dashboard log on 5.0.
+
 
 The installer reads the dashboard's own `package.json` (`version`) to select the
 artifact and refuses any version not in this table — it never guesses. Wazuh
@@ -74,6 +108,20 @@ curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/
 curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v2.0.3/install.sh.sha256
 sha256sum -c install.sh.sha256
 sudo bash install.sh --version 2.0.3
+```
+
+### Pre-release (v3.0.0-rc.1)
+
+`/releases/latest` stays on the stable 2.0.3 release, so the pre-release must be
+installed with its own installer, downloaded from the RC tag — the 2.0.3
+installer does not know OpenSearch Dashboards 3.6.0 (the Wazuh 5.0 preview
+artifact) and predates the RC's new role grants:
+
+```bash
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v3.0.0-rc.1/install.sh
+curl -fsSLO https://github.com/xrisbarney/Wazuh-alert-manager/releases/download/v3.0.0-rc.1/install.sh.sha256
+sha256sum -c install.sh.sha256
+sudo bash install.sh --version 3.0.0-rc.1
 ```
 
 The default release host is GitHub Releases (override with `--base-url` or the
@@ -159,22 +207,45 @@ docker run --rm --entrypoint /usr/share/wazuh-dashboard/bin/opensearch-dashboard
 10. Rolls back automatically if installation or startup fails.
 11. Prints a concise success report.
 
-No Wazuh credentials are required. On first startup the plugin provisions or
-migrates its own indices using the dashboard service identity.
+No Wazuh credentials are required for the install itself. On first startup the
+plugin provisions or migrates its own indices using the dashboard service
+identity.
+
+### Optional role grants
+
+When indexer **admin** credentials are available the installer also creates and
+maps the least-privilege OpenSearch Security roles the 3.0 features need. On
+Wazuh 5.0 it reads `/etc/wazuh-indexer/export/credentials.env`; on Wazuh 4.x
+pass `--indexer-admin-password` or set `WAZUH_INDEXER_ADMIN_PASSWORD`. The
+completion banner lists exactly which grants were applied and which were not,
+and `install.sh --grant-roles` re-applies them at any time.
+
+| Role | Applied to | Grants | Opt out |
+|---|---|---|---|
+| `wazuh_alert_manager_store` | the dashboard's indexer user (**Wazuh 5.0 only**) | `indices_all` on the two exact plugin prefixes, plus point-in-time and bulk | `--skip-store-role` |
+| `wazuh_alert_manager_native_read` | the dashboard's indexer user; **map it to your analyst groups yourself** | `read` on `wazuh-states-*` and, on 5.0, `wazuh-threatintel-enrichments*` | `--skip-native-read-role` |
+| `wazuh_alert_manager_notify` | the dashboard's indexer user only | inline Alerting monitor execute, Notifications config read + publish, `read` on `wazuh-alert-manager-v2-notifications*` | `--skip-notification-role` |
+
+Credentials are passed to `curl` through a `-K` file, never on the command
+line. Without a grant the plugin degrades rather than fails — see
+[[Security Model#roles-the-trial-features-need]].
 
 ## What the installer never does
 
-- Modifies `wazuh-alerts-*` (read-only evidence source).
+- Modifies `wazuh-alerts-*` or the 5.0 events/findings streams (read-only
+  evidence sources).
 - Deletes plugin data during an upgrade (data lives in OpenSearch, not on disk).
 - Purges legacy `wazuh-alert-status` (retained read-only migration input).
-- Installs custom Wazuh security roles.
+- Grants anything beyond the three plugin-scoped roles above, or maps
+  `wazuh_alert_manager_native_read` to your analyst groups for you.
 - Disables certificate verification for downloaded releases.
 
 ## Modes
 
 | Command | Effect |
 |---------|--------|
-| `install.sh --version 2.0.3` | Fresh install, v2 upgrade, or same-version reinstall |
+| `install.sh --version 2.0.3` | Fresh install, upgrade, or same-version reinstall (`--version 3.0.0-rc.1` for the pre-release) |
+| `install.sh --grant-roles --indexer-admin-password <pw>` | (Re)apply the optional role grants without touching the installed plugin |
 | `install.sh --dry-run` | Resolve versions/artifacts and print the plan without changing anything |
 | `install.sh --no-restart` | Install but leave the dashboard stopped |
 | `install.sh --rollback` | Restore the most recent backup |

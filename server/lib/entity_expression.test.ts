@@ -5,6 +5,7 @@ import {
   normalizeEntityValue,
   validateEntityExpression,
 } from './entity_expression';
+import labAudit80792 from '../../lab/agent/samples/80792.json';
 
 const expression = (groups: any[]) => ({ version: 1 as const, groups });
 const predicate = (id: string, entity: string, value?: string, order = 0, operator = 'equals') => ({
@@ -16,6 +17,15 @@ const predicate = (id: string, entity: string, value?: string, order = 0, operat
 });
 
 describe('security entity expressions', () => {
+  test('a process predicate matches the auditd binary of a real lab connect() alert (step 9.4)', () => {
+    const normalized = normalizeEntityExpression(
+      expression([{ id: 'bin', order: 0, predicates: [predicate('p', 'process', '/usr/bin/curl')] }])
+    );
+    expect(labAudit80792._source.data).not.toHaveProperty('process');
+    expect(evaluateEntityExpression(normalized, labAudit80792._source).matched).toBe(true);
+    expect(evaluateEntityExpression(normalized, { data: { audit: { exe: '/usr/bin/wget' } } }).matched).toBe(false);
+  });
+
   test('normalizes entity values deterministically', () => {
     expect(normalizeEntityValue('srcip', ' 192.168.001.010 ')).toBe('192.168.1.10');
     expect(normalizeEntityValue('dstip', '2001:0DB8:0:0:0:0:0:1')).toBe('2001:db8::1');
@@ -24,6 +34,30 @@ describe('security entity expressions', () => {
     expect(normalizeEntityValue('dstport', '00022')).toBe('22');
     expect(normalizeEntityValue('srcport', '65536')).toBeNull();
     expect(normalizeEntityValue('agent', ' host-A ')).toBe('host-A');
+    // Indicator kinds (step 6.1) use the canonical forms of common/indicators.ts.
+    expect(normalizeEntityValue('hash', ' D41D8CD98F00B204E9800998ECF8427E ')).toBe('d41d8cd98f00b204e9800998ecf8427e');
+    expect(normalizeEntityValue('hash', 'not-a-hash')).toBeNull();
+    expect(normalizeEntityValue('domain', 'Evil.Example.COM.')).toBe('evil.example.com');
+    expect(normalizeEntityValue('domain', '203.0.113.9')).toBeNull();
+    expect(normalizeEntityValue('url', 'HTTP://Evil.Example.com:8080/p?x=1')).toBe('http://evil.example.com:8080/p?x=1');
+    expect(normalizeEntityValue('url', '/wp-login.php')).toBe('/wp-login.php');
+    expect(normalizeEntityValue('url', 'plain text')).toBeNull();
+  });
+
+  test('matches hash, domain and url predicates against syscheck.*_after, data.hostname and data.url', () => {
+    const input = expression([
+      { id: 'file', order: 0, predicates: [predicate('h', 'hash', 'DA39A3EE5E6B4B0D3255BFEF95601890AFD80709')] },
+      { id: 'web', order: 1, predicates: [predicate('d', 'domain', 'EVIL.example.com'), predicate('u', 'url', 'http://EVIL.example.com/x', 1)] },
+    ]);
+    const normalized = normalizeEntityExpression(input);
+    expect(validateEntityExpression(normalized)).toEqual([]);
+    const result = evaluateEntityExpression(normalized, {
+      syscheck: { md5_after: 'd41d8cd98f00b204e9800998ecf8427e', sha1_after: 'da39a3ee5e6b4b0d3255bfef95601890afd80709' },
+      data: { hostname: 'evil.example.com.', url: 'HTTP://evil.example.com/x' },
+    });
+    expect(result.matched).toBe(true);
+    expect(result.matchingGroups.map((group) => group.groupId)).toEqual(['file', 'web']);
+    expect(evaluateEntityExpression(normalized, { data: { hostname: 'other.example.com' } }).matched).toBe(false);
   });
 
   test('sorts by structural order while retaining IDs and normalizing values', () => {

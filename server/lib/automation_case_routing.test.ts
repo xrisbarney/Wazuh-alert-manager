@@ -1,6 +1,7 @@
 import { EVIDENCE_READ_ALIAS } from '../../common';
 import { applyAutomationCaseRoutes, planAutomationCaseRoutes } from './automation_case_routing';
 import { reconcileCaseEvidence } from './case_evidence_service';
+import { registerNotificationEmitter } from './notifications/emitters';
 
 jest.mock('./case_evidence_service', () => ({ reconcileCaseEvidence: jest.fn() }));
 
@@ -160,13 +161,72 @@ describe('automation case routing writes', () => {
     const result = await applyAutomationCaseRoutes(client, [route], 1, 10);
     expect(result.caseIds).toEqual(['canonical']);
     expect(client.update).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'duplicate', if_seq_no: expect.any(Number), if_primary_term: 1, refresh: false,
+      id: 'duplicate', refresh: false, retry_on_conflict: 50,
+    }));
+    const closure: any = (client.update.mock.calls as any[]).find(([call]: any[]) => call.id === 'duplicate')![0];
+    expect(closure).not.toHaveProperty('if_seq_no');
+    expect(closure).not.toHaveProperty('if_primary_term');
+    expect(closure.body.script.source).toContain('duplicate case is no longer active');
+    // The consolidated duplicate is closed with the `duplicate` disposition (step 2.4).
+    expect(closure.body.script.source).toContain('ctx._source.disposition = params.disposition; ctx._source.closure_reason = params.closure_reason;');
+    expect(closure.body.script.source).toContain('ctx._source.history.add(params.entry)');
+    expect(closure.body.script.params).toEqual(expect.objectContaining({
+      disposition: 'duplicate',
+      closure_reason: 'Consolidated into case canonical',
+      entry: expect.objectContaining({ action: 'status_change', from: 'in_progress', to: 'closed', disposition: 'duplicate' }),
     }));
     expect(reconcileCaseEvidence).toHaveBeenCalledWith(client, expect.objectContaining({
       waitForRefresh: false,
       caseId: 'canonical', linkAlertIds: ['b-old', 'bridge'], allowMove: true, fence: expect.any(Function),
     }));
     expect((reconcileCaseEvidence as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(client.update.mock.invocationCallOrder[0]);
+  });
+
+  test('a consolidated duplicate emits case.closed directly (no activity row exists for it) with the closed document, after its update', async () => {
+    const emitter = { emitCaseEvent: jest.fn(async () => ({})), emitSlaEvent: jest.fn(), emitSlaEvents: jest.fn(), emitReportEvent: jest.fn(), activityHook: jest.fn() };
+    registerNotificationEmitter(emitter as any);
+    try {
+      const route = planAutomationCaseRoutes([
+        trigger('consolidate_overlapping', 'a', ['bridge']),
+        trigger('consolidate_overlapping', 'b', ['bridge']),
+      ])[0];
+      const client = routingClient([
+        { _id: 'canonical', _seq_no: 1, _primary_term: 1, _source: { status: 'open', alert_ids: ['a-old'], severity: 'medium' } },
+        { _id: 'duplicate', _seq_no: 2, _primary_term: 1, _source: { status: 'in_progress', title: 'Dup', alert_ids: ['not-authoritative'], severity: 'high' } },
+      ], [{ _id: 'relationship', sort: ['relationship'], _source: { case_id: 'duplicate', alert_id: 'b-old' } }]);
+      await applyAutomationCaseRoutes(client, [route], 1, 10);
+      expect(emitter.emitCaseEvent).toHaveBeenCalledTimes(1);
+      const [event, doc, options] = emitter.emitCaseEvent.mock.calls[0] as any[];
+      expect(event).toBe('case.closed');
+      expect(doc).toEqual(expect.objectContaining({ id: 'duplicate', title: 'Dup', status: 'closed', disposition: 'duplicate', closure_reason: 'Consolidated into case canonical', updated_by: 'correlation-rule', closed_at: expect.any(String) }));
+      expect(options).toEqual(expect.objectContaining({ actor: 'correlation-rule', changes: { from: 'in_progress', to: 'closed' }, key: doc.closed_at }));
+      const closure = (client.update.mock.calls as any[]).findIndex(([call]: any[]) => call.id === 'duplicate');
+      expect(client.update.mock.invocationCallOrder[closure]).toBeLessThan(emitter.emitCaseEvent.mock.invocationCallOrder[0]);
+    } finally {
+      registerNotificationEmitter(null);
+    }
+  });
+
+  test('closes a duplicate through the script guard even when the search-derived token is stale', async () => {
+    const route = planAutomationCaseRoutes([
+      trigger('consolidate_overlapping', 'a', ['bridge']),
+      trigger('consolidate_overlapping', 'b', ['bridge']),
+    ])[0];
+    // The alias search reports _seq_no 2, but a refresh:false writer already moved the
+    // document on: an update fenced on that token would 409 and abort the whole pass.
+    const client = routingClient([
+      { _id: 'canonical', _seq_no: 1, _primary_term: 1, _source: { status: 'open', alert_ids: ['a-old'], severity: 'medium' } },
+      { _id: 'duplicate', _seq_no: 2, _primary_term: 1, _source: { status: 'in_progress', alert_ids: [], severity: 'high' } },
+    ], [{ _id: 'relationship', sort: ['relationship'], _source: { case_id: 'duplicate', alert_id: 'b-old' } }]);
+    (client.update as jest.Mock).mockImplementation(async (call: any) => {
+      if (call.id === 'duplicate' && call.if_seq_no !== undefined && call.if_seq_no <= 2) {
+        throw Object.assign(new Error('version conflict'), { meta: { statusCode: 409 } });
+      }
+      return { body: { result: 'updated' } };
+    });
+    const result = await applyAutomationCaseRoutes(client, [route], 1, 10);
+    expect(result.caseIds).toEqual(['canonical']);
+    expect(client.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'duplicate', retry_on_conflict: 50 }));
   });
 
   test('leaves duplicate cases open when authoritative evidence discovery is incomplete', async () => {
@@ -329,5 +389,115 @@ describe('automation case routing writes', () => {
     expect(reconcileCaseEvidence).toHaveBeenCalledTimes(1);
     expect(client.update).not.toHaveBeenCalled();
     expect(client.index).not.toHaveBeenCalled();
+  });
+});
+
+jest.mock('./task_lists', () => ({ getTaskList: jest.fn(), applyTaskListToCase: jest.fn() }));
+
+describe('task list on case creation (step 2.2)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const taskLists = require('./task_lists');
+  const TASK_LIST = { id: 'pb-1', name: 'Triage', enabled: true, tasks: [{ title: 't', order: 0 }] };
+
+  beforeEach(() => {
+    (reconcileCaseEvidence as jest.Mock).mockReset();
+    (reconcileCaseEvidence as jest.Mock).mockImplementation(async (_client, input) => linked(input.linkAlertIds));
+    taskLists.getTaskList.mockReset();
+    taskLists.applyTaskListToCase.mockReset();
+    taskLists.getTaskList.mockResolvedValue(TASK_LIST);
+    taskLists.applyTaskListToCase.mockResolvedValue({ applied: true, task_list_id: 'pb-1', tasks_added: 1, counts: { open: 1, done: 0 } });
+  });
+
+  test('applies the rule task list once a NEW case was created, after the claim update, as the automation actor', async () => {
+    const route = planAutomationCaseRoutes([{ ...trigger('separate_by_group', 'a', ['1']), applyTaskListId: 'pb-1' }])[0];
+    expect(route.applyTaskListId).toBe('pb-1');
+    const client = routingClient();
+    const fence = jest.fn(async () => undefined);
+    const result = await applyAutomationCaseRoutes(client, [route], 1, 10, new Map(), fence);
+    expect(result).toEqual(expect.objectContaining({ created: 1, extended: 0, taskListsApplied: 1, taskListErrors: [] }));
+    expect(taskLists.getTaskList).toHaveBeenCalledWith(client, 'pb-1');
+    expect(taskLists.applyTaskListToCase).toHaveBeenCalledTimes(1);
+    const [applyClient, caseId, taskList, actor, , options] = taskLists.applyTaskListToCase.mock.calls[0];
+    expect(applyClient).toBe(client);
+    expect(caseId).toBe(result.caseIds[0]);
+    expect(taskList).toBe(TASK_LIST);
+    expect(actor).toBe('correlation-rule');
+    expect(options).toMatchObject({ source: 'automation', operationId: route.correlationKey, ruleRevision: 1 });
+    expect(options.activityId).toMatch(/^task-list-apply:[0-9a-f]{64}$/);
+    // The claim update came first; the fence ran before the apply.
+    expect(client.update.mock.invocationCallOrder[0]).toBeLessThan(taskLists.applyTaskListToCase.mock.invocationCallOrder[0]);
+    expect(fence.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  test('never applies when routing into an existing active case, nor without applyTaskListId', async () => {
+    const withTaskList = planAutomationCaseRoutes([{ ...trigger('separate_by_group', 'a', ['1']), applyTaskListId: 'pb-1' }])[0];
+    const client = routingClient([{
+      _id: 'existing', _seq_no: 4, _primary_term: 1,
+      _source: { status: 'open', correlation_keys: withTaskList.matchingKeys, severity: 'medium' },
+    }]);
+    const extended = await applyAutomationCaseRoutes(client, [withTaskList], 1, 10);
+    expect(extended).toEqual(expect.objectContaining({ created: 0, extended: 1, taskListsApplied: 0 }));
+    expect(taskLists.applyTaskListToCase).not.toHaveBeenCalled();
+
+    const plain = planAutomationCaseRoutes([trigger('separate_by_group', 'b', ['2'])])[0];
+    expect(plain.applyTaskListId).toBeNull();
+    const created = await applyAutomationCaseRoutes(routingClient(), [plain], 1, 10);
+    expect(created).toEqual(expect.objectContaining({ created: 1, taskListsApplied: 0 }));
+    expect(taskLists.getTaskList).not.toHaveBeenCalled();
+  });
+
+  test('a task list failure is recorded on the result and does not undo the created case', async () => {
+    taskLists.applyTaskListToCase.mockRejectedValue(Object.assign(new Error('Task list "Triage" is disabled.'), { statusCode: 409 }));
+    const route = planAutomationCaseRoutes([{ ...trigger('separate_by_group', 'a', ['1']), applyTaskListId: 'pb-1' }])[0];
+    const client = routingClient();
+    const result = await applyAutomationCaseRoutes(client, [route], 1, 10);
+    expect(result.created).toBe(1);
+    expect(result.taskListsApplied).toBe(0);
+    expect(result.taskListErrors).toEqual([`${result.caseIds[0]}: Task list "Triage" is disabled.`]);
+    expect(client.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('case.created notification hook (step 1.3)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { registerActivityEmitter } = require('./activity');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { caseEventForActivity } = require('./notifications/emitters');
+
+  beforeEach(() => {
+    (reconcileCaseEvidence as jest.Mock).mockReset();
+    (reconcileCaseEvidence as jest.Mock).mockImplementation(async (_client, input) => {
+      await input.fence?.();
+      return linked(input.linkAlertIds);
+    });
+  });
+  afterEach(() => registerActivityEmitter(null));
+
+  test('a case this pass created reaches the activity hook as case_auto_created_evidence (-> case.created); an extended case maps to no event', async () => {
+    const seen: any[] = [];
+    registerActivityEmitter(async (event: any) => { seen.push(event); });
+    const route = planAutomationCaseRoutes([trigger('separate_by_group', 'a', ['1'])])[0];
+    const created = await applyAutomationCaseRoutes(routingClient([]), [route], 1, 10);
+    expect(created.created).toBe(1);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual(expect.objectContaining({ target_type: 'case', case_id: created.caseIds[0], action: 'case_auto_created_evidence', source: 'automation' }));
+    expect(caseEventForActivity(seen[0])).toEqual({ event: 'case.created', from: null, to: null });
+
+    seen.length = 0;
+    const existing = routingClient([{
+      _id: 'legacy-case', _seq_no: 4, _primary_term: 1,
+      _source: { status: 'open', correlation_keys: route.matchingKeys, severity: 'medium' },
+    }]);
+    const extended = await applyAutomationCaseRoutes(existing, [route], 1, 10);
+    expect(extended.extended).toBe(1);
+    expect(seen.map((event) => event.action)).toEqual(['case_auto_extended']);
+    expect(caseEventForActivity(seen[0])).toBeNull();
+  });
+
+  test('a throwing hook never fails the routing pass', async () => {
+    registerActivityEmitter(async () => { throw new Error('emitter down'); });
+    const route = planAutomationCaseRoutes([trigger('separate_by_group', 'a', ['1'])])[0];
+    const result = await applyAutomationCaseRoutes(routingClient([]), [route], 1, 10);
+    expect(result.created).toBe(1);
   });
 });

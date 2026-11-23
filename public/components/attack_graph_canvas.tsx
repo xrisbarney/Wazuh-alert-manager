@@ -578,7 +578,7 @@ export const AttackGraphCanvas: React.FC<Props> = ({ story, storageKey, selectio
                 <div className="wamAg__ic"><svg viewBox="0 0 24 24" aria-hidden="true">{ICON[iconFor(n)]}</svg></div>
                 <div className="wamAg__t">
                   <div className="wamAg__n" title={n.label}>{n.label}</div>
-                  <div className="wamAg__s">{subtitleFor(n, story)}</div>
+                  <div className="wamAg__s" title={subtitleFor(n, story)}>{subtitleFor(n, story)}</div>
                 </div>
               </div>
             );

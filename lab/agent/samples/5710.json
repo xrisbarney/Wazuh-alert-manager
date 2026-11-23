@@ -1,0 +1,90 @@
+{
+  "_index": "wazuh-alerts-4.x-2026.11.21",
+  "_score": null,
+  "_source": {
+    "@timestamp": "2026-11-21T20:39:48.459Z",
+    "agent": {
+      "id": "001",
+      "ip": "10.0.2.15",
+      "name": "wam-lab-agent"
+    },
+    "data": {
+      "srcip": "10.0.2.77",
+      "srcuser": "baduser"
+    },
+    "decoder": {
+      "name": "sshd",
+      "parent": "sshd"
+    },
+    "full_log": "2026-11-21T20:39:46.081542+00:00 wam-lab-agent sshd[12682]: Failed password for invalid user baduser from 10.0.2.77 port 51701 ssh2",
+    "id": "1795293588.1227994",
+    "input": {
+      "type": "log"
+    },
+    "location": "/var/log/auth.log",
+    "manager": {
+      "name": "wazuh.manager"
+    },
+    "predecoder": {
+      "program_name": "sshd",
+      "timestamp": "2026-11-21T20:39:46.081542+00:00"
+    },
+    "rule": {
+      "description": "sshd: Attempt to login using a non-existent user",
+      "firedtimes": 4,
+      "gdpr": [
+        "IV_35.7.d",
+        "IV_32.2"
+      ],
+      "gpg13": [
+        "7.1"
+      ],
+      "groups": [
+        "syslog",
+        "sshd",
+        "authentication_failed",
+        "invalid_login"
+      ],
+      "hipaa": [
+        "164.312.b"
+      ],
+      "id": "5710",
+      "level": 5,
+      "mail": false,
+      "mitre": {
+        "id": [
+          "T1110.001",
+          "T1021.004"
+        ],
+        "tactic": [
+          "Credential Access",
+          "Lateral Movement"
+        ],
+        "technique": [
+          "Password Guessing",
+          "SSH"
+        ]
+      },
+      "nist_800_53": [
+        "AU.14",
+        "AC.7",
+        "AU.6"
+      ],
+      "pci_dss": [
+        "10.2.4",
+        "10.2.5",
+        "10.6.1"
+      ],
+      "tsc": [
+        "CC6.1",
+        "CC6.8",
+        "CC7.2",
+        "CC7.3"
+      ]
+    },
+    "timestamp": "2026-11-21T20:39:48.459+0000"
+  },
+  "sort": [
+    1795293588459
+  ]
+}

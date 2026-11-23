@@ -1,0 +1,41 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+#
+# wam-lab-agent: a small Ubuntu 24.04 VM enrolled as a Wazuh agent against the
+# 4.14.10 Docker stack on the host (docs/trial-features/PLAN.md, step 9.1).
+#
+# Networking is VirtualBox NAT (the default), so the VM reaches the host at
+# 10.0.2.2. The manager address passed to the agent defaults to that and can be
+# overridden with WAM_LAB_MANAGER=<ip-or-host> on `vagrant up` / `vagrant
+# provision`. WAM_LAB_REGISTRATION_PASSWORD is forwarded only when set (the
+# stack's manager has <use_password>no</use_password>, so it is not needed).
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "bento/ubuntu-24.04"
+  config.vm.box_version = "202510.26.0"
+  config.vm.hostname = "wam-lab-agent"
+  config.vm.boot_timeout = 600
+
+  # /vagrant (this directory) is the only synced folder: provision.sh and
+  # generate.sh are run from there.
+  config.vm.synced_folder ".", "/vagrant"
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "wam-lab-agent"
+    vb.cpus = 1
+    vb.memory = 1024
+    vb.linked_clone = true
+    vb.customize ["modifyvm", :id, "--audio-driver", "none"]
+    vb.customize ["modifyvm", :id, "--usb", "off"]
+  end
+
+  config.vm.provision "shell",
+    path: "provision.sh",
+    privileged: true,
+    env: {
+      "WAZUH_MANAGER" => ENV.fetch("WAM_LAB_MANAGER", "10.0.2.2"),
+      "WAZUH_AGENT_NAME" => "wam-lab-agent",
+      "WAZUH_REGISTRATION_PASSWORD" => ENV.fetch("WAM_LAB_REGISTRATION_PASSWORD", ""),
+      "WAM_LAB_SECOND_IP" => ENV.fetch("WAM_LAB_SECOND_IP", "10.0.2.77"),
+    }
+end
