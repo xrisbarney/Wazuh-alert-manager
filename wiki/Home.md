@@ -4,7 +4,7 @@
 
 This wiki documents the **3.0 line** (currently the pre-release
 **v3.0.0-rc.1**). **v2.0.3 remains the latest stable release**; its notes stay
-at [[Release Notes 2.0.2|Release-Notes-2.0]].
+at [[Release Notes 2.0.3|Release-Notes-2.0]].
 
 > ⚠️ **Unofficial** — this plugin is not produced or endorsed by Wazuh Inc. It reads Wazuh's alerts (4.x `wazuh-alerts-*`) or findings (5.0 `wazuh-findings-v5-*`) and stores its own workflow state in separate indices; it never modifies native Wazuh storage.
 
@@ -39,9 +39,11 @@ at [[Release Notes 2.0.2|Release-Notes-2.0]].
 
 Download the zip matching the exact dashboard version from the **[Releases page](https://github.com/xrisbarney/Wazuh-alert-manager/releases)**. The source code is identical across builds, but each ZIP is compiled and stamped for one exact OSD version and one Wazuh line: 4.x builds read `wazuh-alerts-*`, the 5.0 build reads the `wazuh-findings-v5-*` data streams. See [[Architecture#one-plugin-for-wazuh-4x-and-50]].
 
+Running the dashboard as a container? Every release in the table also has a prebuilt image, `ghcr.io/xrisbarney/wazuh-dashboard-alert-manager:<wazuh version>`, which is the official `wazuh/wazuh-dashboard` image with the matching plugin preinstalled. See [[Installation#container-deployments-docker--kubernetes]].
+
 ## Where to next
 
-- **[[Installation]]** — install/upgrade the plugin.
+- **[[Installation]]** — install/upgrade the plugin, or pull a prebuilt container image.
 - **[[User Guide]]** — the Workbench (Alerts, Cases, Settings) and Reporting.
 - **[[Automation Rules]]** — the rule engine in depth.
 - **[[Lifecycle, Retention and RBAC|Lifecycle-Retention-and-RBAC]]** — rollover, retirement, restore, retention, and administrator permissions.
@@ -49,4 +51,4 @@ Download the zip matching the exact dashboard version from the **[Releases page]
 - **[[Security Model]]** — identity, data egress, and what leaves the network.
 - **[[Troubleshooting]]** — common issues (including the indexer startup timeout).
 - **[[Architecture]]** — how the sync job and indices work.
-- **[[Release Notes 2.0.2|Release-Notes-2.0]]** — shipped features, compatibility, and validation evidence.
+- **[[Release Notes 2.0.3|Release-Notes-2.0]]** — shipped features, compatibility, and validation evidence.

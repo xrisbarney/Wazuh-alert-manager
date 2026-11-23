@@ -1,6 +1,6 @@
 # Architecture
 
-## Overview
+## Version 2.0.3 overview
 
 Wazuh Alert Manager is an OpenSearch Dashboards New Platform plugin with server and browser components. It reads native Wazuh alert indices (4.x) or finding data streams (5.0), builds a bounded operational projection, and adds alert workflow, cases with tasks and evidence relationships, automation, SLA enforcement, threat-intelligence enrichment and asset context, notifications, lifecycle controls, reporting and exports, and optional AI analysis.
 

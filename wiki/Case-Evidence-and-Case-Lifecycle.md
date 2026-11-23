@@ -2,7 +2,7 @@
 
 ## Architecture decision
 
-Version 2.0.2 does not keep every case-linked alert in the live operational alias
+Version 2.0.3 does not keep every case-linked alert in the live operational alias
 forever. Doing so would recreate unbounded storage as closed cases accumulate.
 The shipped design separates:
 
@@ -125,7 +125,7 @@ Example lifecycle:
 
 ## Non-destructive migration in v2.0.2
 
-On upgrade, v2.0.2 provisions the case and evidence alias families without
+On upgrade, the plugin provisions the case and evidence alias families without
 changing the legacy stores. Its resumable backfill derives evidence relationships
 from case `alert_ids` and alert `case_id`, records discrepancies instead of
 guessing, and dual-writes relationship changes while backfill is incomplete.

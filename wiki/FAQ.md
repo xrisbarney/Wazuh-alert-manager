@@ -43,4 +43,4 @@ Not in this release — it's deliberately deferred pending a security review.
 The sync job uses a single-writer lease and durably admits each alert with its saved ruleset snapshot before committing the cursor. Separate worker lanes use fenced leases and deterministic execution identities, so replicas, retries, restarts, and lease loss do not duplicate actions. See [[Architecture]].
 
 **How do I install it in Docker or Kubernetes?**
-Bake it into a custom dashboard image and reference that image. See [[Installation#container-deployments-docker--kubernetes]].
+Pull the prebuilt image for your Wazuh release, `ghcr.io/xrisbarney/wazuh-dashboard-alert-manager:<wazuh version>`, and swap it in for `wazuh/wazuh-dashboard` in your compose file or manifest. Do not run the installer inside a container. See [[Installation#container-deployments-docker--kubernetes]].

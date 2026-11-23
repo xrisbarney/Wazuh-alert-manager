@@ -23,7 +23,7 @@ Then wait for it to come up (watch the cluster health go **red → yellow**):
 curl -sk -u admin:<password> https://localhost:9200/_cluster/health | jq .status
 ```
 
-On a **single-node** cluster, **yellow is normal and healthy** (replicas have nowhere to go). Once the indexer is yellow/green, the dashboard clears its 503. In Kubernetes, raise the dashboard/indexer pod probe timeouts instead (see [[Installation#kubernetes--custom-image-recommended]]).
+On a **single-node** cluster, **yellow is normal and healthy** (replicas have nowhere to go). Once the indexer is yellow/green, the dashboard clears its 503. In Kubernetes, raise the dashboard/indexer pod probe timeouts instead (see [[Installation#container-deployments-docker--kubernetes]]).
 
 ---
 
@@ -42,6 +42,122 @@ sudo systemctl restart wazuh-manager
 - Confirm it installed: `sudo /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin list`.
 - The **first start after install** rebuilds browser bundles and can take several minutes — wait, then hard-refresh the browser.
 - Check `wazuh-dashboard` is active and healthy: `sudo systemctl status wazuh-dashboard`.
+- In a container, confirm the running image actually contains the plugin:
+  `docker run --rm --entrypoint /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin <image> list`
+  should print `wazuhAlertManager@2.0.3`. The prebuilt images under
+  `ghcr.io/xrisbarney/wazuh-dashboard-alert-manager` do; a plain
+  `wazuh/wazuh-dashboard` image does not. See [[Installation#container-deployments-docker--kubernetes]].
+
+---
+
+## Alerts stop syncing after a dashboard or VM restart
+
+**Symptom.** Native `wazuh-alerts-*` indices continue receiving alerts, but the
+newest alert in Wazuh Alert Manager remains fixed at the time of a restart. The
+dashboard and indexer services may both report `active (running)`, while the
+plugin's sync watermark never advances.
+
+First check the services and the plugin version:
+
+```bash
+sudo systemctl --no-pager --full status \
+  wazuh-dashboard wazuh-indexer wazuh-manager
+sudo /usr/share/wazuh-dashboard/bin/opensearch-dashboards-plugin list | \
+  grep -i wazuhAlertManager
+sudo cat \
+  /usr/share/wazuh-dashboard/plugins/wazuhAlertManager/common/build_info.js
+```
+
+The background sync runs inside `wazuh-dashboard`; it does not have a separate
+service or log file. Query its logs through the systemd journal:
+
+```bash
+# Current boot
+sudo journalctl -u wazuh-dashboard -b --no-pager | \
+  grep -iE 'wazuhAlertManager|wazuh-alert-manager|ResponseError'
+
+# Across previous boots (adjust the date)
+sudo journalctl -u wazuh-dashboard \
+  --since '2026-08-28 00:00:00' --no-pager | \
+  grep -iE 'failed to provision|wazuh-alert-manager sync|sync lock|ResponseError'
+```
+
+Related Wazuh logs are available through:
+
+```bash
+sudo journalctl -u wazuh-indexer -b --no-pager
+sudo journalctl -u wazuh-manager -b --no-pager
+sudo tail -n 200 /var/log/wazuh-indexer/wazuh-cluster.log
+sudo tail -n 200 /var/ossec/logs/ossec.log
+sudo journalctl -u filebeat -b --no-pager
+```
+
+In **Indexer management → Dev Tools**, compare the native and projected data
+and inspect the sync control documents:
+
+```http
+GET wazuh-alerts-*/_search
+{
+  "size": 1,
+  "sort": [{ "@timestamp": "desc" }],
+  "_source": ["@timestamp", "agent.name", "rule.level"]
+}
+
+GET wazuh-alert-status-v2-read/_search
+{
+  "size": 1,
+  "sort": [{ "@timestamp": "desc" }],
+  "_source": ["@timestamp", "agent.name", "rule.level", "source_index"]
+}
+
+GET wazuh-alert-manager-v2-meta/_doc/sync_state
+GET wazuh-alert-manager-v2-meta/_doc/sync_settings
+GET wazuh-alert-manager-v2-meta/_doc/sync_lock
+GET _cat/indices/wazuh-alerts-*,wazuh-alert-status-v2-*,wazuh-alert-manager-v2-*?v
+GET _cat/aliases/wazuh-alert-status-v2-*?v
+```
+
+`sync_settings.enabled` should be `true`. A missing `sync_lock` is normally
+harmless for no more than one polling interval because a running sync worker
+recreates it. A missing lock combined with a frozen `sync_state.updated_at`
+means the worker probably never started.
+
+**Known early-v2 failure.** Some development builds labelled `2.0.0` queried
+the `_id` metadata field with a prefix query during retirement recovery. On the
+OpenSearch version shipped with Wazuh 4.14, startup then logs:
+
+```text
+wazuhAlertManager: failed to provision indices:
+search_phase_execution_exception: [query_shard_exception]
+Reason: Can only use prefix queries on keyword and text fields - not on [_id]
+which is of type [_id]
+```
+
+The dashboard process remains healthy, but plugin initialization stops before
+the lifecycle, automation, and sync workers are started. A restart exposes the
+problem because initialization and retirement recovery run again; repeated VM
+shutdowns do not themselves corrupt the watermark.
+
+**Fix.** Install the current supported build (2.0.3; the installer selects the
+archive for the dashboard's exact OpenSearch Dashboards version) and let it
+restart the dashboard:
+
+```bash
+curl -fsSL \
+  https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | \
+  sudo bash -s -- --version 2.0.3
+```
+
+For a container deployment, switch to the matching prebuilt image instead
+(see [[Installation#container-deployments-docker--kubernetes]]).
+
+Do not delete the sync state, reset its watermark, or manually create the lock.
+The stored watermark is the safe resume point. After the upgrade, verify that
+there is no new `failed to provision indices` message and query `sync_state`
+again after one polling interval. Its `updated_at` and `completed_at` values
+should advance. If the backlog exceeds the configured batch size, the plugin
+persists a point-in-time cursor and continues draining batches immediately; the
+native and projected newest timestamps should converge.
 
 ---
 
@@ -191,6 +307,7 @@ Current operational data is stored under the `wazuh-alert-status-v2-*` aliases a
 - Preview the exact saved revision. Check matching totals, missing-entity count/rate, truncation, precondition skips, conflicts, and safety/rate-cap skips.
 - Match owns agent scope. On Trigger, verify each AND predicate can resolve from the same alert and that at least one OR group can match. Missing values do not form an `unknown` group.
 - Entity comparison is normalized: ports must be 0-65535, user/process values are lowercased, and IP values must be valid canonicalizable addresses.
+- Entities read fixed Wazuh fields (`data.srcip`, `data.dstuser`, and so on; see the entity field table in [[Automation-Rules]]). Alerts decoded by Wazuh's JSON decoder, including Windows Event Channel events, usually have no `data.srcuser`/`data.dstuser`, so user entities do not match them and Preview counts them as missing entities. JSON-decoded fields such as `data.win.eventdata.*` are not supported as entities in 2.0.x.
 - For a burst, threshold and sliding window apply independently to each resolved group/key. Cooldown and quiet-period rearm can legitimately suppress a repeated sustained burst.
 - Rules act only on alerts newly ingested into the plugin. Creating, editing, or enabling a rule does not evaluate alerts already ingested, and there is no replay/backfill control.
 

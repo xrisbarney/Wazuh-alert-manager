@@ -43,7 +43,7 @@ Wazuh documentation: [Active Directory and LDAP integration](https://documentati
 
 ### What each setting means
 
-| Setting | Meaning | v2.0.2 default | Minimum |
+| Setting | Meaning | v2.0.3 default | Minimum |
 |---|---|---:|---:|
 | Automatic rollover | Approximately every five minutes, checks all four plugin-owned rollover families and rolls a writer when either configured limit is reached. It does not retire or delete the old generation. | Enabled | — |
 | Maximum generation age | Maximum age of the current write generation before rollover. Examples: `12h`, `7d`, `30d`. | `7d` | Positive duration |
@@ -106,7 +106,7 @@ This differs deliberately from a simple Wazuh alert ISM delete policy: operation
 
 Case-linked evidence has a separate bounded lifecycle and must not force every
 closed alert to remain operational forever. See
-[Case evidence and case lifecycle](Case-Evidence-and-Case-Lifecycle.md).
+[[Case evidence and case lifecycle|Case-Evidence-and-Case-Lifecycle]].
 
 ## Storage boundary
 
