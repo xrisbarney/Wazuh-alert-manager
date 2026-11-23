@@ -22,10 +22,27 @@ All populated Match fields are combined with **AND**. Agent/host scope belongs h
 | Rule IDs | Specific Wazuh rule IDs, such as `5710` or `5716`. |
 | Agents | The agents/hosts in scope. |
 | Minimum level | The minimum Wazuh rule level. |
+| Minimum asset criticality | The lowest asset criticality (from Settings > Assets) an alert's agent must carry; alerts whose agent has no entry never match. |
 
 Within Rule groups, Rule IDs, and Agents, **Any of** accepts any listed value. For burst rules, **All of** requires every listed value to occur for the same resolved correlation key within the window. Per-alert rules use **Any of** because one immediate alert has no cross-alert co-occurrence window.
 
+**Enrichment boundary.** Automation never performs a live enrichment lookup. Rules only read what is already stored on the alert record (the `enrichment` object written by analyst lookups and the `asset` object stamped at sync time); evaluating a rule cannot trigger an outbound request, so a slow or failing enrichment source can never stall the automation queue.
+
 A match definition with no restrictions matches every alert and requires an explicit safety acknowledgment. Changing Match clears that acknowledgment.
+
+**Asset criticality is stamped at projection time**, so `Minimum asset criticality` only ever matches records the sync projected *after* the asset rule was saved under Settings > Assets. Nothing already in the queue is re-stamped; expect one sync tick of lag after saving a rule.
+
+### Match values differ between Wazuh 4.x and 5.0
+
+The Match fields are the same on both lines, but the values are not, so a rule written for one line does not port to the other unchanged:
+
+| | Wazuh 4.x | Wazuh 5.0 |
+|---|---|---|
+| Rule groups | classic groups: `authentication_failed`, `sshd`, `sudo`, `syscheck`, `sca`, … | ATT&CK-style tags: `attack.t1110`, `attack.t1548`, `attack.t1046`, `wazuh-generic-1`, `wazuh-fim`, … |
+| Rule IDs | numeric, e.g. `5710`, `5503`, `80792`, `550` | UUIDs, e.g. `8784f095-729a-5912-9315-119722b444ed` |
+| Minimum level | the numeric `rule.level` on the record | `rule.level` is null; the floor is applied through the severity band of the record's `severity_label` (0–3 low, 4–6 medium, 7–11 high, 12+ critical) |
+
+Read the live values from the projected records (the queue's Rule ID filter, or an alert's Fields section) rather than hard-coding them.
 
 ## Trigger Entity Expression
 
@@ -110,9 +127,11 @@ Choose at least one action:
 
 | Action | Effect |
 |--------|--------|
-| Set status | Sets matching Workbench alerts to Open, In progress, or Closed. |
+| Set status | Sets matching Workbench alerts to Open, In progress, or Closed. When the status is **Closed**, an optional **Disposition** (true positive, false positive, benign, duplicate, undetermined) is recorded on every alert the rule closes and named on the close entry in the alert's History; it is dropped for any other status. |
 | Assign to | Assigns matching alerts and a created case to an analyst. |
 | Create or update a deduplicated case | Creates a case or extends the active case for the effective deduplication scope. |
+| Apply task list | With the case action only: when the rule creates a **new** case, the tasks of the selected task list (Settings > Task lists) are appended to it, with each due date counted from the moment of creation and the rule recorded as the task author. Extending an existing case never re-applies the task list, and a task list is applied at most once per case. A disabled or deleted task list (or a case already at its task cap) is skipped: the case and its evidence are kept, the execution record's `counters.taskListFailures` is incremented (`counters.taskListsApplied` counts successes) and a warning naming the case is written to the dashboard log; the queue never retries a task list because the retry would find the existing case. |
+| Notify channels | Sends a `rule.action` notification for every alert the rule fires on to the selected channels bound in Settings > Notifications (any kind: a Wazuh Notifications channel or a direct webhook), so an existing Slack, Teams, email or webhook channel is the delivery target and nothing is built that a channel could already send itself. Combines freely with the other actions, and a rule with only this action is valid. Up to 20 channel ids; saving a rule that names an id no longer in the channel list is refused with a 400 naming the id (a disabled channel is accepted and skipped at execution time). The payload is the allowlisted alert projection with the rule `{id, name}` and `actions {status, assignee, caseId}` naming what the rule applied, so the message reflects the outcome (a status the analyst changed first, which the rule did not overwrite, is not claimed). Delivery goes through the notification outbox (Settings > Notifications): one entry per alert and channel with the deterministic id `notify:<rule id>:<alert id>:<channel id>`, so a queue retry or a second replica never sends twice. Preview reports `notifications` (alerts the rule fires on times the channel ids the stored settings resolve to an enabled channel) and `notificationsSkipped` (ids execution would skip), so the two numbers match the execution record, which counts `counters.notificationsEnqueued` and `counters.notificationsSkipped` (unknown or disabled channel, notifications disabled globally, or an entry an earlier run already wrote). Entries are written in bulks; a failed read of the notification settings or a failed outbox write is a retryable failure of the execution (the idempotent ids make the replay safe), never a silent skip. When an analyst edit beat the rule (the status or assignment was not applied) the notification carries the alert as it is after that edit. Status and assignment preconditions do not gate this action: it follows the match and the trigger, like case creation. |
 
 Status and assignment preconditions can limit changes to expected workflow state. Rule priority and sort order determine evaluation order; **Stop processing** prevents lower-priority rules from acting after this rule. Per-run action/case caps and an execution rate limit bound impact. Conflicts and cap/rate skips are visible in preview and runtime counters.
 
@@ -216,6 +235,22 @@ The runtime panel distinguishes two independent states:
 Administrators can pause/resume processing and set active-backlog and deferred-event caps. Queue admission closes when those bounds are reached. The dead-letter list is cursor-paginated. **Retry** safely returns a recoverable event to the durable queue using its captured ruleset snapshot; **Resolve** removes a dead letter without replaying it. Both operations are idempotent and require `all_access`.
 
 See [[Troubleshooting]] for queue and rule diagnostics and [[Security Model]] for authorization and blast-radius controls.
+
+## Known limitations
+
+- **"Last fired" reads "Never" for a rule that matched but acted on nothing.**
+  The executor writes the per-rule execution companion (`matchCount`,
+  `lastFired`, `counters`) only for the rules that applied an action in the
+  batch, and the counters count batches and matched alerts, not per-action
+  outcomes. Confirm such a rule fired from the alert's History section (a
+  `correlation-rule rule:<id>` entry), from the case it opened, or from the
+  Notifications outbox for a notify action.
+- **An enabled rule's entity-group edit still needs the rule disabled**
+  (the server answers 409). Every other edit saves as a new revision with the
+  rule left enabled; the preview gate applies to the disabled → enabled
+  transition only.
+- **Duplicate rule names are accepted.** Two drafts can carry the same name;
+  the list distinguishes them by id.
 
 ## Operational checklist
 

@@ -16,7 +16,9 @@ import {
   AUTOMATION_SETTINGS_DOC_ID,
   AUTOMATION_WORKER_LEASE_ID,
   RULES_INDEX,
+  correlationRuleExecutionId,
 } from '../../common';
+import type { AutomationEvaluationOutcome } from './correlation_eval';
 import { assertManagedWriteTarget } from './index_namespace';
 import { evaluateCorrelationRules } from './correlation_eval';
 import { evaluateAlertMatch } from './correlation';
@@ -1000,6 +1002,75 @@ async function claimExecution(
   }
 }
 
+/**
+ * Step 12.3: per-rule execution state. One bulk of scripted upserts per
+ * completed execution batch (`refresh: false`) bumps the `rule-execution:<id>`
+ * companion in the rules index for every rule the batch applied: `matchCount`
+ * and `counters.matchedAlerts` grow by the alerts the rule matched in the batch,
+ * `counters.triggeredEntities` by one per batch, `lastFired` is the completion
+ * time. The state is advisory (the rules list and runtime card read it), so a
+ * failed write is logged and never fails the execution or re-queues the event.
+ * Returns the number of rules whose state was written.
+ */
+export async function recordRuleExecutionState(
+  client: any,
+  outcome: Pick<AutomationEvaluationOutcome, 'appliedRuleIds' | 'ruleMatches'>,
+  firedAt: string,
+  logger: Logger
+): Promise<number> {
+  const ruleIds = Array.from(new Set(outcome.appliedRuleIds || [])).filter(Boolean).sort();
+  if (!ruleIds.length) return 0;
+  const body: any[] = [];
+  for (const ruleId of ruleIds) {
+    const matched = Math.max(0, Number(outcome.ruleMatches?.[ruleId] || 0));
+    // Concurrent worker lanes / replicas complete batches for the same rule; retry the scripted increment instead of under-counting.
+    body.push({ update: { _index: assertManagedWriteTarget(RULES_INDEX), _id: correlationRuleExecutionId(ruleId), retry_on_conflict: 3 } });
+    body.push({
+      script: {
+        lang: 'painless',
+        source:
+          'if (ctx._source.counters == null) { ctx._source.counters = new HashMap(); } ' +
+          'ctx._source.matchCount = (ctx._source.matchCount == null ? 0L : ctx._source.matchCount) + params.matched; ' +
+          'ctx._source.counters.matchedAlerts = (ctx._source.counters.matchedAlerts == null ? 0L : ctx._source.counters.matchedAlerts) + params.matched; ' +
+          'ctx._source.counters.triggeredEntities = (ctx._source.counters.triggeredEntities == null ? 0L : ctx._source.counters.triggeredEntities) + 1; ' +
+          'ctx._source.lastFired = params.firedAt; ctx._source.updated_at = params.firedAt;',
+        params: { matched, firedAt },
+      },
+      upsert: {
+        document_type: 'rule_execution',
+        rule_id: ruleId,
+        counters: {
+          matchedAlerts: matched,
+          triggeredEntities: 1,
+          actionsAttempted: 0,
+          actionsSucceeded: 0,
+          actionsSkipped: 0,
+          actionsConflicted: 0,
+          actionsFailed: 0,
+          casesCreated: 0,
+          casesExtended: 0,
+          evidenceLinksWritten: 0,
+        },
+        matchCount: matched,
+        lastFired: firedAt,
+        updated_at: firedAt,
+      },
+    });
+  }
+  try {
+    const result: any = await client.bulk({ index: assertManagedWriteTarget(RULES_INDEX), refresh: false, body });
+    const items: any[] = result?.body?.items || [];
+    const failed = items.filter((item) => item?.update?.error);
+    if (failed.length) {
+      logger.warn(`wazuh-alert-manager automation: rule execution state not written for ${failed.length} of ${ruleIds.length} rule(s): ${failed.map((item) => item.update.error?.reason || item.update.error?.type).join('; ')}`);
+    }
+    return ruleIds.length - failed.length;
+  } catch (error: any) {
+    logger.warn(`wazuh-alert-manager automation: rule execution state write failed: ${error?.message || error}`);
+    return 0;
+  }
+}
+
 async function updateOwnedExecution(client: any, executionId: string, fence: Fence, doc: any) {
   try {
     const current: any = await client.get({ index: AUTOMATION_EXECUTIONS_INDEX, id: executionId });
@@ -1151,6 +1222,7 @@ export async function runAutomationWorkerOnce(
       applied_rule_ids: outcome.appliedRuleIds, counters: outcome.counters,
     });
     if (!completed) return false;
+    await recordRuleExecutionState(client, outcome, completedAt, logger);
     return updateClaim(client, claim, {
       state: 'completed', completed_at: completedAt, holder_id: null, lease_expires_at: null, lease_token: null,
     });
@@ -1283,6 +1355,7 @@ export async function runAutomationWorkerBatchOnce(
       })
     );
     if (!executionDone) return false;
+    await recordRuleExecutionState(client, outcome, completedAt, logger);
     return transitionBatchOwned(
       client,
       AUTOMATION_QUEUE_INDEX,

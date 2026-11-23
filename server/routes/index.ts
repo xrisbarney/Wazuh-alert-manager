@@ -11,6 +11,14 @@ import { defineAttackPathRoutes } from './attack_path';
 import { defineRuleRoutes } from './rules';
 import { defineSystemRoutes } from './system';
 import { defineEvidenceRoutes } from './evidence';
+import { defineIndicatorRoutes } from './indicators';
+import { defineEnrichmentRoutes } from './enrichment';
+import { defineAssetRoutes } from './assets';
+import { defineAttachmentRoutes } from './attachments';
+import { defineSlaRoutes } from './sla';
+import { defineCaseTaskRoutes } from './case_tasks';
+import { defineTaskListRoutes } from './task_lists';
+import { defineNotificationRoutes } from './notifications';
 
 export function defineRoutes(router: IRouter) {
   router.get(
@@ -34,4 +42,12 @@ export function defineRoutes(router: IRouter) {
   defineRuleRoutes(router);
   defineSystemRoutes(router);
   defineEvidenceRoutes(router);
+  defineIndicatorRoutes(router);
+  defineEnrichmentRoutes(router);
+  defineAssetRoutes(router);
+  defineAttachmentRoutes(router);
+  defineSlaRoutes(router);
+  defineCaseTaskRoutes(router);
+  defineTaskListRoutes(router);
+  defineNotificationRoutes(router);
 }

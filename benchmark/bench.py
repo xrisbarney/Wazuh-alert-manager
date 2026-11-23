@@ -48,6 +48,14 @@ V5_TEST_MAPPINGS = {
                 "mitre": {"properties": {"id": {"type": "keyword"}, "tactic": {"type": "keyword"}, "technique": {"type": "keyword"}}},
             }},
             "cluster": {"properties": {"node": {"type": "keyword"}, "name": {"type": "keyword"}}},
+            "threat": {"properties": {"enrichments": {"properties": {
+                "indicator": {"properties": {
+                    "id": {"type": "keyword"}, "name": {"type": "keyword"}, "type": {"type": "keyword"}, "provider": {"type": "keyword"},
+                    "feed": {"properties": {"name": {"type": "keyword"}}}, "confidence": {"type": "keyword"}, "tags": {"type": "keyword"},
+                    "reference": {"type": "keyword"},
+                }},
+                "matched": {"properties": {"field": {"type": "keyword"}, "atomic": {"type": "keyword"}}},
+            }}}},
             "integration": {"properties": {"name": {"type": "keyword"}, "category": {"type": "keyword"}}},
             "protocol": {"properties": {"location": {"type": "keyword"}}},
             "space": {"properties": {"name": {"type": "keyword"}}},

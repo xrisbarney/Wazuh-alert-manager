@@ -1,6 +1,6 @@
 import { alertUid } from '../operational_projection';
 import { WAZUH4_ALERT_ADAPTER } from './wazuh4_alert_adapter';
-import { WAZUH5_FINDING_ADAPTER, projectFinding } from './wazuh5_finding_adapter';
+import { WAZUH5_FINDING_ADAPTER, projectFinding, projectNativeCase5 } from './wazuh5_finding_adapter';
 
 // Live Wazuh 5.0.0 Beta 5 finding (redacted). Re-validated against rc2 in Phase 1.
 const beta5Finding = {
@@ -72,6 +72,7 @@ describe('Wazuh 5.0 finding adapter', () => {
     expect(doc.data).toEqual({
       srcip: null, dstip: null, srcport: null, dstport: null, srcuser: null, dstuser: null,
       process: { name: 'apparmor_parser' },
+      url: null, hostname: null, win: null, audit: null,
     });
     expect(doc.decoder).toEqual({ name: 'linux' });
     expect(doc.location).toBe('journald');
@@ -121,6 +122,7 @@ describe('Wazuh 5.0 finding adapter', () => {
     expect(doc.data).toEqual({
       srcip: '203.0.113.9', dstip: '10.0.0.7', srcport: 51515, dstport: 22, srcuser: 'root', dstuser: 'svc',
       process: { name: 'sshd' },
+      url: null, hostname: null, win: null, audit: null,
     });
     expect(doc.location).toBe('/var/log/auth.log');
     expect(doc.full_log_excerpt).toBe('Failed password for root');
@@ -250,5 +252,288 @@ describe('Wazuh 5.0 source-side severity floor', () => {
     expect(WAZUH5_FINDING_ADAPTER.buildQuery({ windowFrom: 'a', windowTo: 'b', minSeverityLabel: 'urgent' }).bool.must).toHaveLength(1);
     expect(WAZUH5_FINDING_ADAPTER.buildQuery({ windowFrom: 'a', windowTo: 'b' }).bool.must).toHaveLength(1);
     expect(WAZUH4_ALERT_ADAPTER.buildQuery({ windowFrom: 'a', windowTo: 'b', minSeverityLabel: 'high' }).bool.must).toHaveLength(1);
+  });
+});
+
+describe('Wazuh 5.0 native context for indicators (step 6.1)', () => {
+  // Shape from e2e/seed_findings_v5.py finding_doc() plus engine enrichments
+  // (ECS threat.enrichments) and <entity>.geo/.as.
+  const enriched = {
+    _index: '.ds-wazuh-findings-v5-wam-e2e-000001',
+    _id: 'f1',
+    _source: {
+      '@timestamp': '2026-11-20T11:00:00.000Z',
+      host: { hostname: 'wam-e2e-agent' },
+      source: { ip: '203.0.113.7', port: 4242, geo: { country_name: 'Germany', city_name: 'Berlin', location: { lat: 52.52, lon: 13.4 } }, as: { number: 64496, organization: { name: 'Example AS' } } },
+      destination: { ip: '198.51.100.20', port: 22, domain: 'c2.example.net', as: { number: 64497 } },
+      user: { name: 'alice' },
+      process: { name: 'sshd' },
+      file: { path: '/usr/bin/evil', hash: { md5: 'd41d8cd98f00b204e9800998ecf8427e', sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' } },
+      url: { full: 'http://c2.example.net/beacon', domain: 'c2.example.net' },
+      dns: { question: { name: 'c2.example.net' } },
+      related: { ip: ['203.0.113.7', '198.51.100.20'], hosts: ['wam-e2e-agent'], hash: ['d41d8cd98f00b204e9800998ecf8427e'], user: ['alice'] },
+      wazuh: {
+        agent: { id: '901', name: 'wam-e2e-agent', groups: ['default'], host: { hostname: 'wam-e2e-agent', ip: '192.0.2.10' } },
+        rule: { id: 'wam-e2e-rule', title: 'Failed authentication attempt - alice', level: 'high', tags: ['high'] },
+        threat: {
+          enrichments: Array.from({ length: 25 }, (_, i) => ({
+            indicator: { id: `ioc-${i}`, name: i === 0 ? '198.51.100.20:22' : `198.51.100.${i}`, type: 'connection', provider: 'abuse.ch', feed: { name: 'feodotracker' }, confidence: 'High', tags: ['botnet'], software: { name: 'Emotet' } },
+            matched: { field: 'destination.ip', atomic: '198.51.100.20' },
+          })),
+        },
+      },
+      event: { index: '.ds-wazuh-events-v5-wam-e2e-000001', doc_id: 'e1' },
+    },
+  };
+
+  test('projects file hashes, url, hostname and related lists', () => {
+    const doc = projectFinding(enriched, '2026-11-20T12:00:00.000Z');
+    expect(doc.syscheck).toEqual({ path: '/usr/bin/evil', md5_after: 'd41d8cd98f00b204e9800998ecf8427e', sha1_after: null, sha256_after: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' });
+    expect(doc.data.url).toBe('http://c2.example.net/beacon');
+    expect(doc.data.hostname).toBe('c2.example.net');
+    expect(doc.data.win).toBeNull();
+    expect(doc.related).toEqual({ ip: ['203.0.113.7', '198.51.100.20'], hosts: ['wam-e2e-agent'], hash: ['d41d8cd98f00b204e9800998ecf8427e'], user: ['alice'] });
+  });
+
+  test('copies wazuh.threat.enrichments[] bounded to 20 entries with the matched field', () => {
+    const doc = projectFinding(enriched, '2026-11-20T12:00:00.000Z');
+    expect(doc.threat.total).toBe(25);
+    expect(doc.threat.truncated).toBe(true);
+    expect(doc.threat.matches).toHaveLength(20);
+    expect(doc.threat.sibling_of).toBeNull();
+    expect(doc.threat.matches[0]).toEqual({
+      source: 'wazuh5_engine', verdict: 'malicious', matched_field: 'destination.ip', detail: null, link: null,
+      indicator: { id: 'ioc-0', name: '198.51.100.20:22', type: 'connection', provider: 'abuse.ch', feed: 'feodotracker', confidence: 'High', tags: ['botnet'], software: 'Emotet' },
+    });
+  });
+
+  test('projects <entity>.geo/.as per entity and nothing when absent', () => {
+    const doc = projectFinding(enriched, '2026-11-20T12:00:00.000Z');
+    expect(doc.geo).toEqual([
+      { entity: 'source', ip: '203.0.113.7', country_name: 'Germany', region_name: null, city_name: 'Berlin', location: { lat: 52.52, lon: 13.4 }, as: { number: 64496, organization: 'Example AS' }, provider: 'wazuh5_engine' },
+      { entity: 'destination', ip: '198.51.100.20', country_name: null, region_name: null, city_name: null, location: null, as: { number: 64497, organization: null }, provider: 'wazuh5_engine' },
+    ]);
+    const plain = projectFinding(beta5Finding, '2026-10-31T00:00:00.000Z');
+    expect(plain.geo).toBeNull();
+    expect(plain.threat).toBeNull();
+    expect(plain.syscheck).toBeNull();
+    expect(plain.related).toEqual({ ip: [], hosts: ['wazuh-allinone'], hash: [], user: [] });
+  });
+
+  test('projects client/server .geo/.as and host .geo, bounded to MAX_GEO_HINTS in entity order', () => {
+    const doc = projectFinding({
+      _index: '.ds-wazuh-findings-v5-wam-e2e-000001', _id: 'f2',
+      _source: {
+        '@timestamp': '2026-11-20T11:00:00.000Z',
+        client: { ip: '203.0.113.8', geo: { country_name: 'France' }, as: { number: 64500, organization: { name: 'Client AS' } } },
+        server: { ip: '198.51.100.30', geo: { city_name: 'Dublin', country_iso_code: 'IE' } },
+        host: { hostname: 'wam-e2e-agent', geo: { country_name: 'Ireland', region_name: 'Leinster' } },
+        wazuh: { agent: { id: '902', name: 'wam-e2e-agent' }, rule: { id: 'r', title: 't', level: 'low' } },
+      },
+    }, '2026-11-20T12:00:00.000Z');
+    expect(doc.geo).toEqual([
+      { entity: 'client', ip: '203.0.113.8', country_name: 'France', region_name: null, city_name: null, location: null, as: { number: 64500, organization: 'Client AS' }, provider: 'wazuh5_engine' },
+      { entity: 'server', ip: '198.51.100.30', country_name: 'IE', region_name: null, city_name: 'Dublin', location: null, as: null, provider: 'wazuh5_engine' },
+      { entity: 'host', ip: null, country_name: 'Ireland', region_name: 'Leinster', city_name: null, location: null, as: null, provider: 'wazuh5_engine' },
+    ]);
+    const all = projectFinding({
+      _index: '.ds-wazuh-findings-v5-wam-e2e-000001', _id: 'f3',
+      _source: {
+        '@timestamp': '2026-11-20T11:00:00.000Z',
+        source: { geo: { country_name: 'A' } }, destination: { geo: { country_name: 'B' } },
+        client: { geo: { country_name: 'C' } }, server: { geo: { country_name: 'D' } }, host: { geo: { country_name: 'E' } },
+        wazuh: { agent: { id: '902', name: 'x' }, rule: { id: 'r', title: 't', level: 'low' } },
+      },
+    }, '2026-11-20T12:00:00.000Z');
+    expect(all.geo.map((g: any) => g.entity)).toEqual(['source', 'destination', 'client', 'server']);
+  });
+});
+
+describe('Wazuh 5.0 asset stamping (step 6.4a)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { buildAssetMatcher } = require('../assets/matcher');
+  const finding = (groups: any, extra: any = {}) => ({
+    _index: '.ds-wazuh-findings-v5-wam-e2e-000001',
+    _id: 'f-asset',
+    _source: {
+      '@timestamp': '2026-11-20T11:00:00.000Z',
+      wazuh: { agent: { id: '901', name: 'wam-e2e-agent', groups, ...extra }, rule: { id: 'r', title: 't', level: 'high' } },
+    },
+  });
+  const matcher = buildAssetMatcher([
+    { id: 'pci', match: { kind: 'group', value: 'pci' }, criticality: 'critical', tags: ['pci-dss'] },
+    { id: 'e2e', match: { kind: 'glob', value: 'wam-e2e-*' }, criticality: 'medium', tags: [] },
+  ]);
+
+  test('groups come from wazuh.agent.groups on the record; labels are null (removed in 5.0)', () => {
+    const doc = projectFinding(finding(['default', 'pci']), '2026-11-20T12:00:00.000Z', { assets: matcher });
+    expect(doc.asset).toEqual({ criticality: 'medium', tags: [], groups: ['default', 'pci'], labels: null, matched_id: 'e2e', matched_by: 'glob' });
+    const byGroup = projectFinding(finding(['pci'], { name: 'other' }), undefined, { assets: matcher });
+    expect(byGroup.asset).toMatchObject({ criticality: 'critical', tags: ['pci-dss'], matched_by: 'group' });
+  });
+
+  test('record groups win over any cached lookup and the field is present without a context', () => {
+    const doc = projectFinding(finding('solo'), undefined, { assets: matcher, agentGroups: new Map([['901', ['cached']]]) });
+    expect(doc.asset.groups).toEqual(['solo']);
+    expect(WAZUH5_FINDING_ADAPTER.project(finding(undefined)).asset).toEqual({
+      criticality: null, tags: [], groups: [], labels: null, matched_id: null, matched_by: null,
+    });
+  });
+});
+
+describe('due timestamps at first projection (step 3.2)', () => {
+  const policy = {
+    targets: {
+      critical: { resolveMinutes: 30, assignMinutes: 5 },
+      high: { resolveMinutes: 120, assignMinutes: 20 },
+      medium: { resolveMinutes: 600, assignMinutes: 60 },
+      low: { resolveMinutes: 2880, assignMinutes: 240 },
+    },
+    escalations: [],
+  };
+  const plus = (ts: string, minutes: number) => new Date(Date.parse(ts) + minutes * 60000).toISOString();
+
+  test('the 5.0 adapter stamps both due fields from a label-only severity through the policy', () => {
+    const doc = WAZUH5_FINDING_ADAPTER.project(beta5Finding, '2026-10-31T00:00:00.000Z', { slaPolicy: policy });
+    expect(doc.rule.level).toBeNull();
+    expect(doc.severity_label).toBe('low');
+    expect(doc.reporting).toEqual({
+      sla_due_at: plus('2026-09-06T18:55:13.659Z', 2880),
+      assign_due_at: plus('2026-09-06T18:55:13.659Z', 240),
+    });
+    const high = WAZUH5_FINDING_ADAPTER.project(
+      { _index: 'x', _id: 'y', _source: { '@timestamp': '2026-10-31T10:00:00.000Z', wazuh: { rule: { id: 'r', level: 'high' } } } },
+      '2026-10-31T10:00:01.000Z',
+      { slaPolicy: policy }
+    );
+    expect(high.reporting).toEqual({ sla_due_at: plus('2026-10-31T10:00:00.000Z', 120), assign_due_at: plus('2026-10-31T10:00:00.000Z', 20) });
+    // No label at all: no due date (never guessed).
+    const none = WAZUH5_FINDING_ADAPTER.project({ _index: 'x', _id: 'y', _source: { '@timestamp': '2026-10-31T10:00:00.000Z', wazuh: { rule: { id: 'r' } } } }, undefined, { slaPolicy: policy });
+    expect(none.reporting).toEqual({ sla_due_at: null, assign_due_at: null });
+  });
+
+  test('the 4.x adapter stamps both due fields from the numeric level, with the built-in targets without a policy', () => {
+    const hit = {
+      _index: 'wazuh-alerts-4.x-2026.10.31',
+      _id: 'a1',
+      _source: { '@timestamp': '2026-10-31T10:00:00.000Z', rule: { id: '5710', level: 12, description: 'x' } },
+    };
+    expect(WAZUH4_ALERT_ADAPTER.project(hit, '2026-10-31T10:00:01.000Z', { slaPolicy: policy }).reporting).toEqual({
+      sla_due_at: plus('2026-10-31T10:00:00.000Z', 30),
+      assign_due_at: plus('2026-10-31T10:00:00.000Z', 5),
+    });
+    expect(WAZUH4_ALERT_ADAPTER.project(hit, '2026-10-31T10:00:01.000Z').reporting).toEqual({
+      sla_due_at: plus('2026-10-31T10:00:00.000Z', 60),
+      assign_due_at: plus('2026-10-31T10:00:00.000Z', 15),
+    });
+  });
+});
+
+describe('Wazuh 5.0 native case projection (step 2.6, Q6: read-only)', () => {
+  const finding = (wazuhCase: any) => ({
+    _index: '.ds-wazuh-findings-v5-access-management-000001',
+    _id: 'f-case',
+    _source: {
+      '@timestamp': '2026-11-21T10:00:00.000Z',
+      wazuh: {
+        agent: { id: '001', name: 'web-01' },
+        rule: { id: 'r1', title: 'Failed authentication', level: 'high' },
+        ...(wazuhCase === undefined ? {} : { case: wazuhCase }),
+      },
+    },
+  });
+
+  test('copies the allowlisted wazuh.case.* fields verbatim and drops everything else', () => {
+    // `id` is reserved: the bundled 5.0.0-rc2 sources write no wazuh.case.id
+    // (a native case is the finding itself). The fixture exercises the slot
+    // so a later Wazuh line that names cases flows through unchanged.
+    const doc = projectFinding(finding({
+      id: 'case-7',
+      status: 'acknowledged',
+      severity: 'high',
+      priority: 'p2',
+      tlp: 'amber',
+      title: 'Brute force on web-01',
+      tags: ['ssh', 'brute-force'],
+      updated_at: '2026-11-21T09:30:00Z',
+      description: 'long analyst text that must not be copied',
+      comments: [{ user: 'a', text: 'secret' }],
+      user: { name: 'analyst' },
+      created_at: '2026-11-20T00:00:00Z',
+    }));
+    expect(doc.native_case).toEqual({
+      id: 'case-7',
+      status: 'acknowledged',
+      severity: 'high',
+      priority: 'p2',
+      tlp: 'amber',
+      title: 'Brute force on web-01',
+      tags: ['ssh', 'brute-force'],
+      updated_at: '2026-11-21T09:30:00.000Z',
+    });
+    expect(Object.keys(doc.native_case)).toEqual(['id', 'status', 'severity', 'priority', 'tlp', 'title', 'tags', 'updated_at']);
+    // The canonical case link stays the plugin's own: a native case is never a WAM case.
+    expect(doc.case_id).toBeNull();
+  });
+
+  test('is null when wazuh.case is absent, not an object, or empty', () => {
+    expect(projectFinding(finding(undefined)).native_case).toBeNull();
+    expect(projectFinding(finding(null)).native_case).toBeNull();
+    expect(projectFinding(finding('active')).native_case).toBeNull();
+    expect(projectFinding(finding(['active'])).native_case).toBeNull();
+    expect(projectFinding(finding(42)).native_case).toBeNull();
+    expect(projectFinding(finding({})).native_case).toBeNull();
+    expect(projectFinding(finding({ description: 'only unknown keys' })).native_case).toBeNull();
+    expect(projectNativeCase5({})).toBeNull();
+  });
+
+  test('coerces malformed values to strings, drops objects and bounds every field', () => {
+    const doc = projectFinding(finding({
+      id: 12345,
+      status: ['active', 'ignored-second'],
+      severity: { nested: 'object' },
+      priority: true,
+      tlp: '  red  ',
+      title: 'x'.repeat(600),
+      tags: 'single-tag',
+      updated_at: 'not a date',
+    }));
+    expect(doc.native_case).toEqual({
+      id: '12345',
+      status: 'active',
+      severity: null,
+      priority: 'true',
+      tlp: 'red',
+      title: 'x'.repeat(512),
+      tags: ['single-tag'],
+      updated_at: null,
+    });
+    const longScalar = projectFinding(finding({ status: 's'.repeat(100) })).native_case;
+    expect(longScalar.status).toHaveLength(64);
+  });
+
+  test('bounds tags to 20 entries of at most 128 characters and skips non-scalars and blanks', () => {
+    const tags = Array.from({ length: 30 }, (_, i) => `tag-${i}`);
+    const doc = projectFinding(finding({ status: 'active', tags: [...tags, { bad: true }, '', '   '] }));
+    expect(doc.native_case.tags).toEqual(tags.slice(0, 20));
+    const long = projectFinding(finding({ status: 'active', tags: ['y'.repeat(300), { obj: 1 }, 7] })).native_case;
+    expect(long.tags).toEqual(['y'.repeat(128), '7']);
+  });
+
+  test('de-duplicates tags after trimming and truncation, before the cap', () => {
+    expect(projectFinding(finding({ status: 'active', tags: ['a', 'a', ' a '] })).native_case.tags).toEqual(['a']);
+    const collide = projectFinding(finding({ status: 'active', tags: ['z'.repeat(128) + '1', 'z'.repeat(128) + '2'] })).native_case;
+    expect(collide.tags).toEqual(['z'.repeat(128)]);
+    const repeated = projectFinding(finding({ status: 'active', tags: [...Array.from({ length: 25 }, () => 'dup'), 'last'] })).native_case;
+    expect(repeated.tags).toEqual(['dup', 'last']);
+  });
+
+  test('the 4.x adapter always sets native_case to null, even when the source carries a wazuh.case object', () => {
+    const doc = WAZUH4_ALERT_ADAPTER.project({
+      _index: 'wazuh-alerts-4.x-2026.11.21',
+      _id: 'a1',
+      _source: { '@timestamp': '2026-11-21T10:00:00.000Z', rule: { id: '5710', level: 5 }, wazuh: { case: { status: 'active', title: 'ignored' } } },
+    });
+    expect(doc).toHaveProperty('native_case', null);
   });
 });

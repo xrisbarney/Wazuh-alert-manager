@@ -1,0 +1,66 @@
+{
+  "_index": "wazuh-alerts-4.x-2026.11.21",
+  "_score": null,
+  "_source": {
+    "agent": {
+      "ip": "10.0.2.15",
+      "name": "wam-lab-agent",
+      "id": "001"
+    },
+    "manager": {
+      "name": "wazuh.manager"
+    },
+    "data": {
+      "audit": {
+        "syscall": "42",
+        "auid": "1000",
+        "gid": "0",
+        "euid": "0",
+        "fsgid": "0",
+        "session": "18",
+        "pid": "15097",
+        "suid": "0",
+        "type": "SYSCALL",
+        "command": "curl",
+        "ppid": "15095",
+        "fsuid": "0",
+        "exit": "-115",
+        "uid": "0",
+        "egid": "0",
+        "exe": "/usr/bin/curl",
+        "success": "no",
+        "tty": "(none)",
+        "sgid": "0",
+        "id": "2087",
+        "arch": "c000003e",
+        "key": "audit-wazuh-c"
+      }
+    },
+    "rule": {
+      "firedtimes": 97,
+      "mail": false,
+      "level": 3,
+      "description": "Audit: Command: /usr/bin/curl.",
+      "groups": [
+        "audit",
+        "audit_command"
+      ],
+      "id": "80792",
+      "gdpr": [
+        "IV_30.1.g"
+      ]
+    },
+    "decoder": {
+      "parent": "auditd",
+      "name": "auditd"
+    },
+    "full_log": "type=SYSCALL msg=audit(1795294794.123:2087): arch=c000003e syscall=42 success=no exit=-115 a0=5 a1=5c446e55f978 a2=10 a3=5 items=0 ppid=15095 pid=15097 auid=1000 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=18 comm=\"curl\" exe=\"/usr/bin/curl\" subj=unconfined key=\"audit-wazuh-c\"\u001dARCH=x86_64 SYSCALL=connect AUID=\"vagrant\" UID=\"root\" GID=\"root\" EUID=\"root\" SUID=\"root\" FSUID=\"root\" EGID=\"root\" SGID=\"root\" FSGID=\"root\" type=SOCKADDR msg=audit(1795294794.123:2087): saddr=02000050761906270000000000000000\u001dSADDR={ saddr_fam=inet laddr=118.25.6.39 lport=80 } type=PROCTITLE msg=audit(1795294794.123:2087): proctitle=6375726C002D6D0035002D2D636F6E6E6563742D74696D656F75740035002D73002D6F002F6465762F6E756C6C00687474703A2F2F3131382E32352E362E33392F",
+    "input": {
+      "type": "log"
+    },
+    "@timestamp": "2026-11-21T20:59:54.488Z",
+    "location": "/var/log/audit/audit.log",
+    "id": "1795294794.1536762",
+    "timestamp": "2026-11-21T20:59:54.488+0000"
+  }
+}

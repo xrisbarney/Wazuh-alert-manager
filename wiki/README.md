@@ -10,7 +10,8 @@ These Markdown files are the source for the project's GitHub **Wiki**. They are 
 | `Installation.md` | Install / upgrade, incl. Docker & Kubernetes |
 | `User-Guide.md` | Alerts, Cases, Settings |
 | `Automation-Rules.md` | The rule engine |
-| `Reporting.md` | Metrics & analyst breakdowns |
+| `Reporting.md` | Metrics, exports and scheduled summaries |
+| `Notifications.md` | Delivery channels, events, outbox and webhook signing |
 | `AI-Analysis.md` | Optional LLM analysis |
 | `Security-Model.md` | Identity, egress, isolation |
 | `Architecture.md` | Sync job & indices |
@@ -18,7 +19,7 @@ These Markdown files are the source for the project's GitHub **Wiki**. They are 
 | `Case-Evidence-and-Case-Lifecycle.md` | Rollable cases, bounded evidence relationships, archive lookup, holds, and migration |
 | `Release-Notes-2.0.md` | Version 2.0.2 highlights, compatibility, upgrade behavior, and validation evidence |
 | `images/` | Browser screenshots captured from the installed release candidate |
-| `Roadmap.md` | Version 2.0.2 shipped scope and current limitations |
+| `Roadmap.md` | Version 2.0.2 shipped scope and current limitations (historical) |
 | `Troubleshooting.md` | Common issues |
 | `FAQ.md` | Quick answers |
 | `_Sidebar.md` / `_Footer.md` | Wiki chrome |

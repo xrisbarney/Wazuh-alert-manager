@@ -23,6 +23,14 @@ import {
   EuiToolTip,
 } from '@elastic/eui';
 import { AlertsApiService } from '../services/api';
+import { SettingsPageHeader } from './settings_page';
+
+const STORAGE_DESCRIPTION = (
+  <>
+    Plugin writes are restricted to its <code>wazuh-alert-status-v2-*</code> and <code>wazuh-alert-manager-v2-*</code> families. Native
+    Wazuh storage (4.x <code>wazuh-alerts-*</code>, 5.0 <code>wazuh-events-v5-*</code> and <code>wazuh-findings-v5-*</code>) is read only.
+  </>
+);
 
 const LIFECYCLE_ROLE_HELP =
   'Requires the effective OpenSearch Security role all_access or index_management_full_access. Backend roles or SSO/LDAP groups must be mapped to one of these roles.';
@@ -304,8 +312,18 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
     }
   };
 
-  if (loading && !health && !lifecycleSettings && !capabilities) return <EuiLoadingSpinner size="xl" />;
-  if (!health && !loading && !lifecycleSettings && !capabilities) return <EuiCallOut color="danger" iconType="alert" title="Storage health is unavailable"><p>{loadError || 'The server returned no health data.'}</p><EuiButton size="s" iconType="refresh" onClick={load} isLoading={loading}>Retry</EuiButton></EuiCallOut>;
+  if (loading && !health && !lifecycleSettings && !capabilities) return <div className="wamSettingsLoading"><EuiLoadingSpinner size="xl" /></div>;
+  if (!health && !loading && !lifecycleSettings && !capabilities) {
+    return (
+      <div className="wamSettingsPage wamStorageHealth" data-test-subj="wamStorageHealth">
+        <SettingsPageHeader title="Storage and lifecycle" description={STORAGE_DESCRIPTION} />
+        <EuiCallOut size="s" color="danger" iconType="alert" title="Storage health is unavailable">
+          <p>{loadError || 'The server returned no health data.'}</p>
+          <EuiButton size="s" iconType="refresh" onClick={load} isLoading={loading}>Retry</EuiButton>
+        </EuiCallOut>
+      </div>
+    );
+  }
   const terms = useTerminology();
   const counts = health?.counts || {};
   const migration = health?.migration;
@@ -323,17 +341,15 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
   ];
 
   return (
-    <div>
-      <EuiTitle size="s"><h3>Storage and lifecycle</h3></EuiTitle>
-      <EuiText size="s" color="subdued">
-        Plugin writes are restricted to its <code>wazuh-alert-status-v2-*</code> and{' '}
-        <code>wazuh-alert-manager-v2-*</code> families. Native Wazuh storage (4.x <code>wazuh-alerts-*</code>,
-        5.0 <code>wazuh-events-v5-*</code> and <code>wazuh-findings-v5-*</code>) is read only.
-      </EuiText>
-      <EuiSpacer size="m" />
+    <div className="wamSettingsPage wamStorageHealth" data-test-subj="wamStorageHealth">
+      <SettingsPageHeader
+        title="Storage and lifecycle"
+        description={STORAGE_DESCRIPTION}
+        actions={<EuiButton size="s" iconType="refresh" onClick={load} isLoading={loading}>Refresh health</EuiButton>}
+      />
       {health?.provisioned === false && (
         <>
-          <EuiCallOut color="danger" iconType="alert" title="Plugin storage is not provisioned" data-test-subj="wamUnprovisioned">
+          <EuiCallOut size="s" color="danger" iconType="alert" title="Plugin storage is not provisioned" data-test-subj="wamUnprovisioned">
             <p>
               The server could not create its <code>wazuh-alert-status-v2-*</code> / <code>wazuh-alert-manager-v2-*</code> stores on start,
               so nothing is synced yet. Check the <code>wazuh-dashboard</code> log for <code>failed to provision indices</code>.
@@ -376,7 +392,7 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
           <EuiSpacer size="m" />
         </>
       )}
-      {loadError && <><EuiCallOut color="warning" iconType="alert" title="Some storage data could not be refreshed"><p>{loadError}</p><EuiButton size="s" iconType="refresh" onClick={load} isLoading={loading}>Retry</EuiButton></EuiCallOut><EuiSpacer size="m" /></>}
+      {loadError && <><EuiCallOut size="s" color="warning" iconType="alert" title="Some storage data could not be refreshed"><p>{loadError}</p><EuiButton size="s" iconType="refresh" onClick={load} isLoading={loading}>Retry</EuiButton></EuiCallOut><EuiSpacer size="m" /></>}
       {!canManageLifecycle && (
         <>
           <EuiCallOut
@@ -420,11 +436,11 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
             <EuiSpacer size="m" />
             <EuiFlexGroup gutterSize="m" wrap className="wamLifecycleFields">
               <EuiFlexItem>
-                <EuiFormRow
+                <EuiFormRow fullWidth
                   label={<span>Maximum generation age <EuiToolTip content="The oldest a current plugin-owned physical index may become before rollover. Reaching this OR the size limit starts a new generation; it does not archive or delete the old one."><EuiIcon type="iInCircle" /></EuiToolTip></span>}
                   helpText="Rollover threshold. Examples: 12h, 7d, 30d"
                 >
-                  <EuiFieldText
+                  <EuiFieldText fullWidth
                     value={lifecycleSettings.rolloverAge}
                     disabled={!canManageLifecycle}
                     onChange={(e) => setLifecycleSettings({ ...lifecycleSettings, rolloverAge: e.target.value })}
@@ -432,11 +448,11 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
                 </EuiFormRow>
               </EuiFlexItem>
               <EuiFlexItem>
-                <EuiFormRow
+                <EuiFormRow fullWidth
                   label={<span>Closed case retention (days) <EuiToolTip content="Days a closed case stays live-searchable before case retirement can move it to Archived Cases. Active cases are always carried forward."><EuiIcon type="iInCircle" /></EuiToolTip></span>}
                   helpText="Live-searchable retention for closed cases. Minimum 30 days."
                 >
-                  <EuiFieldNumber
+                  <EuiFieldNumber fullWidth
                     min={30}
                     max={3650}
                     value={lifecycleSettings.caseRetentionDays}
@@ -446,11 +462,11 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
                 </EuiFormRow>
               </EuiFlexItem>
               <EuiFlexItem>
-                <EuiFormRow
+                <EuiFormRow fullWidth
                   label={<span>Full evidence retention (days) <EuiToolTip content="Minimum retention before a referenced alert archive can become purge-eligible. Holds and active-case references remain blockers."><EuiIcon type="iInCircle" /></EuiToolTip></span>}
                   helpText="Purge eligibility threshold only. Minimum 30 days."
                 >
-                  <EuiFieldNumber
+                  <EuiFieldNumber fullWidth
                     min={30}
                     max={3650}
                     value={lifecycleSettings.evidenceRetentionDays}
@@ -460,11 +476,11 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
                 </EuiFormRow>
               </EuiFlexItem>
               <EuiFlexItem>
-                <EuiFormRow
+                <EuiFormRow fullWidth
                   label={<span>Maximum generation size <EuiToolTip content="The maximum primary data size of the current plugin-owned generation. Reaching this OR the age limit starts a new generation; replicas and native Wazuh alert indices are unaffected."><EuiIcon type="iInCircle" /></EuiToolTip></span>}
                   helpText="Rollover threshold. Examples: 500mb, 20gb, 1tb"
                 >
-                  <EuiFieldText
+                  <EuiFieldText fullWidth
                     value={lifecycleSettings.rolloverSize}
                     disabled={!canManageLifecycle}
                     onChange={(e) => setLifecycleSettings({ ...lifecycleSettings, rolloverSize: e.target.value })}
@@ -472,11 +488,11 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
                 </EuiFormRow>
               </EuiFlexItem>
               <EuiFlexItem>
-                <EuiFormRow
+                <EuiFormRow fullWidth
                   label={<span>Alert retention (days) <EuiToolTip content="After this age, a non-current alert generation is marked Due. Nothing is deleted automatically. An administrator must review and retire it; open, in-progress, and case-linked alerts are carried forward, while the original remains restorable until explicitly purged."><EuiIcon type="iInCircle" /></EuiToolTip></span>}
                   helpText="Review threshold only; minimum 7 days. No automatic deletion."
                 >
-                  <EuiFieldNumber
+                  <EuiFieldNumber fullWidth
                     min={7}
                     max={3650}
                     value={lifecycleSettings.operationalRetentionDays}
@@ -486,11 +502,11 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
                 </EuiFormRow>
               </EuiFlexItem>
               <EuiFlexItem>
-                <EuiFormRow
+                <EuiFormRow fullWidth
                   label={<span>Activity retention (days) <EuiToolTip content="After this age, a non-current audit/activity generation is marked Due. An administrator may detach it from live reports, but it remains retained until an explicit purge."><EuiIcon type="iInCircle" /></EuiToolTip></span>}
                   helpText="Review threshold only; minimum 30 days. No automatic deletion."
                 >
-                  <EuiFieldNumber
+                  <EuiFieldNumber fullWidth
                     min={30}
                     max={3650}
                     value={lifecycleSettings.activityRetentionDays}
@@ -504,7 +520,7 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
               <EuiFlexItem grow={false}>
                 <EuiToolTip content={canManageLifecycle ? 'Save the policy used by the plugin lifecycle worker' : LIFECYCLE_ROLE_HELP}>
                   <span>
-                    <EuiButton fill disabled={!canManageLifecycle} onClick={saveLifecycleSettings} isLoading={savingSettings}>Save lifecycle policy</EuiButton>
+                    <EuiButton size="s" fill iconType="save" disabled={!canManageLifecycle} onClick={saveLifecycleSettings} isLoading={savingSettings}>Save lifecycle policy</EuiButton>
                   </span>
                 </EuiToolTip>
               </EuiFlexItem>
@@ -532,6 +548,9 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
           <EuiSpacer size="m" />
         </>
       )}
+      <EuiPanel hasBorder hasShadow={false} paddingSize="m" className="wamStorageStores">
+      <EuiTitle size="xs"><h4>Stores</h4></EuiTitle>
+      <EuiSpacer size="s" />
       <EuiFlexGroup gutterSize="m" wrap className="wamStorageStats">
         <EuiFlexItem><EuiPanel hasBorder hasShadow={false}><EuiStat title={counts.alerts ?? '—'} description={`Operational ${terms.units}`} /></EuiPanel></EuiFlexItem>
         <EuiFlexItem><EuiPanel hasBorder hasShadow={false}><EuiStat title={counts.cases ?? '—'} description="Cases" /></EuiPanel></EuiFlexItem>
@@ -550,7 +569,7 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
         the live case list. See the case controls below.
       </EuiCallOut>
       <EuiSpacer size="m" />
-      <EuiBasicTable
+      <EuiBasicTable<any>
         items={rows}
         columns={[
           { field: 'store', name: 'Store' },
@@ -558,9 +577,11 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
           { field: 'documents', name: 'Documents', render: (v: number | null) => v == null ? 'Unavailable' : v.toLocaleString() },
         ]}
       />
+      </EuiPanel>
       {(health?.generations?.alerts || []).length > 0 && (
         <>
-          <EuiSpacer size="l" />
+          <EuiSpacer size="m" />
+          <EuiPanel hasBorder hasShadow={false} paddingSize="m">
           <EuiTitle size="xs"><h4>Alert generations</h4></EuiTitle>
           <EuiText size="s" color="subdued">
             Retirement carries unresolved alerts plus closed alerts required by active cases or explicit evidence holds into a compact index, atomically swaps the read alias, and retains the original generation.
@@ -581,18 +602,20 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
                   name: 'Plan retirement',
                   description: canManageLifecycle ? 'Carry active alerts forward and retain this generation' : LIFECYCLE_ROLE_HELP,
                   type: 'icon',
-                  icon: 'archive',
+                  icon: 'archive' as any,
                   enabled: (item: any) => canManageLifecycle && !item.isWriteIndex,
                   onClick: (item: any) => planRetirement(item.index),
                 }],
               },
             ]}
           />
+          </EuiPanel>
         </>
       )}
       {(health?.generations?.evidence || []).length > 0 && (
         <>
-          <EuiSpacer size="l" />
+          <EuiSpacer size="m" />
+          <EuiPanel hasBorder hasShadow={false} paddingSize="m">
           <EuiTitle size="xs"><h4>Evidence generations</h4></EuiTitle>
           <EuiText size="s" color="subdued">Bounded case-alert relationships, compact snapshots, holds, and trusted archive locators. Retirement copies every current relationship into the writer before detaching the old generation.</EuiText>
           <EuiSpacer size="s" />
@@ -605,7 +628,7 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
               {
                 name: 'Actions',
                 actions: [{
-                  name: 'Compact and retire', type: 'icon', icon: 'archive',
+                  name: 'Compact and retire', type: 'icon', icon: 'archive' as any,
                   description: canManageLifecycle ? 'Carry every relationship forward, then detach this generation' : LIFECYCLE_ROLE_HELP,
                   enabled: (item: any) => canManageLifecycle && !item.isWriteIndex,
                   onClick: (item: any) => setEvidenceRetireIndex(item.index),
@@ -613,11 +636,13 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
               },
             ]}
           />
+          </EuiPanel>
         </>
       )}
       {(health?.generations?.archivedEvidenceRelationships || []).length > 0 && (
         <>
-          <EuiSpacer size="l" />
+          <EuiSpacer size="m" />
+          <EuiPanel hasBorder hasShadow={false} paddingSize="m">
           <EuiTitle size="xs"><h4>Retired evidence generations</h4></EuiTitle>
           <EuiText size="s" color="subdued">Detached source generations retained after every relationship was carried into the live writer.</EuiText>
           <EuiSpacer size="s" />
@@ -635,11 +660,13 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
               }] },
             ]}
           />
+          </EuiPanel>
         </>
       )}
       {(health?.generations?.cases || []).length > 0 && (
         <>
-          <EuiSpacer size="l" />
+          <EuiSpacer size="m" />
+          <EuiPanel hasBorder hasShadow={false} paddingSize="m">
           <EuiTitle size="xs"><h4>Case generations</h4></EuiTitle>
           <EuiText size="s" color="subdued">
             Case retirement carries active and recently-closed cases into the current generation and moves expired closed cases to Archived Cases. The retired physical generation is retained outside the live read alias.
@@ -659,18 +686,20 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
                   name: 'Plan retirement',
                   description: canManageLifecycle ? 'Carry active and recent cases forward; move expired closed cases to Archived Cases' : LIFECYCLE_ROLE_HELP,
                   type: 'icon',
-                  icon: 'archive',
+                  icon: 'archive' as any,
                   enabled: (item: any) => canManageLifecycle && !item.isWriteIndex,
                   onClick: (item: any) => planCaseRetirement(item.index),
                 }],
               },
             ]}
           />
+          </EuiPanel>
         </>
       )}
       {(health?.generations?.archivedCases || []).length > 0 && (
         <>
-          <EuiSpacer size="l" />
+          <EuiSpacer size="m" />
+          <EuiPanel hasBorder hasShadow={false} paddingSize="m">
           <EuiTitle size="xs"><h4>Archived case generations</h4></EuiTitle>
           <EuiText size="s" color="subdued">
             Expired closed cases retained outside live search. Reopen copies a case back into the current generation; purge permanently deletes the retained generation.
@@ -703,11 +732,13 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
               },
             ]}
           />
+          </EuiPanel>
         </>
       )}
       {(health?.generations?.archivedAlerts || []).length > 0 && (
         <>
-          <EuiSpacer size="l" />
+          <EuiSpacer size="m" />
+          <EuiPanel hasBorder hasShadow={false} paddingSize="m">
           <EuiTitle size="xs"><h4>Retained retired generations</h4></EuiTitle>
           <EuiText size="s" color="subdued">
             These indices are outside live aliases. Restore missing alerts with one guarded action, or explicitly purge the archive after your backup and validation window.
@@ -746,11 +777,13 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
               },
             ]}
           />
+          </EuiPanel>
         </>
       )}
       {(health?.generations?.activity || []).length > 0 && (
         <>
-          <EuiSpacer size="l" />
+          <EuiSpacer size="m" />
+          <EuiPanel hasBorder hasShadow={false} paddingSize="m">
           <EuiTitle size="xs"><h4>Activity generations</h4></EuiTitle>
           <EuiText size="s" color="subdued">
             Activity is append-only. Once a non-write generation reaches the configured retention age it can be detached from live comments, audit, reports, and SLA calculations, retained as an archive, and purged separately.
@@ -769,18 +802,20 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
                   name: 'Retire activity generation',
                   description: canManageLifecycle ? 'Detach this aged generation from live comments, audit views, reports, and SLA calculations' : LIFECYCLE_ROLE_HELP,
                   type: 'icon',
-                  icon: 'archive',
+                  icon: 'archive' as any,
                   enabled: (item: any) => canManageLifecycle && !item.isWriteIndex && item.retentionEligible,
                   onClick: (item: any) => setActivityRetireIndex(item.index),
                 }],
               },
             ]}
           />
+          </EuiPanel>
         </>
       )}
       {(health?.generations?.archivedActivity || []).length > 0 && (
         <>
-          <EuiSpacer size="l" />
+          <EuiSpacer size="m" />
+          <EuiPanel hasBorder hasShadow={false} paddingSize="m">
           <EuiTitle size="xs"><h4>Retained activity archives</h4></EuiTitle>
           <EuiSpacer size="s" />
           <EuiBasicTable
@@ -802,16 +837,21 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
               },
             ]}
           />
+          </EuiPanel>
         </>
       )}
       <EuiSpacer size="m" />
-      <EuiFlexGroup gutterSize="s" justifyContent="flexEnd" wrap className="wamLifecycleActions">
-        <EuiFlexItem grow={false}><EuiButton onClick={load} isLoading={loading}>Refresh health</EuiButton></EuiFlexItem>
-        <EuiFlexItem grow={false}><EuiToolTip content={canManageLifecycle ? 'Start a new activity generation' : LIFECYCLE_ROLE_HELP}><span><EuiButton disabled={!canManageLifecycle} onClick={() => rollover('activity')} isLoading={rolling === 'activity'}>Roll activity generation</EuiButton></span></EuiToolTip></EuiFlexItem>
-        <EuiFlexItem grow={false}><EuiToolTip content={canManageLifecycle ? 'Start a new alert generation' : LIFECYCLE_ROLE_HELP}><span><EuiButton disabled={!canManageLifecycle} onClick={() => rollover('alerts')} isLoading={rolling === 'alerts'}>Roll alert generation</EuiButton></span></EuiToolTip></EuiFlexItem>
-        <EuiFlexItem grow={false}><EuiToolTip content={canManageLifecycle ? 'Start a new case generation' : LIFECYCLE_ROLE_HELP}><span><EuiButton disabled={!canManageLifecycle} onClick={() => rollover('cases')} isLoading={rolling === 'cases'}>Roll case generation</EuiButton></span></EuiToolTip></EuiFlexItem>
-        <EuiFlexItem grow={false}><EuiToolTip content={canManageLifecycle ? 'Start a new evidence relationship generation' : LIFECYCLE_ROLE_HELP}><span><EuiButton disabled={!canManageLifecycle} onClick={() => rollover('evidence')} isLoading={rolling === 'evidence'}>Roll evidence generation</EuiButton></span></EuiToolTip></EuiFlexItem>
+      <EuiPanel hasBorder hasShadow={false} paddingSize="m" className="wamStorageRollover">
+      <EuiTitle size="xs"><h4>Manual rollover</h4></EuiTitle>
+      <EuiText size="s" color="subdued">Start a new plugin-owned generation now; the current generation is kept and becomes retirable.</EuiText>
+      <EuiSpacer size="s" />
+      <EuiFlexGroup gutterSize="s" justifyContent="flexEnd" responsive={false} wrap className="wamLifecycleActions">
+        <EuiFlexItem grow={false}><EuiToolTip content={canManageLifecycle ? 'Start a new activity generation' : LIFECYCLE_ROLE_HELP}><span><EuiButton size="s" disabled={!canManageLifecycle} onClick={() => rollover('activity')} isLoading={rolling === 'activity'}>Roll activity generation</EuiButton></span></EuiToolTip></EuiFlexItem>
+        <EuiFlexItem grow={false}><EuiToolTip content={canManageLifecycle ? 'Start a new alert generation' : LIFECYCLE_ROLE_HELP}><span><EuiButton size="s" disabled={!canManageLifecycle} onClick={() => rollover('alerts')} isLoading={rolling === 'alerts'}>Roll alert generation</EuiButton></span></EuiToolTip></EuiFlexItem>
+        <EuiFlexItem grow={false}><EuiToolTip content={canManageLifecycle ? 'Start a new case generation' : LIFECYCLE_ROLE_HELP}><span><EuiButton size="s" disabled={!canManageLifecycle} onClick={() => rollover('cases')} isLoading={rolling === 'cases'}>Roll case generation</EuiButton></span></EuiToolTip></EuiFlexItem>
+        <EuiFlexItem grow={false}><EuiToolTip content={canManageLifecycle ? 'Start a new evidence relationship generation' : LIFECYCLE_ROLE_HELP}><span><EuiButton size="s" disabled={!canManageLifecycle} onClick={() => rollover('evidence')} isLoading={rolling === 'evidence'}>Roll evidence generation</EuiButton></span></EuiToolTip></EuiFlexItem>
       </EuiFlexGroup>
+      </EuiPanel>
       {retirementPlan && (
         <EuiConfirmModal
           title={`Retire ${retirementPlan.retiringIndex}?`}
@@ -956,8 +996,8 @@ export const StorageHealthView: React.FC<Props> = ({ apiService, onToast }) => {
           isLoading={reopening}
           confirmButtonDisabled={!reopenCaseId.trim()}
         >
-          <EuiFormRow label="Case ID">
-            <EuiFieldText
+          <EuiFormRow fullWidth label="Case ID">
+            <EuiFieldText fullWidth
               placeholder="Paste the archived case ID"
               value={reopenCaseId}
               onChange={(e) => setReopenCaseId(e.target.value)}

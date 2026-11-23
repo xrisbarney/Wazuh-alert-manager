@@ -1,4 +1,5 @@
 import { SourceFamily, WazuhSourceProfile } from '../source_profile';
+import type { ProjectionContext } from '../operational_projection';
 import { WAZUH4_ALERT_ADAPTER } from './wazuh4_alert_adapter';
 import { WAZUH5_FINDING_ADAPTER } from './wazuh5_finding_adapter';
 
@@ -24,8 +25,12 @@ export interface SourceAdapter {
   buildQuery(options: SourceQueryOptions): any;
   /** Sort used with PIT + search_after. `_doc` is the tiebreaker everywhere. */
   sortSpec(): any[];
-  /** Canonical bounded projection of a raw source hit. */
-  project(hit: any, now?: string): any;
+  /**
+   * Canonical bounded projection of a raw source hit. `context` carries the
+   * per-batch asset matcher and (4.x) cached agent groups; without it the
+   * record is still complete, with `asset.criticality: null`.
+   */
+  project(hit: any, now?: string, context?: ProjectionContext | null): any;
   /** Whether `minRuleLevel` is meaningful for this family. */
   readonly supportsNumericLevelFilter: boolean;
 }

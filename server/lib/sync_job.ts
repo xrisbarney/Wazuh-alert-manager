@@ -14,22 +14,57 @@ import { loadSyncSettings } from './sync_settings';
 import { sourceAdapter } from './adapters/source_adapter';
 import { persistSourceState, resolveSource, syncStateDocId } from './source_runtime';
 import { SourceFamily } from './source_profile';
+import { AgentGroupCache, AgentGroupLookup, loadAssetMatcher, NO_AGENT_GROUPS } from './assets';
+import type { ProjectionContext } from './operational_projection';
+import type { WazuhCoreSource } from './wazuh_api';
+import { REPORTING_DUE_SEED_SCRIPT } from './reporting_fields';
+import { getSlaPolicy } from './sla/policy';
+import type { SlaPolicy } from '../../common/types';
+import { reconcileNativeCases } from './native_case_reconcile';
+
+/**
+ * Optional collaborators of the sync job. `wazuhCore` is the optional plugin
+ * contract (agent groups on 4.x); `agentGroups` overrides the cache built
+ * from it (tests). Neither is required: without them every 4.x record gets
+ * `asset.groups: []`.
+ */
+export interface SyncJobDependencies {
+  wazuhCore?: WazuhCoreSource;
+  agentGroups?: AgentGroupLookup;
+}
 
 const RETIRED_ALERT_DOC_PREFIX = 'retired-alert:';
 const MAX_RETIREMENT_RECORDS = 1000;
+/** Meta doc id prefix of alert_retirement.ts's retirement records (`retirement:<physical index>`). */
+const RETIREMENT_RECORD_PREFIX = 'retirement:';
 const ARCHIVE_STATE_PRIORITY: Record<string, number> = { managed: 0, restored: 1, completed: 2, purging: 3, purged: 4 };
 
 // Fields this plugin writes onto an alert document and therefore must never let
 // a resync of the source alert overwrite. Keep in sync with the plugin-owned
 // properties in server/lib/mappings.ts (alertStatusMapping).
-const PLUGIN_OWNED_FIELDS = [
+export const PLUGIN_OWNED_FIELDS = [
   'ingested_at',
   'state_version',
   'status',
   'case_id',
   'assigned_to',
+  // Close outcome (step 2.4): written by the close paths only, top-level so
+  // the protection holds; a resync must never clear an analyst's disposition.
+  'disposition',
+  'closure_reason',
   'related_alert_ids',
   'ai_analysis',
+  // Stored enrichment verdicts (step 6.3): top-level so the protection holds.
+  'enrichment',
+  // Write-time reporting fields (timing, SLA verdict, due timestamps): the
+  // projection only carries the due timestamps and the upsert seeds those
+  // when absent (REPORTING_DUE_SEED_SCRIPT); nothing else may replay over them.
+  'reporting',
+  // SLA breach / escalation markers (step 3.3): the projection never emits
+  // them, but they must survive overlap replay.
+  'sla',
+  // NOTE: `asset` (step 6.4a) is intentionally absent: it is re-stamped from
+  // settings on every resync so a criticality change propagates.
   'updated_at',
   'updated_by',
   'history',
@@ -148,7 +183,10 @@ async function archivedAlertStates(client: any, alertIds: string[]): Promise<Map
       // _id prefix queries are not supported on _id; retire_by status is the
       // mapped discriminator. Activity retirement records share `completed`,
       // so the loop below skips anything whose retiring_index is not an alert
-      // generation.
+      // generation, and other meta documents with a `status` field (the SLA
+      // due-date backfill run, `sla_due_backfill`, is `completed` too) are
+      // skipped by their id: only `retirement:<index>` records are retirement
+      // metadata.
       query: { terms: { status: ['completed', 'restored', 'purging'] } },
       _source: ['status', 'retiring_index'],
     },
@@ -159,6 +197,7 @@ async function archivedAlertStates(client: any, alertIds: string[]): Promise<Map
   const total = typeof rawTotal === 'number' ? rawTotal : Number(rawTotal?.value ?? hits.length);
   if (total > hits.length) throw new Error(`Retirement metadata exceeds safe scan limit (${MAX_RETIREMENT_RECORDS})`);
   for (const hit of hits) {
+    if (typeof hit?._id !== 'string' || !hit._id.startsWith(RETIREMENT_RECORD_PREFIX)) continue;
     const record = hit._source || {};
     if (!['completed', 'restored', 'purging'].includes(record.status)) continue;
     if (typeof record.retiring_index !== 'string') {
@@ -224,12 +263,44 @@ async function deleteSourcePit(client: any, pitId: string): Promise<void> {
  * status/case/comment-history the plugin has already recorded on a
  * document is preserved even if that alert falls into a later sync window.
  */
+/**
+ * Build the per-batch projection context: the asset matcher is read once per
+ * batch (never per record) and, on 4.x only, the agent groups of every agent
+ * in the batch are resolved through the TTL cache. Both degrade to "nothing
+ * known" without failing the tick.
+ */
+async function buildProjectionContext(
+  client: any,
+  logger: Logger,
+  family: SourceFamily,
+  hits: any[],
+  agentGroups: AgentGroupLookup,
+  slaPolicy: SlaPolicy | null
+): Promise<ProjectionContext> {
+  const assets = await loadAssetMatcher(client, logger);
+  const context: ProjectionContext = { assets, agentGroups: null, slaPolicy };
+  if (family !== 'wazuh4_alerts') return context;
+  const ids = new Set<string>();
+  for (const hit of hits) {
+    const id = hit?._source?.agent?.id;
+    if (id != null && String(id).trim()) ids.add(String(id).trim());
+  }
+  if (!ids.size) return context;
+  try {
+    context.agentGroups = await agentGroups.lookup(ids);
+  } catch (e: any) {
+    logger.debug(`wazuh-alert-manager sync: agent group lookup skipped: ${e.message}`);
+  }
+  return context;
+}
+
 export async function runSyncOnce(
   client: any,
   config: AlertManagerConfigType,
   logger: Logger,
   holderId: string,
-  ttlSeconds: number
+  ttlSeconds: number,
+  deps: SyncJobDependencies = {}
 ) {
   // Decide which native family this build may read and whether it is there.
   // Anything other than `ready` stops this tick safely and is surfaced in
@@ -248,6 +319,9 @@ export async function runSyncOnce(
   }
   const family = source.family;
   const adapter = sourceAdapter(family);
+  // The SLA policy is read once per tick (cached, never throws) so every
+  // record projected in this tick gets its due timestamps from one policy.
+  const slaPolicy = await getSlaPolicy(client, logger);
   if (config.sync.minRuleLevel != null && !adapter.supportsNumericLevelFilter) {
     logger.debug(`wazuh-alert-manager sync: sync.minRuleLevel is ignored for ${family} (labelled severity)`);
   }
@@ -328,6 +402,9 @@ export async function runSyncOnce(
     } catch (e: any) {
       logger.debug(`wazuh-alert-manager sync: source PIT cleanup failed: ${e.message}`);
     }
+    // An idle window is still a completed window: native case edits on
+    // already-synced findings must not wait for new findings to arrive.
+    await reconcileNativeCasesAfterWindow(client, config, logger, holderId, ttlSeconds, family, source.pattern);
     return;
   }
 
@@ -345,14 +422,21 @@ export async function runSyncOnce(
     );
   }
 
-  // Re-validate we still hold the lock before writing - the search above can
-  // take long enough that another replica has already taken over the lease.
+  // Resolve the per-batch projection context (asset settings + 4.x agent
+  // groups) BEFORE the lease is re-checked: the group lookup talks to the
+  // Wazuh API and may stall, and the lock must be validated after every
+  // external wait, not before it.
+  const projectionContext = await buildProjectionContext(client, logger, family, hits, deps.agentGroups || NO_AGENT_GROUPS, slaPolicy);
+
+  // Re-validate we still hold the lock before writing - the search and the
+  // context lookup above can take long enough that another replica has
+  // already taken over the lease.
   if (!(await acquireOrRenewLock(client, holderId, ttlSeconds, logger))) {
     logger.warn('wazuh-alert-manager sync: lost the sync lock before bulk upsert, aborting this tick');
     return;
   }
 
-  const projected = hits.map((hit) => adapter.project(hit));
+  const projected = hits.map((hit) => adapter.project(hit, undefined, projectionContext));
   let existingLocations: Map<string, any>;
   let archivedStates: Map<string, string>;
   try {
@@ -452,6 +536,7 @@ export async function runSyncOnce(
           if (!ctx._source.containsKey('related_alert_ids')) {
             ctx._source.related_alert_ids = params.doc.related_alert_ids;
           }
+          ${REPORTING_DUE_SEED_SCRIPT}
         `,
         params: { doc, protected: PLUGIN_OWNED_FIELDS },
       },
@@ -569,12 +654,53 @@ export async function runSyncOnce(
     `wazuh-alert-manager sync: copied ${hits.length} alerts (${windowFrom} - ${windowTo}); ` +
       (batchFull ? 'window cursor checkpointed' : `watermark now ${windowTo}`)
   );
+  if (!batchFull) {
+    await reconcileNativeCasesAfterWindow(client, config, logger, holderId, ttlSeconds, family, source.pattern);
+  }
   return batchFull;
 }
 
-export function startSyncJob(client: any, config: AlertManagerConfigType, logger: Logger): () => void {
+/**
+ * 5.0 only (step 2.6): a native case edited in the Wazuh Cases app does not
+ * move the finding's @timestamp, so the sync window never re-reads it.
+ * Reconcile `native_case` for findings whose case changed since the last
+ * tick. Runs only after a window completed (empty or not), never while a
+ * backlog is being paged, and never blocks the main cursor, which is
+ * committed before this is called.
+ */
+async function reconcileNativeCasesAfterWindow(
+  client: any,
+  config: AlertManagerConfigType,
+  logger: Logger,
+  holderId: string,
+  ttlSeconds: number,
+  family: SourceFamily,
+  pattern: string
+): Promise<void> {
+  if (family !== 'wazuh5_findings') return;
+  try {
+    await reconcileNativeCases(client, config, logger, {
+      pattern,
+      renewLock: () => acquireOrRenewLock(client, holderId, ttlSeconds, logger),
+    });
+  } catch (e: any) {
+    logger.error(`wazuh-alert-manager sync: native case reconciliation failed: ${e.message}`);
+  }
+}
+
+export function startSyncJob(
+  client: any,
+  config: AlertManagerConfigType,
+  logger: Logger,
+  deps: SyncJobDependencies = {}
+): () => void {
   let stopped = false;
   const holderId = generateHolderId();
+  // One agent-group cache for the life of the job (10 minute TTL per agent id).
+  const runDeps: SyncJobDependencies = {
+    ...deps,
+    agentGroups: deps.agentGroups || new AgentGroupCache(deps.wazuhCore, { logger }),
+  };
   let holdingLock = false;
   // Guards against a tick still being in flight (e.g. a slow search/bulk)
   // when the next setInterval fire comes around, which would otherwise let
@@ -618,7 +744,7 @@ export function startSyncJob(client: any, config: AlertManagerConfigType, logger
           return;
         }
         holdingLock = true;
-        return runSyncOnce(client, config, logger, holderId, ttlSeconds)
+        return runSyncOnce(client, config, logger, holderId, ttlSeconds, runDeps)
           .then((batchFull) => { continueWindowImmediately = batchFull === true; });
       })
       .catch((e) => logger.error(`wazuh-alert-manager sync: unexpected error: ${e.message}`))

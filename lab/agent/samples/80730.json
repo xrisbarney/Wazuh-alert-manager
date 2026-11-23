@@ -1,0 +1,73 @@
+{
+  "_index": "wazuh-alerts-4.x-2026.11.21",
+  "_score": null,
+  "_source": {
+    "@timestamp": "2026-11-21T20:38:51.746Z",
+    "agent": {
+      "id": "001",
+      "ip": "10.0.2.15",
+      "name": "wam-lab-agent"
+    },
+    "data": {
+      "audit": {
+        "auid": "4294967295",
+        "command": "\"apparmor_parser\"",
+        "directory": {
+          "name": "\"/usr/lib/snapd/snap-confine//mount-namespace-capture-helper\""
+        },
+        "euid": "0",
+        "exe": "\"/usr/sbin/apparmor_parser\"",
+        "gid": "0",
+        "id": "1021",
+        "pid": "11745",
+        "session": "4294967295",
+        "type": "AVC",
+        "uid": "0"
+      }
+    },
+    "decoder": {
+      "name": "auditd"
+    },
+    "full_log": "type=AVC msg=audit(1795293530.735:1021): apparmor=\"STATUS\" operation=\"profile_replace\" info=\"same as current profile, skipping\" profile=\"unconfined\" name=\"/usr/lib/snapd/snap-confine//mount-namespace-capture-helper\" pid=11745 comm=\"apparmor_parser\" type=SYSCALL msg=audit(1795293530.735:1021): arch=c000003e syscall=1 success=yes exit=17177 a0=6 a1=5f6c72543260 a2=4319 a3=0 items=0 ppid=11743 pid=11745 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm=\"apparmor_parser\" exe=\"/usr/sbin/apparmor_parser\" subj=unconfined key=(null)\u001dARCH=x86_64 SYSCALL=write AUID=\"unset\" UID=\"root\" GID=\"root\" EUID=\"root\" SUID=\"root\" FSUID=\"root\" EGID=\"root\" SGID=\"root\" FSGID=\"root\" type=PROCTITLE msg=audit(1795293530.735:1021): proctitle=2F7573722F7362696E2F61707061726D6F725F706172736572002D2D706F6C6963792D6665617475726573002F6574632F61707061726D6F722E642F6162692F332E30002D2D7265706C616365002D2D77726974652D6361636865002D2D63616368652D6C6F633D2F7661722F63616368652F61707061726D6F72002D2D736B",
+    "id": "1795293531.1185117",
+    "input": {
+      "type": "log"
+    },
+    "location": "/var/log/audit/audit.log",
+    "manager": {
+      "name": "wazuh.manager"
+    },
+    "rule": {
+      "description": "Auditd: SELinux permission check.",
+      "firedtimes": 4,
+      "gdpr": [
+        "IV_30.1.g",
+        "IV_35.7.d"
+      ],
+      "groups": [
+        "audit",
+        "audit_selinux"
+      ],
+      "hipaa": [
+        "164.312.b"
+      ],
+      "id": "80730",
+      "level": 3,
+      "mail": false,
+      "nist_800_53": [
+        "AU.6"
+      ],
+      "pci_dss": [
+        "10.6.1"
+      ],
+      "tsc": [
+        "CC7.2",
+        "CC7.3"
+      ]
+    },
+    "timestamp": "2026-11-21T20:38:51.746+0000"
+  },
+  "sort": [
+    1795293531746
+  ]
+}

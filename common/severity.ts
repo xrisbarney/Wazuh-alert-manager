@@ -19,13 +19,32 @@ export type SeverityBand = typeof SEVERITY_BANDS[number];
 
 const BAND_RANK: Record<SeverityBand, number> = { informational: 0, low: 1, medium: 2, high: 3, critical: 4 };
 
+/**
+ * The inclusive 4.x `rule.level` range of each numeric band (`max` null =
+ * open-ended). `informational` has no numeric range. Every numeric
+ * threshold in the plugin derives from this table.
+ */
+export const BAND_LEVEL_RANGES: Readonly<Record<SeverityBand, { min: number; max: number | null } | null>> = {
+  informational: null,
+  low: { min: 0, max: 3 },
+  medium: { min: 4, max: 6 },
+  high: { min: 7, max: 11 },
+  critical: { min: 12, max: null },
+};
+
+/** The numeric level range of a band, null for `informational`. */
+export function bandLevelRange(band: SeverityBand): { min: number; max: number | null } | null {
+  return BAND_LEVEL_RANGES[band];
+}
+
 /** Band of a 4.x numeric level; null when the level is absent or not a number. */
 export function bandFromLevel(level: unknown): SeverityBand | null {
   const n = typeof level === 'number' ? level : typeof level === 'string' && /^\d+$/.test(level.trim()) ? Number(level) : NaN;
   if (!Number.isFinite(n)) return null;
-  if (n >= 12) return 'critical';
-  if (n >= 7) return 'high';
-  if (n >= 4) return 'medium';
+  for (const band of ['critical', 'high', 'medium'] as const) {
+    const range = BAND_LEVEL_RANGES[band];
+    if (range && n >= range.min) return band;
+  }
   return 'low';
 }
 
@@ -42,6 +61,11 @@ const LABEL_ALIASES: Record<string, SeverityBand> = {
   critical: 'critical',
   severe: 'critical',
 };
+
+/** Every 5.0 label (canonical name and aliases, lower-case) that maps to a band. */
+export function labelsOfBand(band: SeverityBand): string[] {
+  return Object.keys(LABEL_ALIASES).filter((label) => LABEL_ALIASES[label] === band);
+}
 
 /** Band of a 5.0 severity label; null when absent or unrecognized (never guessed). */
 export function bandFromLabel(label: unknown): SeverityBand | null {

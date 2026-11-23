@@ -1,3 +1,44 @@
+// Wazuh Alert Manager stylesheet.
+//
+// The dashboard compiles this file once per theme with that theme's EUI Sass
+// variables prepended, so every colour, border and size below comes from an
+// EUI token ($euiColor*, $euiBorderThin, $euiSize*) and light / dark themes
+// come out of the same rules. The few plugin tokens live in the first block.
+// Every class is prefixed `wam`; rules are grouped by area:
+//   1. tokens            2. app shell          3. queues and tables
+//   4. filter bar        5. flyouts (case, alert, shared pieces)
+//   6. attack graph      7. settings           8. reporting
+//   9. narrow screens
+
+// ---------------------------------------------------------------------------
+// 1. Tokens
+// ---------------------------------------------------------------------------
+$wamChromeHeight: 48px;          // dashboard header the sticky bars sit under
+$wamWorkbenchHeaderHeight: 104px; // intro icon row + spacer + tab row
+$wamRadiusPanel: 12px;           // page content, intro icon, attack-graph panel
+$wamRadiusCard: 10px;            // stat tiles, filter bar, settings cards
+$wamSettingsNavWidth: 220px;
+$wamCaseNavWidth: 160px;
+$wamCaseNavWidthExpanded: 200px;
+$wamCaseNavRailWidth: 48px;       // collapsed case nav (icons only)
+$wamMetaLabelWidth: 160px;       // one label column for both flyouts' lists
+$wamBreakpointNarrow: 768px;     // EUI "m" breakpoint
+$wamBreakpointMedium: 1100px;
+// Severity ramp of the queue row border: same hues as SEVERITY_HEX in
+// public/design.ts. EUI has no token between warning and danger, so "high"
+// keeps the orange mid-tone that reads on both themes.
+$wamSeverityCritical: $euiColorDanger;
+$wamSeverityHigh: #f5892e;
+$wamSeverityMedium: $euiColorWarning;
+$wamSeverityLow: $euiColorMediumShade;
+// Lifecycle hues of the status filter buttons: same families as STATUS_HEX.
+$wamStatusOpen: $euiColorPrimary;
+$wamStatusInProgress: $euiColorVis3;
+$wamStatusClosed: $euiColorDarkShade;
+
+// ---------------------------------------------------------------------------
+// 2. App shell: page background, workbench header, tabs, content panel
+// ---------------------------------------------------------------------------
 .wamApp {
   background: linear-gradient(180deg, rgba($euiColorPrimary, 0.035), transparent 240px);
   min-height: 100%;
@@ -6,46 +47,134 @@
 .wamPageIntro__icon {
   align-items: center;
   background: rgba($euiColorPrimary, 0.1);
-  border-radius: 12px;
+  border-radius: $wamRadiusPanel;
   color: $euiColorPrimary;
   display: inline-flex;
-  height: 48px;
+  height: $wamChromeHeight;
   justify-content: center;
-  width: 48px;
-}
-
-.wamWorkbenchTabs {
-  padding: 0 8px;
+  width: $wamChromeHeight;
 }
 
 .wamWorkbenchHeader {
-  // Empty-shade is the theme-aware content surface. Wazuh's page-background
-  // token can remain dark in light mode, which makes inherited text illegible.
-  // Use the Sass theme variable: the dashboard compiles this file once per
-  // theme with that theme's EUI colours prepended. The previous
-  // var(--euiColorEmptyShade, …) form never resolved (OUI emits no CSS custom
-  // properties), so it always fell back to #fff - a white header in dark mode.
+  // Empty-shade is the theme-aware content surface (Wazuh's page-background
+  // token can stay dark in light mode). Same horizontal inset as the content
+  // panel's padding (EuiPageContent paddingSize l) so the text lines up.
   background: $euiColorEmptyShade;
+  padding: 0 $euiSizeL;
   position: sticky;
-  top: 48px;
+  top: $wamChromeHeight;
   z-index: 20;
+}
+
+// Reporting has no tab strip; keep the gap the tabs would have left.
+.wamWorkbenchHeader--noTabs {
+  padding-bottom: $euiSizeM;
+}
+
+.wamWorkbenchTabs {
+  padding: 0;
+}
+
+// The first tab pulls back its own padding so the tab text, the header icon
+// and the content panel's text share one left edge.
+.wamWorkbenchTabs > .euiTab:first-child {
+  margin-left: -$euiSize;
+}
+
+.wamPageContent {
+  border-radius: $wamRadiusPanel;
+  box-shadow: 0 $euiSizeS $euiSizeXL rgba($euiShadowColor, 0.08);
 }
 
 .wamGlobalToasts {
   z-index: 10000 !important;
 }
 
-.wamPageContent {
-  border-radius: 12px;
-  box-shadow: 0 8px 28px rgba($euiShadowColor, 0.08);
+// Export CSV buttons (alerts queue header, cases toolbar): keep the label on
+// one line while the button shows its loading spinner.
+.wamExportButton {
+  white-space: nowrap;
 }
 
+// ---------------------------------------------------------------------------
+// 3. Queues and tables: stat tiles, result line, queue tables, row cells,
+//    the badges that appear in queue cells, status / SLA filter buttons
+// ---------------------------------------------------------------------------
 .wamQueueStats .euiPanel {
-  border-radius: 10px;
+  border-radius: $wamRadiusCard;
+  height: 100%;
   min-height: 64px;
 }
 
+.wamQueueStats > .euiFlexItem {
+  min-width: 140px;
+}
+
 .wamQueueStats .euiStat__description {
+  white-space: nowrap;
+}
+
+// "Showing x-y of n" line: one height on both queues.
+.wamQueueResults {
+  align-items: center;
+  display: flex;
+  min-height: $euiSizeL;
+}
+
+.wamQueueEmpty {
+  padding: $euiSizeXL 0;
+}
+
+// The bulk-actions bar and the results line never grow past the table
+// (step 10.2): both are block-level, wrap their controls and keep to the
+// queue's width.
+.wamBulkActions {
+  margin-bottom: $euiSizeS;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.wamQueueResults {
+  max-width: 100%;
+  min-width: 0;
+}
+
+// Queue wrappers (alerts, cases). Both queues are EuiDataGrids (steps 13.1
+// and 13.2): every column but the primary one (alerts Rule, cases Title)
+// starts at a fixed width from QUEUE_COLUMN_WIDTH in queue_chrome.tsx, and
+// the primary column is the one that grows. Its floor is not set here either:
+// QueueGrid sizes the flexible column itself (`flexibleColumnWidth` in
+// queue_grid.tsx, floor `FLEX_COLUMN_MIN_WIDTH` = 180px) from the measured
+// grid width, so EUI's own unsized-column fallback never applies. The
+// arithmetic in queue_chrome.tsx (queueTableMinWidth, QUEUE_PRIMARY_MIN_WIDTH
+// = the 210px design floor at 1280px) is what the width tests assert about
+// the default widths, not the runtime floor.
+.wamQueueTable {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+// EuiBasicTable's own pagination bar is an EuiFlexGroup gutterSize="l" with
+// -12px side margins (no class hook), which overflows this scrolling wrapper
+// by 12px at every width and forces a horizontal scrollbar even when the
+// table fits (found by e2e/queue_layout.spec.ts, step 10.4). The table's own
+// column lives in the first child div and holds no flex group.
+.wamQueueTable > div > .euiFlexGroup {
+  margin-left: 0;
+  margin-right: 0;
+
+  > .euiFlexItem:first-child {
+    margin-left: 0;
+  }
+
+  > .euiFlexItem:last-child {
+    margin-right: 0;
+  }
+}
+
+// Narrow timestamp cells (alerts When, cases Updated): relative age on one
+// line, the absolute value is the tooltip.
+.wamQueueTimestamp {
   white-space: nowrap;
 }
 
@@ -53,15 +182,42 @@
   white-space: nowrap;
 }
 
-.wamAlertTable {
-  overflow-x: auto;
+// Queue grid (step 13.1): the alerts queue is an EuiDataGrid, which is
+// virtualized and renders no row element - its cells are absolutely
+// positioned and there is no `<tr>`. So the row's left severity border lives
+// on the first visible column's cell (`.wamAlertRow`), every cell of the row
+// carries `.wamAlertCell` plus the row id, and the clickable surface is the
+// content wrapper the grid puts inside each cell.
+.wamQueueGridWrapper {
+  max-width: 100%;
 }
 
-.wamAlertTable .euiTableHeaderCell {
-  background: inherit;
-  position: sticky;
-  top: 0;
-  z-index: 2;
+.wamQueueGridCell {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+}
+
+// The grid clips its cells itself; without this the two-line primary stack
+// (name over rule id / IP) pushes a scrollbar into every cell. With a
+// `rowHeightsOptions` default height EUI renders `__contentByHeight` instead
+// of `__content` (step 13.3): that wrapper is a flex item with `min-width:
+// auto`, so a long title grew the cell's content past the column and its
+// link's centre landed under the next cell, where the click was swallowed.
+.wamQueueGrid .euiDataGridRowCell__content,
+.wamQueueGrid .euiDataGridRowCell__contentByHeight {
+  overflow: hidden;
+  min-width: 0;
+}
+
+.wamQueueGridEmptyRow {
+  padding: $euiSizeS 0;
+}
+
+.wamGridToolbarButton {
+  white-space: nowrap;
 }
 
 .wamAlertRow {
@@ -69,25 +225,47 @@
   transition: background-color 120ms ease, transform 120ms ease;
 }
 
-.wamAlertRow:hover {
+// Whole-row hover: the grid is virtualized and has no row element, so
+// QueueGrid stamps every cell of the hovered row with this class (a bare
+// `:hover` here would light up only the cell under the cursor).
+.wamQueueGridCell--rowHover {
   background-color: rgba($euiColorPrimary, 0.045);
+}
+
+.wamAlertRow--critical { border-left-color: $wamSeverityCritical; }
+.wamAlertRow--high { border-left-color: $wamSeverityHigh; }
+.wamAlertRow--medium { border-left-color: $wamSeverityMedium; }
+.wamAlertRow--low { border-left-color: $wamSeverityLow; }
+.wamAlertRow--informational { border-left-color: $wamSeverityLow; }
+
+// The case queue (step 13.2) is the same grid, so its row anchor carries the
+// band border of the case severity (`CaseSeverity`, not a rule level).
+.wamCaseRow {
+  border-left: 3px solid transparent;
+  transition: background-color 120ms ease, transform 120ms ease;
+}
+
+.wamCaseRow--critical { border-left-color: $wamSeverityCritical; }
+.wamCaseRow--high { border-left-color: $wamSeverityHigh; }
+.wamCaseRow--medium { border-left-color: $wamSeverityMedium; }
+.wamCaseRow--low { border-left-color: $wamSeverityLow; }
+
+// The Alert ID column (hidden by default) reads as an identifier.
+.wamQueueMonospace {
+  font-family: $euiCodeFontFamily;
+  @include euiFontSizeXS;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .wamClickableRow {
   cursor: pointer;
 }
 
-.wamClickableRow:hover {
-  background-color: rgba($euiColorPrimary, 0.045);
-}
-
 .wamClickableRow:focus {
   outline: 2px solid $euiColorPrimary;
   outline-offset: -2px;
-}
-
-.wamCaseTable {
-  overflow-x: auto;
 }
 
 .wamTablePrimary {
@@ -105,6 +283,19 @@
   white-space: nowrap;
 }
 
+// Step 13.3: the link on the primary line has to truncate itself, not just be
+// clipped by the `strong` around it. An EuiLink renders a button that keeps its
+// full intrinsic width, so on a narrow Title column its centre lands under the
+// next grid cell and the case title cannot be clicked at all.
+.wamTablePrimary strong > .euiLink {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
 .wamTableSecondary {
   @include euiFontSizeXS;
   color: $euiTextSubduedColor;
@@ -117,28 +308,214 @@
   word-break: break-word;
 }
 
-.wamDocumentFields .euiTableRowCell {
-  vertical-align: top;
-}
-
-.wamAlertFlyoutTabs > .euiTabs,
-.wamReportTabs > .euiTabs,
-.wamSettingsTabs > .euiTabs {
+// Status cell: status badge + disposition badge (step 2.4).
+//
+// No wrapping (step 13.3): the queue grid clips `.euiDataGridRowCell__content*`
+// so a two-line primary stack cannot push a scrollbar into the cell, and a
+// closed record's two badges (20px each, 4px gap = 44px) would not fit the
+// 32px content box of a compact 44px row - the disposition badge was clipped
+// away entirely. Kept on one line both badges stay readable; the disposition
+// one truncates instead (EuiBadge is already `max-width: 100%`).
+.wamStatusCell {
+  display: inline-flex;
+  align-items: center;
   flex-wrap: nowrap;
+  min-width: 0;
   max-width: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
+  gap: $euiSizeXS;
 }
 
-.wamAlertFlyoutTabs > .euiTabs .euiTab,
-.wamReportTabs > .euiTabs .euiTab,
-.wamSettingsTabs > .euiTabs .euiTab {
-  flex: 0 0 auto;
+.wamStatusCell > .wamDispositionQueueBadge {
+  min-width: 0;
 }
 
+.wamDispositionBadge,
+.wamEnrichmentBadge,
+.wamAssetBadge {
+  display: inline-flex;
+  align-items: center;
+}
+
+.wamDispositionQueueBadge,
+.wamNativeCaseQueueBadge {
+  vertical-align: middle;
+}
+
+.wamEnrichmentQueueBadge,
+.wamAssetQueueBadge {
+  margin-left: $euiSizeXS;
+  vertical-align: middle;
+}
+
+// Step 13.3: agent IP + criticality chip on one line, so the Agent / IP cell
+// is two lines tall and fits the compact row height without being clipped.
+.wamAgentMetaLine {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.wamAgentMetaIp {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wamAgentMetaLine .wamAssetQueueBadge {
+  flex-shrink: 0;
+}
+
+.wamEnrichmentBadges,
+.wamAssetChips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: $euiSizeXS;
+}
+
+.wamEnrichmentVerdict--malicious { color: $euiColorDanger; }
+.wamEnrichmentVerdict--suspicious { color: $euiColorWarning; }
+.wamEnrichmentVerdict--clean { color: $euiColorSuccess; }
+
+// Case cell of the alert queue: case link + native case badge (step 2.6).
+// A flex column (step 10.2): the badge is constrained to the cell width and
+// truncates its text with an ellipsis (EuiBadge's own .euiBadge__text rule)
+// instead of overflowing into the Actions column; the native-case chip wraps
+// under the badge rather than beside it. The full title stays in `title`.
+.wamCaseCell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: $euiSizeXS;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+}
+
+.wamCaseCell .euiBadge {
+  max-width: 100%;
+}
+
+.wamCaseCell .euiBadge + .euiBadge {
+  margin-left: 0;
+}
+
+// Due timestamps (step 3.2): countdown + breach badge in the queues and
+// flyouts.
+.wamSlaDue {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: $euiSizeXS;
+  white-space: nowrap;
+}
+
+.wamSlaDue--none {
+  color: $euiTextSubduedColor;
+}
+
+.wamSlaDue--breached .wamSlaDue__text {
+  color: $euiColorDanger;
+  font-weight: $euiFontWeightSemiBold;
+}
+
+.wamSlaDue--due_soon .wamSlaDue__text {
+  color: $euiColorWarningText;
+  font-weight: $euiFontWeightSemiBold;
+}
+
+.wamSlaDue__label,
+.wamSlaDue__absolute {
+  color: $euiTextSubduedColor;
+  @include euiFontSizeXS;
+}
+
+.wamSlaDueLine {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $euiSizeM;
+}
+
+.wamSlaEscalated {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: $euiSizeXS;
+  align-items: center;
+}
+
+.wamSlaEscalated__label {
+  font-weight: $euiFontWeightSemiBold;
+  margin-right: $euiSizeXS * 0.5;
+}
+
+// "3/7 tasks" chip shared by the case flyout header and the case queue.
+.wamCaseTasksChip {
+  white-space: nowrap;
+}
+
+// Status filter buttons (Open / In progress / Closed). A selected status is
+// obvious at a glance: its lifecycle colour as a dot, a tinted background and
+// an underline, in the same hues as StatusBadge / STATUS_HEX.
+.wamStatusFilter {
+  position: relative;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.wamStatusFilter .euiFilterButton__textShift::before,
+.wamStatusFilter .euiFilterButton__text::before {
+  content: '';
+  display: inline-block;
+  width: $euiSizeS;
+  height: $euiSizeS;
+  border-radius: 50%;
+  margin-right: $euiSizeS * 0.75;
+  vertical-align: middle;
+  background: currentColor;
+  opacity: 0.35;
+}
+
+.wamStatusFilter--active .euiFilterButton__textShift::before,
+.wamStatusFilter--active .euiFilterButton__text::before {
+  opacity: 1;
+}
+
+.wamStatusFilter--active {
+  font-weight: $euiFontWeightSemiBold;
+  box-shadow: inset 0 -3px 0 0 currentColor;
+}
+
+.wamStatusFilter--open.wamStatusFilter--active {
+  color: $wamStatusOpen;
+  background-color: rgba($wamStatusOpen, 0.14);
+}
+
+.wamStatusFilter--in_progress.wamStatusFilter--active {
+  color: $wamStatusInProgress;
+  background-color: rgba($wamStatusInProgress, 0.16);
+}
+
+.wamStatusFilter--closed.wamStatusFilter--active {
+  color: $wamStatusClosed;
+  background-color: rgba($wamStatusClosed, 0.22);
+}
+
+.wamStatusFilter--active .euiNotificationBadge {
+  background-color: currentColor;
+}
+
+// SLA quick filters (Breached / Due soon).
+.wamSlaFilter--active.wamSlaFilter--breached {
+  color: $euiColorDanger;
+}
+
+.wamSlaFilter--active.wamSlaFilter--due_soon {
+  color: $euiColorWarningText;
+}
+
+// ---------------------------------------------------------------------------
+// 4. Filter bar: query row (search | time | apply), structured filters
+// ---------------------------------------------------------------------------
 .wamFilterBar {
-  border-radius: 10px;
+  border-radius: $wamRadiusCard;
 }
 
 .wamQueryRow .euiFormRow,
@@ -160,285 +537,1008 @@
   white-space: nowrap;
 }
 
-.wamFilterPending {
-  margin-top: 4px;
-}
-
-.wamStructuredFilters > .euiFlexItem {
-  flex-basis: 140px;
-}
-
 .wamTimePopover {
   width: 320px;
 }
 
 .wamTimePopover .euiButtonEmpty {
   justify-content: flex-start;
+  width: 100%;
 }
 
-.wamReportStats .euiPanel,
-.wamOutcomeStats .euiPanel {
-  border-radius: 10px;
-  height: 100%;
+.wamFilterPending {
+  margin-top: $euiSizeXS;
 }
 
-.wamReportDatePicker {
-  min-width: 340px;
-}
-
-.wamReportCharts .euiPanel {
-  border-radius: 10px;
-  height: 100%;
-  min-height: 320px;
-}
-
-.wamSettingsSection {
-  padding-top: 20px;
-}
-
-.wamSyncSettingsPanel {
-  border-radius: 10px;
-  max-width: 680px;
-}
-
-.wamSettingsIcon {
-  align-items: center;
-  background: rgba($euiColorPrimary, 0.1);
-  border-radius: 8px;
-  color: $euiColorPrimary;
-  display: inline-flex;
-  height: 40px;
-  justify-content: center;
-  width: 40px;
-}
-
-.wamSettingsLoading {
-  align-items: center;
-  display: flex;
-  justify-content: center;
-  min-height: 180px;
-}
-
-.wamSyncHealthPanel {
-  border-radius: 10px;
-  max-width: 680px;
-}
-
-.wamDonut__value {
-  @include euiTitle('m');
-  @include euiNumberFormat;
-  fill: $euiTextColor;
-}
-
-.wamDonut__label {
-  @include euiFontSizeXS;
-  fill: $euiColorDarkShade;
-}
-
-.wamDonut__swatch {
-  border-radius: 2px;
-  display: inline-block;
-  height: 10px;
-  width: 10px;
-}
-
-.wamDonut__count {
-  @include euiNumberFormat;
-  font-weight: $euiFontWeightSemiBold;
-}
-
-.wamDonut__pct {
-  @include euiNumberFormat;
-}
-
-.wamDeltaChip {
-  @include euiNumberFormat;
-  font-weight: $euiFontWeightSemiBold;
-}
-
-.wamDonut__empty {
-  stroke: $euiColorLightShade;
-}
-
-.wamAutomationHealth {
-  border-radius: 10px;
-}
-
-.wamAutomationStats .euiPanel {
-  min-width: 120px;
-}
-
-.wamAutomationSettings {
-  margin-top: 12px;
-}
-
-.wamEntityGroup {
-  border-left: 4px solid $euiColorPrimary;
-}
-
-.wamRuleOperator {
-  align-items: center;
-  display: flex;
-  justify-content: center;
-  min-height: 34px;
-}
-
-.wamPredicateRow > .euiFlexItem {
+// Structured filters: one grid with equal gutters. Inputs share a basis,
+// chip groups keep their natural width, the auto-refresh switch sits at the
+// right end on the control baseline.
+.wamStructuredFilters__item {
+  flex: 1 1 150px;
   min-width: 150px;
 }
 
-.wamPredicateRow > .euiFlexItem:last-child {
-  min-width: auto;
-  padding-bottom: 8px;
+.wamStructuredFilters__item--narrow {
+  flex: 0 1 100px;
+  max-width: 120px;
+  min-width: 90px;
 }
 
-.wamRuleSummary {
-  overflow-wrap: anywhere;
+.wamStructuredFilters__chips {
+  flex: 0 0 auto;
 }
 
-.wamHelpText {
-  color: $euiColorPrimary;
+.wamStructuredFilters__refresh {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.wamStructuredFilters .euiFormRow--hasEmptyLabelSpace {
+  justify-content: flex-end;
+}
+
+// ---------------------------------------------------------------------------
+// 5. Flyouts
+// ---------------------------------------------------------------------------
+
+// 5a. Shared pieces: the Overview meta list, the history row grid, panel
+// title rows, the asset context chips and the native case chip.
+
+// One label column for the Overview lists (case + alert flyouts), the alert
+// Fields table and the history / related rows, so their value columns share
+// a left edge.
+.wamMetaList.euiDescriptionList--column > .euiDescriptionList__title {
+  width: $wamMetaLabelWidth;
+  flex: 0 0 $wamMetaLabelWidth;
+  padding-right: $euiSizeM;
+}
+
+.wamMetaList.euiDescriptionList--column > .euiDescriptionList__description {
+  width: calc(100% - #{$wamMetaLabelWidth});
+  flex: 1 1 calc(100% - #{$wamMetaLabelWidth});
+  min-width: 0;
+}
+
+// The Overview row already carries the "Escalated" title; the component's own
+// inline label is for the flyout header, where it stands on a line of its own.
+.wamMetaList .wamSlaEscalated__label {
+  display: none;
+}
+
+.wamMetaList__inline {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: $euiSizeS;
+}
+
+.wamMetaList__muted {
+  color: $euiTextSubduedColor;
   @include euiFontSizeXS;
-  cursor: help;
-  text-decoration: underline dotted;
 }
 
-.wamPreviewStats > .euiFlexItem {
-  flex-basis: 140px;
+.wamMetaList__link.euiButtonEmpty {
+  height: auto;
 }
 
-.wamRepresentativeAlerts {
+.wamMetaList__link .euiButtonEmpty__content {
+  padding: 0;
+}
+
+// Overview meta grid (step 11.6, `meta_grid.tsx`): a <dl> of label | value
+// rows on a two-column grid, grouped under a small uppercase title, a 1px
+// hairline between the rows of a group and $euiSizeM between groups. The
+// label column is the `--wamMetaLabelWidth` variable: 120px in the alert
+// flyout, 140px in the case flyout. The `wamMetaList__*` helpers above keep
+// working inside a row. Below 480px of content width (a container query on
+// the flyout content columns, not the window) the rows stack label over
+// value.
+.wamMetaGrid {
+  --wamMetaLabelWidth: #{$wamMetaLabelWidth};
+  margin: 0;
+}
+
+// One <dl> per group (dl > div.wamMetaGrid__row > dt + dd keeps the content
+// model valid); the list itself draws nothing.
+.wamMetaGrid__rows {
+  margin: 0;
+}
+
+.wamMetaGrid__group + .wamMetaGrid__group {
+  margin-top: $euiSizeM;
+}
+
+.wamMetaGrid__groupTitle {
+  letter-spacing: 0.06em;
+  margin-bottom: $euiSizeXS;
+  text-transform: uppercase;
+}
+
+.wamMetaGrid__row {
+  align-items: baseline;
+  column-gap: $euiSizeM;
+  display: grid;
+  grid-template-columns: var(--wamMetaLabelWidth) minmax(0, 1fr);
+  min-height: 28px;
+  padding: $euiSizeXS 0;
+}
+
+.wamMetaGrid__row + .wamMetaGrid__row {
+  border-top: $euiBorderThin;
+}
+
+.wamMetaGrid--compact .wamMetaGrid__row {
+  min-height: 24px;
+  padding: 2px 0;
+}
+
+.wamMetaGrid__label,
+.wamMetaGrid__value {
+  margin: 0;
+  min-width: 0;
+}
+
+.wamMetaGrid__value .wamMetaList__inline {
+  // Badges and chips sit on the row's baseline next to text.
+  vertical-align: baseline;
+}
+
+// Value classes that used to style the description element itself now sit
+// on the <dd>, whose content is wrapped by EuiText: the layout rules apply
+// to the content box so the two SLA chips keep their gap and the record id
+// reads in the code font.
+.wamMetaGrid__value.wamSlaDueLine {
+  display: block;
+}
+
+.wamMetaGrid__value.wamSlaDueLine .wamMetaGrid__content {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin: 8px 0;
+  gap: $euiSizeM;
 }
 
-.wamRuleIdentity {
+.wamMetaGrid__value.wamAlertId .wamMetaGrid__content {
+  font-family: $euiCodeFontFamily;
+}
+
+.wamAlertFlyout .wamMetaGrid {
+  --wamMetaLabelWidth: 120px;
+}
+
+.wamCaseFlyout .wamMetaGrid {
+  --wamMetaLabelWidth: 140px;
+}
+
+@container (max-width: 480px) {
+  .wamMetaGrid__row {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 2px;
+  }
+}
+
+// Audit history (alert + case flyouts), comments and related alerts:
+// time | actor + action on a two-column grid aligned with the meta list.
+.wamHistoryList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.wamHistoryRow {
+  display: grid;
+  grid-template-columns: $wamMetaLabelWidth minmax(0, 1fr);
+  column-gap: $euiSizeM;
+  align-items: baseline;
+  padding: $euiSizeS 0;
+  border-bottom: $euiBorderThin;
+}
+
+.wamHistoryRow:last-child {
+  border-bottom: none;
+}
+
+// Rows that carry actions (related alerts): a third, right-aligned column
+// the width of the Fields table's Filter column.
+.wamHistoryRow--actions {
+  grid-template-columns: $wamMetaLabelWidth minmax(0, 1fr) auto;
+}
+
+.wamHistoryRow__time {
+  color: $euiTextSubduedColor;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  @include euiFontSizeXS;
+}
+
+.wamHistoryRow__body {
+  min-width: 0;
+}
+
+.wamHistoryRow__actor {
+  font-weight: $euiFontWeightSemiBold;
+}
+
+.wamHistoryRow__details,
+.wamCommentText {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wamHistoryRow__actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: $euiSizeXS;
+  min-width: 82px;
+}
+
+.wamHistoryRow__chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: $euiSizeXS;
+  margin-top: $euiSizeXS;
+}
+
+// Bordered panels with a title row (indicators, enrichment, AI, related).
+.wamPanelHeader {
+  min-height: $euiSizeXL;
+}
+
+.wamPanelHeader .euiTitle {
+  line-height: $euiSizeXL;
+}
+
+.wamAiAnalysisText {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+// Asset context chips (step 6.4b): compact states row in the flyout header.
+.wamAssetContext {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $euiSizeXS;
+  margin-top: $euiSizeS;
+}
+
+.wamAssetContextLabel {
+  font-weight: $euiFontWeightSemiBold;
+  margin-right: $euiSizeXS;
+}
+
+.wamAssetContextChip {
+  max-width: 100%;
+}
+
+.wamAssetContextChip--empty,
+.wamAssetContextChip--no_access,
+.wamAssetContextChip--not_available,
+.wamAssetContextChip--error,
+.wamAssetContextChip--loading {
+  color: $euiTextSubduedColor;
+}
+
+.wamAssetContextChipTitle {
+  font-weight: $euiFontWeightSemiBold;
+}
+
+.wamAssetContextLinks {
+  display: inline-flex;
+  gap: $euiSizeS;
+  margin-left: $euiSizeXS;
+  @include euiFontSizeXS;
+}
+
+// Compact count badges (step 11.4): in the case header summary line and on
+// each Assets row title.
+.wamAssetContextCounts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $euiSizeXS;
+}
+
+// Case header asset summary (step 11.4): one line, a button into the Assets section.
+.wamCaseAssetSummaryLine {
+  margin-top: $euiSizeS;
+}
+
+.wamCaseAssetSummary {
+  // OUI wraps the children in `.euiButtonEmpty__text`, so the gap sits on the
+  // agents span rather than on the button content wrapper.
+  .euiButtonEmpty__text,
+  .euiButtonContent {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: $euiSizeXS;
+  }
+}
+
+.wamCaseAssetSummary__agents {
+  font-weight: $euiFontWeightSemiBold;
+  margin-right: $euiSizeXS;
+}
+
+// Case Assets section (step 11.4): one accordion per distinct agent.
+.wamCaseAssets__intro {
+  margin-bottom: $euiSizeS;
+}
+
+.wamCaseAssetRow {
+  border-bottom: $euiBorderThin;
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  .wamAssetContext {
+    margin-top: 0;
+  }
+}
+
+.wamCaseAssetRow__button {
+  padding: $euiSizeS 0;
+}
+
+.wamCaseAssetRow__title {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $euiSizeS;
+}
+
+.wamCaseAssetRow__name {
+  font-weight: $euiFontWeightSemiBold;
+}
+
+.wamCaseAssetRow__id {
+  color: $euiTextSubduedColor;
+  @include euiFontSizeXS;
+}
+
+.wamAssetFlyoutBadge {
+  margin-left: $euiSizeS;
+  vertical-align: middle;
+}
+
+// Native case (step 2.6): read-only wazuh.case.* projection, 5.0 builds only.
+.wamNativeCaseChip {
+  display: flex;
+  flex-direction: column;
+  gap: $euiSizeXS;
+}
+
+.wamNativeCaseChip__badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: $euiSizeXS;
+  align-items: center;
+}
+
+.wamNativeCaseChip__title {
+  word-break: break-word;
+}
+
+.wamNativeCaseChip__footer {
+  line-height: 1.4;
+}
+
+// Indicators (step 6.1): alert flyout Overview block and case Indicators tab.
+.wamIndicatorsBlock {
+  min-width: 0;
+}
+
+.wamIndicatorGroup + .wamIndicatorGroup {
+  margin-top: $euiSizeXS;
+}
+
+.wamIndicatorRow {
+  min-height: 28px;
+}
+
+.wamIndicatorValue {
+  @include euiCodeFont;
+  font-size: $euiFontSizeXS;
+  word-break: break-all;
+}
+
+.wamIndicatorCopy {
+  margin-right: $euiSizeXS * 0.5;
+}
+
+.wamIndicatorHints .euiBadge + .euiBadge {
+  margin-left: $euiSizeXS;
+}
+
+// Indicator tables (step 10.5a): case Indicators section and alert Enrichment
+// tab. `tableLayout="auto"` with no fixed widths; the narrow columns (type,
+// counts, timestamps) stay on one line and size to their content, Value
+// grows with a 160px floor and breaks anywhere so hashes fit, the badge
+// columns wrap their badges inside the cell, Actions never wraps and sits
+// right-aligned. Below 1100px of content width the case table folds the two
+// timestamp columns into one (`useIndicatorTableCompact`).
+.wamIndicatorTable .wamIndicatorTable__narrow,
+.wamIndicatorTable .wamIndicatorTable__actions {
+  white-space: nowrap;
+}
+
+// EuiBasicTable puts a column className on the cell's .euiTableCellContent
+// (see step 10.2): in auto layout that content floor becomes the column's.
+.wamIndicatorTable .wamIndicatorTable__value {
+  min-width: 160px;
+}
+
+.wamIndicatorTable .euiTableHeaderCell .euiTableCellContent__text {
+  white-space: nowrap;
+}
+
+.wamIndicatorValueCell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $euiSizeXS;
+  min-width: 0;
+}
+
+.wamIndicatorValueCell .wamIndicatorValue {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.wamIndicatorTable .wamIndicatorTable__badges .wamIndicatorHints,
+.wamIndicatorTable .wamIndicatorTable__badges .wamEnrichmentBadges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: $euiSizeXS;
+}
+
+.wamIndicatorTable .wamIndicatorTable__badges .wamIndicatorHints .euiBadge + .euiBadge {
+  margin-left: 0;
+}
+
+.wamEnrichmentActions {
+  flex-wrap: nowrap;
+}
+
+// Enrichment sources (step 10.5d): name above the id, the queue's
+// primary / secondary pattern, so the cell never wraps the id beside the name.
+// The table is tableLayout="auto" (like the indicator tables), so this
+// content floor becomes the Source column's floor; under EuiBasicTable's
+// default fixed layout it would only bleed into the Kind column (see the
+// .wamQueueTable note above).
+.wamEnrichmentSourceTable .wamEnrichmentSourceTable__name {
   min-width: 180px;
 }
 
-// Same ramp as SEVERITY_HEX in public/design.ts; mid-tones that read on both themes.
-.wamAlertRow--critical { border-left-color: #bd271e; }
-.wamAlertRow--high { border-left-color: #f5892e; }
-.wamAlertRow--medium { border-left-color: #fec514; }
-.wamAlertRow--low { border-left-color: #98a2b3; }
+.wamEnrichmentSourceTable .wamTablePrimary strong .euiBadge {
+  margin-left: $euiSizeXS;
+  vertical-align: middle;
+}
 
-@media (min-width: 769px) and (max-width: 1100px) {
-  .wamQueryRow__query {
-    flex-basis: 100%;
+// Code in table cells reads as plain text: the cell already frames it.
+.wamIndicatorTable .euiTableCellContent code,
+.wamEnrichmentTable .euiTableCellContent code,
+.wamEnrichmentSourceTable .euiTableCellContent code,
+.wamAssetTable .euiTableCellContent code,
+.wamSlaEscalations .euiTableCellContent code,
+.wamNotifChannelTable .euiTableCellContent code {
+  background: none;
+}
+
+// Stored enrichment (step 6.3): alert flyout Enrichment tab, case Indicators
+// lookups.
+.wamEnrichmentPanel {
+  max-width: 100%;
+}
+
+// 5b. Case flyout (step 8.1): title row + one metadata row in the header, a
+// sticky section nav beside the content, the Overview meta list with a fixed
+// label column and the edit form on one grid.
+.wamCaseFlyoutTitleRow,
+.wamAlertFlyoutTitleRow,
+.wamCaseFlyoutMeta,
+.wamAlertFlyoutMeta {
+  min-width: 0;
+}
+
+.wamCaseFlyoutTitle,
+.wamAlertFlyoutTitle {
+  word-break: break-word;
+}
+
+.wamCaseFlyoutMeta__text,
+.wamAlertFlyoutMeta__text {
+  white-space: nowrap;
+}
+
+.wamCaseFlyoutActions,
+.wamAlertFlyoutActions {
+  margin-left: auto;
+}
+
+// Side navigation rails (case flyout + settings, step 10.1; alert flyout
+// through the shared `flyout_nav.tsx` in 11.1). Shared pieces: labels 10%
+// smaller than the body text, a small uppercase heading per group, a rule
+// between groups, a 2px primary bar on the active item and a right border so
+// the column reads as a rail.
+.wamCaseNavColumn,
+.wamAlertNavColumn,
+.wamSettingsNavColumn {
+  border-right: $euiBorderThin;
+  padding-right: $euiSizeS;
+}
+
+.wamNavHeading {
+  color: $euiTextSubduedColor;
+  font-size: $euiFontSizeXS;
+  font-weight: $euiFontWeightSemiBold;
+  letter-spacing: 0.06em;
+  margin: 0 0 $euiSizeXS $euiSizeS;
+  text-transform: uppercase;
+}
+
+// Every item is a depth-0 ("root") EuiSideNav item, and EUI styles those as
+// 16px semibold titles with a 32px gap before the next one
+// (`.euiSideNavItem--root > .euiSideNavItemButton .euiSideNavItemButton__label`,
+// specificity 0,3,0). The selectors below match that specificity so the
+// smaller regular-weight label and the tight spacing actually win.
+.wamCaseNav .euiSideNavItem--root > .euiSideNavItemButton .euiSideNavItemButton__label,
+.wamAlertNav .euiSideNavItem--root > .euiSideNavItemButton .euiSideNavItemButton__label,
+.wamSettingsNav .euiSideNavItem--root > .euiSideNavItemButton .euiSideNavItemButton__label {
+  font-size: $euiFontSizeS * 0.9;
+  line-height: $euiLineHeight;
+  font-weight: $euiFontWeightRegular;
+  letter-spacing: normal;
+  min-width: 0;
+}
+
+.wamCaseNav .euiSideNavItem--root + .euiSideNavItem--root,
+.wamAlertNav .euiSideNavItem--root + .euiSideNavItem--root,
+.wamSettingsNav .euiSideNavItem--root + .euiSideNavItem--root {
+  margin-top: 0;
+}
+
+.wamCaseNav .euiSideNavItem--root > .euiSideNavItemButton,
+.wamAlertNav .euiSideNavItem--root > .euiSideNavItemButton,
+.wamSettingsNav .euiSideNavItem--root > .euiSideNavItemButton {
+  // EUI pulls root buttons 8px left of the nav box; keep the active bar on
+  // the column edge instead.
+  margin-left: 0;
+  margin-bottom: $euiSizeXS;
+  width: 100%;
+}
+
+.wamCaseNav .euiSideNavItemButton,
+.wamAlertNav .euiSideNavItemButton,
+.wamSettingsNav .euiSideNavItemButton {
+  border-left: 2px solid transparent;
+}
+
+.wamCaseNav .euiSideNavItemButton-isSelected,
+.wamAlertNav .euiSideNavItemButton-isSelected,
+.wamSettingsNav .euiSideNavItemButton-isSelected {
+  border-left-color: $euiColorPrimary;
+}
+
+.wamCaseNav__group,
+.wamAlertNav__group,
+.wamSettingsNav__group {
+  // Each group is its own EuiSideNav; the parent nav spaces the groups.
+  margin: 0;
+}
+
+.wamCaseNav__rule,
+.wamAlertNav__rule,
+.wamSettingsNav__rule {
+  margin-top: $euiSizeS;
+  margin-bottom: $euiSizeS;
+}
+
+.wamCaseNavColumn,
+.wamAlertNavColumn {
+  flex: 0 0 $wamCaseNavWidth;
+  max-width: $wamCaseNavWidth;
+  min-width: $wamCaseNavWidth;
+}
+
+.wamCaseFlyout--expanded .wamCaseNavColumn,
+.wamAlertFlyout--expanded .wamAlertNavColumn {
+  flex-basis: $wamCaseNavWidthExpanded;
+  max-width: $wamCaseNavWidthExpanded;
+  min-width: $wamCaseNavWidthExpanded;
+}
+
+// Collapsed icon rail: 48px, whichever flyout width is in use.
+.wamCaseNavColumn.wamCaseNavColumn--collapsed,
+.wamCaseFlyout--expanded .wamCaseNavColumn.wamCaseNavColumn--collapsed,
+.wamAlertNavColumn.wamAlertNavColumn--collapsed,
+.wamAlertFlyout--expanded .wamAlertNavColumn.wamAlertNavColumn--collapsed {
+  flex-basis: $wamCaseNavRailWidth;
+  max-width: $wamCaseNavRailWidth;
+  min-width: $wamCaseNavRailWidth;
+  padding-right: 0;
+}
+
+// Collapsed settings rail (step 11.2): the same 48px icon rail; the column
+// stays sticky (rule further down).
+.wamSettingsNavColumn.wamSettingsNavColumn--collapsed {
+  flex-basis: $wamCaseNavRailWidth;
+  max-width: $wamCaseNavRailWidth;
+  min-width: $wamCaseNavRailWidth;
+  padding-right: 0;
+}
+
+// The shared `FlyoutNav` renders the same element classes under either
+// block (`wamCaseNav__*` for the case flyout, `wamAlertNav__*` for the
+// alert flyout), and the settings nav borrows its toggle and rail
+// (`wamSettingsNav__*`, step 11.2), so the rail and item rules are emitted
+// once per block.
+@each $nav in wamCaseNav, wamAlertNav, wamSettingsNav {
+  .#{$nav} {
+    position: sticky;
+    top: 0;
   }
 
-  .wamQueryRow__time {
-    flex: 1 1 auto;
+  .#{$nav}__toggleRow {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: $euiSizeXS;
+  }
+
+  .#{$nav}--collapsed .#{$nav}__toggleRow {
+    justify-content: center;
+  }
+
+  .#{$nav}__rail {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: $euiSizeXS;
+  }
+
+  .#{$nav}__rail .#{$nav}__rule {
+    margin-top: $euiSizeXS;
+    margin-bottom: $euiSizeXS;
+  }
+
+  .#{$nav}__railItem {
+    border-left: 2px solid transparent;
+    display: flex;
+    justify-content: center;
+    position: relative;
+  }
+
+  .#{$nav}__railItem--active {
+    border-left-color: $euiColorPrimary;
+  }
+
+  .#{$nav}__dot {
+    background: $euiColorPrimary;
+    border: 1px solid $euiColorEmptyShade;
+    border-radius: 50%;
+    height: $euiSizeS;
+    pointer-events: none;
+    position: absolute;
+    right: 2px;
+    top: 0;
+    width: $euiSizeS;
+  }
+
+  .#{$nav}__item {
+    display: inline-flex;
+    align-items: center;
+    gap: $euiSizeS;
+    max-width: 100%;
     min-width: 0;
   }
 
-  .wamQueryRow__time .euiFormRow,
-  .wamQueryRow__time .euiPopover,
-  .wamQueryRow__time .euiPopover__anchor,
-  .wamQueryRow__time .wamTimeRangeButton {
-    max-width: none;
-    width: 100%;
+  .#{$nav}__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .#{$nav}__count {
+    flex: 0 0 auto;
   }
 }
 
-@media (max-width: 768px) {
-  .wamPageIntro { align-items: flex-start; }
-  .wamQueueStats > .euiFlexItem { flex-basis: calc(50% - 8px); }
-  .wamPageContent { border-radius: 8px; }
+.wamCaseContent,
+.wamAlertContent {
+  // The content column is the container the Overview meta grid queries
+  // (11.6): it stacks its rows below 480px of column width, whatever the
+  // window is doing.
+  container-type: inline-size;
+  min-width: 0;
+}
 
-  .wamQueryRow {
-    align-items: stretch;
-    flex-direction: column;
-  }
+.wamCaseSection,
+.wamAlertSection {
+  min-width: 0;
+  padding-bottom: $euiSizeM;
+}
 
-  .wamQueryRow > .euiFlexItem,
-  .wamQueryRow .euiButton,
-  .wamQueryRow .euiPopover,
-  .wamQueryRow .euiPopover__anchor {
-    min-width: 0;
-    max-width: none;
-    width: 100%;
-  }
+// The alert flyout is narrower than the case flyout by default: the Fields
+// table and the Raw JSON block scroll inside the content column, never the
+// flyout (EuiCodeBlock scrolls on its own; the table gets its own scroller).
+.wamAlertSection .wamDocumentFields {
+  max-width: 100%;
+  overflow-x: auto;
+}
 
-  .wamStructuredFilters > .euiFlexItem {
-    flex-basis: 100%;
-    min-width: 0 !important;
-  }
+.wamCaseFormGrid .euiFormRow,
+.wamAlertFormGrid .euiFormRow {
+  min-width: 0;
+}
 
-  .wamReportDatePicker,
-  .wamReportTabs .euiFlexItem,
-  .wamReportStats > .euiFlexItem,
-  .wamOutcomeStats > .euiFlexItem,
-  .wamReportCharts > .euiFlexItem {
-    flex-basis: 100%;
-    min-width: 0 !important;
-  }
+// Case report popover (step 5.2): the menu button sits in the header action
+// group; the panel lists the three export actions.
+.wamCaseReportButton {
+  white-space: nowrap;
+}
 
-  .wamTimePopover {
-    max-width: calc(100vw - 48px);
-  }
+.wamCaseReportMenu {
+  min-width: 220px;
+}
 
-  .wamAlertFlyout .euiFlyoutBody__overflow {
-    padding-left: 12px;
-    padding-right: 12px;
-  }
+// Close dialog + closure reason (step 2.4).
+.wamCloseDialog .euiModalBody {
+  min-width: 420px;
+}
 
-  .wamDocumentFields .euiTableHeaderCell:first-child,
-  .wamDocumentFields .euiTableRowCell:first-child {
-    width: 42%;
-  }
+.wamClosureReason {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-top: $euiSizeXS;
+}
 
-  .wamBulkActions .euiFlexGroup,
-  .wamLifecycleHeader,
-  .wamLifecycleActions,
-  .wamLifecycleFields,
-  .wamStorageStats {
-    align-items: stretch;
-  }
-
-  .wamBulkActions .euiFlexItem,
-  .wamBulkActions .euiButton,
-  .wamLifecycleActions > .euiFlexItem,
-  .wamLifecycleActions .euiButton,
-  .wamLifecycleFields > .euiFlexItem,
-  .wamLifecycleHeader > .euiFlexItem,
-  .wamStorageStats > .euiFlexItem {
-    flex-basis: 100%;
-    min-width: 0 !important;
-    width: 100%;
-  }
-
-  .wamAutomationStats > .euiFlexItem {
-    flex-basis: calc(50% - 8px);
-    min-width: 0 !important;
-  }
-
-  .wamPredicateRow {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .wamPredicateRow > .euiFlexItem,
-  .wamAutomationSettings > .euiFlexGroup > .euiFlexItem,
-  .wamAutomationSettings .euiButton {
-    flex-basis: 100%;
-    min-width: 0 !important;
-    width: 100%;
+.wamDispositionOption {
+  display: block;
+  strong {
+    display: block;
   }
 }
 
-// ---- Attack graph (Wazuh console design: "SSH Attack Graph v2") ----
-// Colours and type follow the active dashboard theme. The dashboard compiles
-// this file once per theme with that theme's EUI Sass variables prepended, so
-// surfaces, text and borders come straight from those variables, and the
-// design's accent tints switch to their dark-theme set when the theme is dark.
-//
-// Typography is the dashboard's own, as on every other Wazuh page: one text
-// font (the theme's, never the code font), the EUI type scale and weights
-// (euiTitle / euiFontSize* mixins), and sentence case - no uppercase or
-// letter-spaced labels.
+// Case tasks (step 2.1 / 2.2): checklist rows in the Tasks section, the task
+// list picker + "Add task" in its header.
+.wamCaseTasks,
+.wamCaseTimeline {
+  max-width: 960px;
+}
+
+.wamCaseTasksActions {
+  flex-wrap: wrap;
+}
+
+.wamCaseTaskForm {
+  max-width: 760px;
+}
+
+.wamCaseTaskRow,
+.wamTaskListTaskRow {
+  padding: $euiSizeS 0;
+  border-bottom: $euiBorderThin;
+}
+
+.wamCaseTaskRow:last-child,
+.wamTaskListTaskRow:last-child {
+  border-bottom: none;
+}
+
+.wamCaseTask__title {
+  word-break: break-word;
+}
+
+.wamCaseTask--done .wamCaseTask__title {
+  text-decoration: line-through;
+  color: $euiTextSubduedColor;
+}
+
+.wamCaseTask__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $euiSizeS;
+  margin-top: $euiSizeXS;
+  color: $euiTextSubduedColor;
+  @include euiFontSizeXS;
+}
+
+.wamCaseTask--overdue .wamCaseTask__due {
+  color: $euiColorDanger;
+  font-weight: $euiFontWeightSemiBold;
+}
+
+// Case timeline (step 2.3): a vertical list grouped by day with one marker
+// icon per entry kind, on the history rows' spacing.
+.wamCaseTimelineDay {
+  margin-bottom: $euiSizeM;
+}
+
+.wamCaseTimelineDay__label {
+  color: $euiTextSubduedColor;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: $euiSizeXS;
+}
+
+.wamCaseTimelineList {
+  list-style: none;
+  margin: 0 0 0 $euiSizeM;
+  padding: 0;
+  border-left: $euiBorderThin;
+}
+
+.wamCaseTimelineRow {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: $euiSizeS;
+  padding: $euiSizeS 0 $euiSizeS $euiSizeL;
+}
+
+.wamCaseTimelineRow__marker {
+  position: absolute;
+  left: -$euiSizeM;
+  top: $euiSizeS;
+  width: $euiSizeXL;
+  height: $euiSizeXL;
+  border-radius: 50%;
+  background: $euiColorEmptyShade;
+  border: $euiBorderThin;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: $euiTextSubduedColor;
+}
+
+.wamCaseTimelineRow--alert .wamCaseTimelineRow__marker {
+  color: $euiColorWarning;
+  border-color: $euiColorWarning;
+}
+
+.wamCaseTimelineRow--comment .wamCaseTimelineRow__marker {
+  color: $euiColorPrimary;
+}
+
+.wamCaseTimelineRow--task_due .wamCaseTimelineRow__marker {
+  color: $euiColorPrimary;
+  border-color: $euiColorPrimary;
+}
+
+.wamCaseTimelineRow__body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.wamCaseTimelineRow__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $euiSizeS;
+  margin-bottom: $euiSizeXS;
+}
+
+.wamCaseTimelineRow__time {
+  font-variant-numeric: tabular-nums;
+  color: $euiTextSubduedColor;
+  @include euiFontSizeXS;
+}
+
+.wamCaseTimelineRow__actor {
+  font-weight: $euiFontWeightSemiBold;
+  @include euiFontSizeXS;
+}
+
+.wamCaseTimelineRow__title {
+  word-break: break-word;
+}
+
+.wamCaseTimelineRow__details {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+// Case attachments (step 5.3): the add-link / upload panels sit above the
+// table; the "added" cell shows who on one line and when below.
+.wamAttachmentForm {
+  max-width: 640px;
+}
+
+.wamAttachmentWhen {
+  color: $euiTextSubduedColor;
+}
+
+.wamAttachmentTable .euiTableCellContent__text {
+  word-break: break-word;
+}
+
+// 5c. Alert flyout (step 8.2): the same header treatment as the case flyout,
+// a horizontal tab strip (seven tabs fit) and every tab body on one left
+// edge and one top spacing, the Overview on the shared meta list label
+// column, the Fields table on the same column.
+.wamAlertFlyoutMeta .wamAssetContext {
+  margin-top: 0;
+}
+
+.wamReportTabs > .euiTabs {
+  flex-wrap: nowrap;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.wamReportTabs > .euiTabs .euiTab {
+  flex: 0 0 auto;
+}
+
+.wamAlertFlyoutTab {
+  // Section body next to the rail (11.1): no tab strip above it any more.
+  min-width: 0;
+}
+
+// 11.6: the editable row follows the precedent callout directly.
+.wamAlertFlyoutTab > .euiCallOut + .wamAlertFormGrid {
+  margin-top: $euiSizeM;
+}
+
+// The control labels match the meta grid's xs subdued labels (11.6).
+.wamAlertFormGrid .euiFormRow__labelWrapper .euiFormLabel,
+.wamAlertFormGrid .euiFormLabel {
+  color: $euiTextSubduedColor;
+  font-weight: $euiFontWeightRegular;
+}
+
+.wamAlertFormGrid__picker {
+  min-width: 220px;
+}
+
+// 11.6: title row = title + the action group (Open case / Expand / Close),
+// right-aligned like the case flyout's; the title takes the rest of the row
+// and wraps instead of pushing the actions off it.
+.wamAlertFlyoutTitleRow__title {
+  min-width: 0;
+}
+
+.wamAlertFlyoutTitleRow .wamAlertFlyoutActions {
+  flex-shrink: 0;
+}
+
+.wamAlertFlyout--expanded .wamAlertFormGrid {
+  max-width: 900px;
+}
+
+.wamDocumentFields .euiTableRowCell {
+  vertical-align: top;
+}
+
+// The Fields table shares the Overview list's left edge and label column:
+// the Value column then starts on the same boundary as the descriptions
+// (long dotted paths wrap inside the label column).
+.wamDocumentFields .euiTableHeaderCell:first-child .euiTableCellContent,
+.wamDocumentFields .euiTableRowCell:first-child .euiTableCellContent {
+  padding-left: 0;
+}
+
+.wamDocumentFields .euiTableHeaderCell:first-child,
+.wamDocumentFields .euiTableRowCell:first-child {
+  width: $wamMetaLabelWidth;
+  min-width: $wamMetaLabelWidth;
+}
+
+// ---------------------------------------------------------------------------
+// 6. Attack graph (case flyout "Attack path" section; Wazuh console design
+//    "SSH Attack Graph v2"). Surfaces, text, borders and the three accents
+//    come from the theme's EUI variables through the --ag-* custom properties
+//    (the canvas reads these at runtime), so light and dark follow the
+//    dashboard. Typography is the dashboard's own: the theme's text font and
+//    the EUI type scale, sentence case. The canvas geometry (column width,
+//    lane heights, the timeline rail offsets) is measured by
+//    attack_graph_canvas.tsx and stays in pixels.
+// ---------------------------------------------------------------------------
 .wamAg {
   --ag-panel: #{$euiColorEmptyShade};
   --ag-card: #{$euiColorEmptyShade};
@@ -453,34 +1553,30 @@
   --ag-bar: #{$euiColorLightShade};
   --ag-erect: #{$euiColorEmptyShade};
   --ag-ring: #{$euiColorEmptyShade};
-  --ag-high: #ea2d0d; // --color-danger-500
-  --ag-med: #facc15; // --color-warning-400
-  --ag-blue: #3b82f6; // --color-primary-500
+  --ag-high: #{$euiColorDanger};
+  --ag-med: #{$euiColorWarning};
+  --ag-blue: #{$euiColorPrimary};
+  // Text that sits on a filled accent (high node, selected repeat chip): the
+  // content surface colour, so it is white on the light theme's saturated
+  // fills and near-black on the dark theme's pastel ones.
+  --ag-onaccent: #{$euiColorEmptyShade};
+  // Tints derived from the accents, so they follow the theme.
+  --ag-vbg: #{rgba($euiColorPrimary, 0.1)};
+  --ag-vink: #{$euiColorPrimaryText};
+  --ag-vline: #{rgba($euiColorPrimary, 0.3)};
+  --ag-hotbg: #{rgba($euiColorDanger, 0.08)};
+  --ag-hotline: #{rgba($euiColorDanger, 0.35)};
+  --ag-lowbg: #{$euiColorLightShade};
+  --ag-attbg: #{$euiColorEmptyShade};
+  --ag-medink: #{$euiColorWarningText};
+  --ag-lowink: #{$euiColorDarkShade};
   // The font EUI's own components use (falls back to the theme's Sass stack).
   --ag-sans: var(--oui-font-family, #{$euiFontFamily});
 
   @if lightness($euiColorEmptyShade) < 50% {
-    --ag-vbg: #1c2a44;
-    --ag-vink: #a9c8fb;
-    --ag-vline: #2b4270;
-    --ag-hotbg: #2a1a18;
-    --ag-hotline: #6e2415;
-    --ag-lowbg: #a1a1aa;
-    --ag-attbg: #2a1414;
-    --ag-medink: #facc15;
-    --ag-lowink: #c4c4cc;
-    --ag-shadow: rgba(0, 0, 0, 0.4);
+    --ag-shadow: #{rgba($euiShadowColor, 0.4)};
   } @else {
-    --ag-vbg: #eaf2fe;
-    --ag-vink: #1d4ed8;
-    --ag-vline: #c9dcfc;
-    --ag-hotbg: #fef6f4;
-    --ag-hotline: #f6c0b5;
-    --ag-lowbg: #d4d4d8;
-    --ag-attbg: #ffffff;
-    --ag-medink: #a16207;
-    --ag-lowink: #52525b;
-    --ag-shadow: rgba(0, 0, 0, 0.08);
+    --ag-shadow: #{rgba($euiShadowColor, 0.08)};
   }
 }
 
@@ -498,28 +1594,28 @@
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: $euiSizeM;
   justify-content: space-between;
-  margin-bottom: 12px;
+  margin-bottom: $euiSizeM;
 }
 
 .wamAg__panel {
   background: var(--ag-panel);
-  border-radius: 12px;
+  border-radius: $wamRadiusPanel;
   box-shadow: inset 0 0 0 1px var(--ag-line);
   padding: 18px 20px;
 }
 
-.wamAg__sec { margin-top: 16px; }
+.wamAg__sec { margin-top: $euiSize; }
 
 // Typography comes from the EuiTitle around each heading.
-.wamAg__h2 { margin: 0 0 4px; }
+.wamAg__h2 { margin: 0 0 $euiSizeXS; }
 
 .wamAg__ptop {
   align-items: flex-start;
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
+  gap: $euiSize;
   justify-content: space-between;
 }
 
@@ -528,14 +1624,14 @@
   b { color: var(--ag-ink); }
 }
 
-.wamAg__actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.wamAg__actions { align-items: center; display: flex; flex-wrap: wrap; gap: $euiSizeS; }
 // Fixed basis for the timeline host select: EuiSelect's layout is width:100%, so
 // without this it fills the actions row and pushes "Group repeats" onto a new line.
 .wamAg__host { flex: 0 1 240px; min-width: 160px; }
 
 .wamAg__stageWrap {
   background: var(--ag-stage) radial-gradient(var(--ag-dotc) 1px, transparent 1px) 0 0 / 22px 22px;
-  border-radius: 10px;
+  border-radius: $wamRadiusCard;
   box-shadow: inset 0 0 0 1px var(--ag-line);
   cursor: grab;
   margin-top: 14px;
@@ -605,12 +1701,15 @@
 .wamAg__elabel--med { fill: var(--ag-medink); }
 .wamAg__elabel--low { fill: var(--ag-lowink); }
 
+// Nodes: the ink follows the fill (black on the warning yellow, the content
+// surface colour on the danger fill, the theme text colour on the grey and
+// source nodes) and the icon strokes inherit it.
 .wamAg__node {
   align-items: center;
   border: 2px solid transparent;
-  border-radius: 10px;
-  box-shadow: 0 2px 8px var(--ag-shadow);
-  color: #1a1a1a;
+  border-radius: $wamRadiusCard;
+  box-shadow: 0 2px $euiSizeS var(--ag-shadow);
+  color: var(--ag-ink);
   cursor: grab;
   display: flex;
   gap: 10px;
@@ -625,8 +1724,8 @@
 }
 
 .wamAg__ic {
-  background: rgba(0, 0, 0, 0.14);
-  border-radius: 8px;
+  background: rgba($euiColorInk, 0.14);
+  border-radius: $euiSizeS;
   display: grid;
   flex: none;
   height: 32px;
@@ -635,7 +1734,7 @@
   svg {
     fill: none;
     height: 18px;
-    stroke: #1a1a1a;
+    stroke: currentColor;
     stroke-linecap: round;
     stroke-linejoin: round;
     stroke-width: 1.8;
@@ -649,24 +1748,22 @@
 
 .wamAg__node--high {
   background: var(--ag-high);
-  color: #fff;
-  .wamAg__ic { background: rgba(0, 0, 0, 0.2); }
-  .wamAg__ic svg { stroke: #fff; }
+  color: var(--ag-onaccent);
+  .wamAg__ic { background: rgba($euiColorInk, 0.2); }
 }
-.wamAg__node--med { background: var(--ag-med); }
+.wamAg__node--med { background: var(--ag-med); color: $euiColorInk; }
 .wamAg__node--low { background: var(--ag-lowbg); }
 
 .wamAg__node--source {
   background: var(--ag-attbg);
   border-color: var(--ag-high);
-  box-shadow: 0 0 0 6px rgba(234, 45, 13, 0.1), 0 6px 20px rgba(234, 45, 13, 0.18);
+  box-shadow: 0 0 0 6px rgba($euiColorDanger, 0.1), 0 6px 20px rgba($euiColorDanger, 0.18);
   color: var(--ag-ink);
-  .wamAg__ic { background: var(--ag-high); }
-  .wamAg__ic svg { stroke: #fff; }
+  .wamAg__ic { background: var(--ag-high); color: var(--ag-onaccent); }
 }
 
-.wamAg__node--sel { box-shadow: 0 0 0 3px var(--ag-ring), 0 0 0 5px var(--ag-blue), 0 6px 20px rgba(0, 0, 0, 0.12); z-index: 2; }
-.wamAg__node--source.wamAg__node--sel { box-shadow: 0 0 0 3px var(--ag-ring), 0 0 0 5px var(--ag-blue), 0 6px 20px rgba(234, 45, 13, 0.2); }
+.wamAg__node--sel { box-shadow: 0 0 0 3px var(--ag-ring), 0 0 0 5px var(--ag-blue), 0 6px 20px var(--ag-shadow); z-index: 2; }
+.wamAg__node--source.wamAg__node--sel { box-shadow: 0 0 0 3px var(--ag-ring), 0 0 0 5px var(--ag-blue), 0 6px 20px rgba($euiColorDanger, 0.2); }
 
 .wamAg__dim { opacity: 0.18; }
 
@@ -676,11 +1773,11 @@
   background: var(--ag-card);
   border-radius: 9px;
   bottom: 10px;
-  box-shadow: inset 0 0 0 1px var(--ag-line), 0 2px 8px var(--ag-shadow);
+  box-shadow: inset 0 0 0 1px var(--ag-line), 0 2px $euiSizeS var(--ag-shadow);
   cursor: default;
   display: flex;
   gap: 2px;
-  left: 12px;
+  left: $euiSizeM;
   padding: 3px;
   position: absolute;
   z-index: 10;
@@ -696,20 +1793,20 @@
   color: var(--ag-faint);
   pointer-events: none;
   position: absolute;
-  right: 12px;
+  right: $euiSizeM;
 }
 
 .wamAg__info {
   align-items: center;
   background: var(--ag-info);
   border: 1px solid var(--ag-line);
-  border-radius: 10px;
+  border-radius: $wamRadiusCard;
   display: grid;
-  gap: 16px;
+  gap: $euiSize;
   grid-template-columns: minmax(0, 1fr) auto;
   margin-top: 14px;
   min-height: 66px;
-  padding: 14px 16px;
+  padding: 14px $euiSize;
 }
 
 .wamAg__k {
@@ -726,7 +1823,7 @@
   color: var(--ag-mute);
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
+  gap: $euiSize;
   span { align-items: center; display: flex; gap: 6px; }
   i { border-radius: 2px; display: inline-block; height: 4px; width: 18px; }
 }
@@ -735,9 +1832,9 @@
   align-items: baseline;
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: $euiSizeM;
   justify-content: space-between;
-  margin-bottom: 12px;
+  margin-bottom: $euiSizeM;
   .wamAg__h2 { margin: 0; }
   > span { @include euiFontSizeXS; @include euiNumberFormat; color: var(--ag-mute); }
 }
@@ -754,8 +1851,8 @@
   @include euiFontSizeS;
   background: var(--ag-card);
   border: 1px solid var(--ag-line);
-  border-radius: 10px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  border-radius: $wamRadiusCard;
+  box-shadow: 0 1px 2px rgba($euiShadowColor, 0.04);
   color: var(--ag-ink);
   cursor: pointer;
   display: flex;
@@ -767,7 +1864,7 @@
   text-align: left;
   &:hover { border-color: var(--ag-blue); }
   &:focus-visible { outline: 2px solid var(--ag-blue); outline-offset: 2px; }
-  p { color: var(--ag-sub); flex: 1; margin: 4px 0 10px; }
+  p { color: var(--ag-sub); flex: 1; margin: $euiSizeXS 0 10px; }
 }
 
 .wamAg__tid { @include euiFontSizeXS; color: var(--ag-mute); }
@@ -777,7 +1874,7 @@
 .wamAg__ph h3 {
   align-items: center;
   display: flex;
-  gap: 8px;
+  gap: $euiSizeS;
   margin: 0;
 }
 
@@ -792,19 +1889,19 @@
   i { border-radius: 3px; display: block; height: 100%; }
 }
 
-.wamAg__phases { align-items: stretch; display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.wamAg__phases { align-items: stretch; display: flex; gap: $euiSizeS; overflow-x: auto; padding-bottom: 2px; }
 
 .wamAg__chev { display: grid; flex: none; place-items: center; width: 20px; }
 
 .wamAg__ph {
   background: var(--ag-card);
   border: 1px solid var(--ag-line);
-  border-radius: 10px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  border-radius: $wamRadiusCard;
+  box-shadow: 0 1px 2px rgba($euiShadowColor, 0.04);
   display: flex;
   flex: 1 1 0;
   flex-direction: column;
-  gap: 8px;
+  gap: $euiSizeS;
   min-width: 160px;
   padding: 14px;
   p { color: var(--ag-sub); margin: 0; }
@@ -836,63 +1933,57 @@
 .wamAg .wamAg__tmeta > .wamAg__ch--tac { background-color: var(--ag-vbg); border-color: var(--ag-vline); color: var(--ag-vink); }
 .wamAg .wamAg__tmeta > .wamAg__ch--tec { background-color: var(--ag-info); }
 
-@media (max-width: 760px) {
-  .wamAg__phases { flex-direction: column; }
-  .wamAg__ph { min-width: 0; }
-  .wamAg__chev { display: none; }
-  .wamAg__info { grid-template-columns: 1fr; }
-}
-
-// ---- Linked-alert previews in the Attack Graph ----
+// Linked-alert previews in the attack graph.
 .wamAg__la {
   background: var(--ag-card);
   border: 1px solid var(--ag-line);
-  border-radius: 10px;
-  margin-top: 12px;
-  padding: 14px 16px 6px;
+  border-radius: $wamRadiusCard;
+  margin-top: $euiSizeM;
+  padding: 14px $euiSize 6px;
 }
 .wamAg__lah {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: $euiSizeM;
   justify-content: space-between;
   margin-bottom: 6px;
 }
-.wamAg__lamore { @include euiFontSizeXS; color: var(--ag-mute); padding: 6px 8px 8px; }
+.wamAg__lamore { @include euiFontSizeXS; color: var(--ag-mute); padding: 6px $euiSizeS $euiSizeS; }
 
-// ---- Kill-chain phase first/last seen ----
+// Kill-chain phase first/last seen.
 .wamAg__pts {
   border-bottom: 1px solid var(--ag-line);
   border-top: 1px solid var(--ag-line);
   display: grid;
-  gap: 4px;
+  gap: $euiSizeXS;
   margin: 0;
-  padding: 8px 0;
-  div { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; }
+  padding: $euiSizeS 0;
+  div { display: flex; flex-wrap: wrap; gap: $euiSizeS; justify-content: space-between; }
   dt { @include euiFontSizeXS; color: var(--ag-mute); }
   dd { @include euiFontSizeXS; @include euiNumberFormat; margin: 0; }
 }
 
-// ---- Alert timeline ----
+// Alert timeline (lanes + vertical rail). The rail offsets (96px + 28px
+// columns, the 119px line) and lane heights are part of the canvas geometry.
 .wamAg__strip {
   background: var(--ag-stage);
-  border-radius: 10px;
+  border-radius: $wamRadiusCard;
   box-shadow: inset 0 0 0 1px var(--ag-line);
   margin-top: 14px;
-  padding: 8px 18px 6px;
+  padding: $euiSizeS 18px 6px;
 }
 .wamAg__lane {
   align-items: center;
   display: grid;
-  gap: 8px;
+  gap: $euiSizeS;
   grid-template-columns: 210px minmax(0, 1fr);
   height: 46px;
 }
 .wamAg__lanel {
   align-items: center;
   display: flex;
-  gap: 8px;
+  gap: $euiSizeS;
   min-width: 0;
   svg { fill: none; flex: none; height: 15px; stroke: var(--ag-mute); stroke-width: 1.8; width: 15px; }
 }
@@ -916,7 +2007,7 @@
   &.wamAg__on { box-shadow: 0 0 0 3px var(--ag-blue); z-index: 3; }
 }
 .wamAg__strip--has .wamAg__pt:not(.wamAg__on) { opacity: 0.35; }
-.wamAg__axis { border-top: 1px solid var(--ag-line); display: grid; gap: 8px; grid-template-columns: 210px minmax(0, 1fr); height: 24px; }
+.wamAg__axis { border-top: 1px solid var(--ag-line); display: grid; gap: $euiSizeS; grid-template-columns: 210px minmax(0, 1fr); height: 24px; }
 .wamAg__ticks {
   position: relative;
   span { @include euiFontSizeXS; @include euiNumberFormat; color: var(--ag-mute); position: absolute; top: 3px; transform: translateX(-50%); white-space: nowrap; }
@@ -933,31 +2024,31 @@
   &:first-child::before { top: 23px; }
   &:last-child::before { bottom: calc(100% - 23px); }
 }
-.wamAg__tt { @include euiFontSizeS; @include euiNumberFormat; color: var(--ag-mute); padding-top: 12px; text-align: right; white-space: nowrap; }
+.wamAg__tt { @include euiFontSizeS; @include euiNumberFormat; color: var(--ag-mute); padding-top: $euiSizeM; text-align: right; white-space: nowrap; }
 .wamAg__rd {
   background: var(--c);
   border: 3px solid var(--ag-panel);
   border-radius: 50%;
   box-shadow: 0 0 0 1px var(--ag-line);
   height: 14px;
-  margin: 16px auto 0;
+  margin: $euiSize auto 0;
   position: relative;
   width: 14px;
   z-index: 1;
 }
 .wamAg__tcard {
   background: var(--ag-card);
-  border-radius: 10px;
+  border-radius: $wamRadiusCard;
   box-shadow: inset 0 0 0 1px var(--ag-line);
   cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: $euiSizeS;
   padding: 11px 14px;
   transition: box-shadow 0.12s;
   &:hover { box-shadow: inset 0 0 0 1px var(--ag-blue); }
   &:focus-within { box-shadow: inset 0 0 0 1px var(--ag-blue); }
-  .wamAg__thd:focus-visible { border-radius: 4px; outline: 2px solid var(--ag-blue); outline-offset: 3px; }
+  .wamAg__thd:focus-visible { border-radius: $euiBorderRadius; outline: 2px solid var(--ag-blue); outline-offset: 3px; }
 }
 .wamAg__tr--sel .wamAg__tcard { box-shadow: inset 0 0 0 2px var(--ag-blue), 0 4px 14px var(--ag-shadow); }
 .wamAg__thd {
@@ -975,9 +2066,9 @@
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
-  padding-top: 8px;
-  span { @include euiFontSizeXS; @include euiNumberFormat; background: var(--ag-info); border-radius: 4px; color: var(--ag-sub); padding: 1px 6px; }
-  span.wamAg__on { background: var(--ag-blue); color: #fff; }
+  padding-top: $euiSizeS;
+  span { @include euiFontSizeXS; @include euiNumberFormat; background: var(--ag-info); border-radius: $euiBorderRadius; color: var(--ag-sub); padding: 1px 6px; }
+  span.wamAg__on { background: var(--ag-blue); color: var(--ag-onaccent); }
 }
 .wamAg__gap {
   align-items: center;
@@ -989,57 +2080,521 @@
   &::before { border-left: 2px dashed var(--ag-line); bottom: 0; content: ''; left: 119px; position: absolute; top: 0; }
   span { @include euiFontSizeXS; color: var(--ag-mute); grid-column: 3; }
 }
-.wamAg__more { margin: 4px 0 0 134px; }
+.wamAg__more { margin: $euiSizeXS 0 0 134px; }
 
-@media (max-width: 760px) {
+// ---------------------------------------------------------------------------
+// 7. Settings (step 8.3): grouped side navigation on the left, one page
+//    beside it, then the per-page pieces in nav order.
+// ---------------------------------------------------------------------------
+.wamSettingsLayout,
+.wamSettingsContent,
+.wamSettingsPage,
+.wamSettingsPageHeader__text,
+.wamSettingsFormActions__meta {
+  min-width: 0;
+}
+
+// The nav sticks as a flex item: the layout group is as tall as the content
+// column, so the column (not the EuiSideNav inside it) has room to stay put.
+// Offset = dashboard chrome + the sticky .wamWorkbenchHeader + one gutter.
+.wamSettingsNavColumn {
+  align-self: flex-start;
+  flex: 0 0 $wamSettingsNavWidth;
+  max-width: $wamSettingsNavWidth;
+  min-width: $wamSettingsNavWidth;
+  position: sticky;
+  top: calc(#{$wamChromeHeight} + #{$wamWorkbenchHeaderHeight} + #{$euiSizeM});
+}
+
+// The settings column is the sticky element (above); the nav inside it is
+// not, unlike the flyout rails that share the `@each` rules.
+.wamSettingsNav {
+  position: static;
+}
+
+.wamSettingsNav .euiSideNavItemButton__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wamSettingsPageHeader__description p {
+  margin-bottom: 0;
+}
+
+.wamSettingsPageHeader__actions {
+  padding-top: $euiSizeXS;
+}
+
+.wamSettingsIcon {
+  align-items: center;
+  background: rgba($euiColorPrimary, 0.1);
+  border-radius: $euiSizeS;
+  color: $euiColorPrimary;
+  display: inline-flex;
+  height: $euiSizeXXL;
+  justify-content: center;
+  width: $euiSizeXXL;
+}
+
+.wamSettingsLoading {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 180px;
+}
+
+// Pages that hold their own tables / forms and must not grow past the column.
+.wamTaskLists,
+.wamSlaSettings,
+.wamNotifSettings,
+.wamNotifOutbox,
+.wamEnrichmentSettings,
+.wamAssetSettings,
+.wamReportSchedules {
+  min-width: 0;
+}
+
+// Settings cards share the stat tiles' radius.
+.wamAutomationHealth,
+.wamSyncSettingsPanel,
+.wamSyncHealthPanel,
+.wamDiscoverBridgeCard {
+  border-radius: $wamRadiusCard;
+}
+
+// Automation rules: health tiles, the rule editor flyout, entity groups.
+.wamAutomationStats .euiPanel {
+  min-width: 120px;
+}
+
+.wamAutomationRuleCounters {
+  margin-top: 4px;
+  word-break: break-word;
+}
+
+.wamAutomationSettings {
+  margin-top: $euiSizeM;
+}
+
+.wamEntityGroup {
+  border-left: $euiSizeXS solid $euiColorPrimary;
+}
+
+.wamRuleOperator {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 34px;
+}
+
+.wamPredicateRow > .euiFlexItem {
+  min-width: 150px;
+}
+
+.wamPredicateRow > .euiFlexItem:last-child {
+  min-width: auto;
+  padding-bottom: $euiSizeS;
+}
+
+.wamRuleSummary {
+  overflow-wrap: anywhere;
+}
+
+.wamRuleIdentity {
+  min-width: 180px;
+}
+
+.wamHelpText {
+  color: $euiColorPrimary;
+  @include euiFontSizeXS;
+  cursor: help;
+  text-decoration: underline dotted;
+}
+
+.wamPreviewStats > .euiFlexItem {
+  flex-basis: 140px;
+}
+
+.wamRepresentativeAlerts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $euiSizeXS;
+  margin: $euiSizeS 0;
+}
+
+// Task lists (step 2.2): the editor rows and the create-case picker.
+.wamTaskListTasks {
+  margin-top: $euiSizeS;
+}
+
+.wamTaskListTaskRow__position {
+  color: $euiTextSubduedColor;
+  @include euiFontSizeXS;
+  min-width: $euiSizeL;
+  text-align: right;
+}
+
+.wamTaskListTaskRow__due {
+  min-width: 120px;
+}
+
+.wamTaskListDescription {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wamTaskListError {
+  margin-bottom: $euiSizeM;
+}
+
+// SLA (step 3.x): targets table, escalation rules.
+.wamSlaTargets .euiTableCellContent input {
+  max-width: 140px;
+}
+
+.wamSlaTargets .euiTableCellContent {
+  overflow: visible;
+}
+
+.wamSlaTargets__helper {
+  white-space: nowrap;
+}
+
+.wamSlaEscalationForm {
+  max-width: 720px;
+}
+
+.wamSlaEscalationStatus {
+  margin-top: $euiSizeXS;
+}
+
+// Notifications (step 1.1 / 1.2): channels, the channel flyout, the outbox.
+.wamNotifEvents {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: $euiSizeXS;
+}
+
+.wamNotifTestResult,
+.wamEnrichmentTestResult,
+.wamAssetTestResult {
+  margin-top: $euiSizeS;
+}
+
+.wamEnrichmentTestResult .euiBadge + .euiBadge {
+  margin-left: $euiSizeXS;
+}
+
+.wamNotifWarningList,
+.wamNotifOutboxErrorList {
+  margin: 0;
+  padding-left: $euiSize;
+  word-break: break-word;
+}
+
+.wamNotifFlyout .euiFormRow + .euiFormRow {
+  margin-top: $euiSizeM;
+}
+
+.wamNotifOutboxStats {
+  gap: $euiSizeL;
+}
+
+.wamNotifOutboxStats .euiStat__title {
+  white-space: nowrap;
+}
+
+// Target column (step 10.5c): `alert:<id>` / `case:<id>` truncate with an
+// ellipsis inside the 220px column (the full id is in the tooltip and the
+// copy button) instead of wrapping one character per line.
+.wamNotifOutboxTarget {
+  display: inline-flex;
+  align-items: center;
+  gap: $euiSizeXS;
+  max-width: 204px;
+  min-width: 0;
+}
+
+.wamNotifOutboxTarget__label {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wamNotifOutboxTarget .euiToolTipAnchor {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.wamNotifOutboxTable .euiTableCellContent code {
+  background: none;
+  white-space: nowrap;
+}
+
+.wamNotifOutboxError {
+  font-family: $euiCodeFontFamily;
+  font-size: $euiFontSizeXS;
+  word-break: break-word;
+}
+
+// Scheduled summaries (Settings > Reports, step 5.4): the "last run" cell
+// shows the slot on one line and the outcome as a badge beside it.
+.wamReportSchedules .euiTableCellContent__text {
+  word-break: break-word;
+}
+
+.wamReportScheduleLastRun {
+  display: inline-flex;
+  align-items: center;
+  gap: $euiSizeXS;
+  white-space: nowrap;
+}
+
+.wamReportScheduleWhen {
+  color: $euiTextSubduedColor;
+  @include euiFontSizeXS;
+}
+
+// Discover / Reporting bridge card (Settings > Background sync, step 5.6).
+.wamDiscoverBridgeCard__notes ul {
+  margin-bottom: 0;
+}
+
+// ---------------------------------------------------------------------------
+// 8. Reporting: stat tiles, date picker, chart panels, donut, report sections
+// ---------------------------------------------------------------------------
+.wamReportStats .euiPanel,
+.wamOutcomeStats .euiPanel {
+  border-radius: $wamRadiusCard;
+  height: 100%;
+}
+
+.wamReportDatePicker {
+  min-width: 340px;
+}
+
+.wamReportCharts .euiPanel {
+  border-radius: $wamRadiusCard;
+  height: 100%;
+  min-height: 320px;
+}
+
+// Chart and donut panels: title at the stat tiles' description size so the
+// report reads on one type scale.
+.wamReportPanel > .euiTitle {
+  @include euiFontSizeS;
+}
+
+.wamReportSlaEnforcement .wamReportSlaEscalationTable {
+  max-width: 640px;
+}
+
+.wamReportDispositions .wamReportFalsePositiveTable {
+  max-width: 720px;
+}
+
+// Donut: the centre value and legend take the theme's text colours; the
+// slice colours come from the component (public/design.ts palette).
+.wamDonut__value {
+  @include euiTitle('m');
+  @include euiNumberFormat;
+  fill: $euiTextColor;
+}
+
+.wamDonut__label {
+  @include euiFontSizeXS;
+  fill: $euiColorDarkShade;
+}
+
+.wamDonut__empty {
+  stroke: $euiColorLightShade;
+}
+
+.wamDonut__swatch {
+  border-radius: 2px;
+  display: inline-block;
+  height: 10px;
+  width: 10px;
+}
+
+.wamDonut__count,
+.wamDeltaChip {
+  @include euiNumberFormat;
+  font-weight: $euiFontWeightSemiBold;
+}
+
+.wamDonut__pct {
+  @include euiNumberFormat;
+}
+
+// ---------------------------------------------------------------------------
+// 9. Narrow screens
+// ---------------------------------------------------------------------------
+@media (min-width: $wamBreakpointNarrow + 1px) and (max-width: $wamBreakpointMedium) {
+  .wamQueryRow__query {
+    flex-basis: 100%;
+  }
+
+  .wamQueryRow__time {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .wamQueryRow__time .euiFormRow,
+  .wamQueryRow__time .euiPopover,
+  .wamQueryRow__time .euiPopover__anchor,
+  .wamQueryRow__time .wamTimeRangeButton {
+    max-width: none;
+    width: 100%;
+  }
+}
+
+@media (max-width: $wamBreakpointNarrow) {
+  // App shell
+  .wamPageIntro { align-items: flex-start; }
+  .wamPageContent { border-radius: $euiSizeS; }
+
+  // Queues
+  .wamQueueStats > .euiFlexItem { flex-basis: calc(50% - #{$euiSizeS}); }
+
+  .wamBulkActions .euiFlexGroup,
+  .wamLifecycleHeader,
+  .wamLifecycleActions,
+  .wamLifecycleFields,
+  .wamStorageStats {
+    align-items: stretch;
+  }
+
+  .wamBulkActions .euiFlexItem,
+  .wamBulkActions .euiButton,
+  .wamLifecycleActions > .euiFlexItem,
+  .wamLifecycleActions .euiButton,
+  .wamLifecycleFields > .euiFlexItem,
+  .wamLifecycleHeader > .euiFlexItem,
+  .wamStorageStats > .euiFlexItem {
+    flex-basis: 100%;
+    min-width: 0 !important;
+    width: 100%;
+  }
+
+  // Filter bar
+  .wamQueryRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .wamQueryRow > .euiFlexItem,
+  .wamQueryRow .euiButton,
+  .wamQueryRow .euiPopover,
+  .wamQueryRow .euiPopover__anchor {
+    min-width: 0;
+    max-width: none;
+    width: 100%;
+  }
+
+  .wamStructuredFilters > .euiFlexItem {
+    flex-basis: 100%;
+    max-width: none;
+    min-width: 0 !important;
+  }
+
+  .wamStructuredFilters__refresh {
+    margin-left: 0;
+  }
+
+  .wamTimePopover {
+    max-width: calc(100vw - #{$wamChromeHeight});
+  }
+
+  // Flyouts
+  .wamAlertFlyout .euiFlyoutBody__overflow {
+    padding-left: $euiSizeM;
+    padding-right: $euiSizeM;
+  }
+
+  // Attack graph
+  .wamAg__phases { flex-direction: column; }
+  .wamAg__ph { min-width: 0; }
+  .wamAg__chev { display: none; }
+  .wamAg__info { grid-template-columns: 1fr; }
   .wamAg__lane, .wamAg__axis { grid-template-columns: 90px minmax(0, 1fr); }
   .wamAg__lanec { display: none; }
   .wamAg__tr, .wamAg__gap { grid-template-columns: 0 20px minmax(0, 1fr); }
   .wamAg__tt { display: none; }
   .wamAg__tr::before, .wamAg__gap::before { left: 9px; }
   .wamAg__more { margin-left: 0; }
+
+  // Settings
+  .wamSettingsLayout {
+    flex-direction: column;
+  }
+
+  .wamSettingsNavColumn,
+  .wamSettingsNavColumn.wamSettingsNavColumn--collapsed {
+    border-right: 0;
+    flex-basis: auto;
+    max-width: none;
+    min-width: 0;
+    padding-right: 0;
+    position: static;
+    width: 100%;
+  }
+
+  // Stacked layout: the collapsed rail runs horizontally under the toggle.
+  .wamSettingsNav--collapsed .wamSettingsNav__rail {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  // The group dividers are EuiHorizontalRule <hr>s (width 100%); in the
+  // horizontal rail they would each take a whole flex line, so turn them
+  // into 1px vertical separators between the icon groups instead.
+  .wamSettingsNav--collapsed .wamSettingsNav__rail .wamSettingsNav__rule {
+    align-self: stretch;
+    flex: 0 0 auto;
+    height: auto;
+    margin: 0 $euiSizeXS;
+    width: 1px;
+  }
+
+  .wamAutomationStats > .euiFlexItem {
+    flex-basis: calc(50% - #{$euiSizeS});
+    min-width: 0 !important;
+  }
+
+  .wamPredicateRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .wamPredicateRow > .euiFlexItem,
+  .wamAutomationSettings > .euiFlexGroup > .euiFlexItem,
+  .wamAutomationSettings .euiButton {
+    flex-basis: 100%;
+    min-width: 0 !important;
+    width: 100%;
+  }
+
+  // Reporting
+  .wamReportDatePicker,
+  .wamReportTabs .euiFlexItem,
+  .wamReportStats > .euiFlexItem,
+  .wamOutcomeStats > .euiFlexItem,
+  .wamReportCharts > .euiFlexItem {
+    flex-basis: 100%;
+    min-width: 0 !important;
+  }
 }
 
-// Status filter buttons (Open / In progress / Closed). A selected status must
-// be obvious at a glance, not just bold: it gets its lifecycle colour as a
-// dot, a tinted background and an underline. The tints use the same hues as
-// StatusBadge / STATUS_HEX so the queue filter and the row badges agree.
-.wamStatusFilter {
-  position: relative;
-  transition: background-color 120ms ease, box-shadow 120ms ease;
-}
-.wamStatusFilter .euiFilterButton__textShift::before,
-.wamStatusFilter .euiFilterButton__text::before {
-  content: '';
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-right: 6px;
-  vertical-align: middle;
-  background: currentColor;
-  opacity: 0.35;
-}
-.wamStatusFilter--active .euiFilterButton__textShift::before,
-.wamStatusFilter--active .euiFilterButton__text::before {
-  opacity: 1;
-}
-.wamStatusFilter--active {
-  font-weight: 600;
-  box-shadow: inset 0 -3px 0 0 currentColor;
-}
-.wamStatusFilter--open.wamStatusFilter--active {
-  color: #0077cc;
-  background-color: rgba(0, 119, 204, 0.14);
-}
-.wamStatusFilter--in_progress.wamStatusFilter--active {
-  color: #9170b8;
-  background-color: rgba(145, 112, 184, 0.16);
-}
-.wamStatusFilter--closed.wamStatusFilter--active {
-  color: #69707d;
-  background-color: rgba(152, 162, 179, 0.22);
-}
-.wamStatusFilter--active .euiNotificationBadge {
-  background-color: currentColor;
+// Reporting export (step 10.3): the dashboard page itself is not the print
+// document (the HTML export is), so hide the export control if someone prints
+// the app anyway.
+@media print {
+  .wamReportToolbar .wamReportExport,
+  .wamReportToolbar .wamReportDatePicker {
+    display: none;
+  }
 }

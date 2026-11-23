@@ -1,3 +1,7 @@
 scripts/dev/*.sh text eol=lf
 docker/dev/* text eol=lf
 e2e/*.py text eol=lf
+lab/**/*.sh text eol=lf
+lab/agent/Vagrantfile text eol=lf
+lab/misp/.env.example text eol=lf
+lab/misp/docker-compose.yml text eol=lf

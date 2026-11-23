@@ -1,4 +1,7 @@
-import { ALERTS_READ_ALIAS, ALERT_STATUS_INDEX, CASES_INDEX, RULES_INDEX } from '../../common';
+// The SLA policy read (step 3.1) is mocked so the mocked clients' get() counts stay about automation state.
+jest.mock('./sla/policy', () => { const actual = jest.requireActual('./sla/policy'); return { ...actual, getSlaPolicy: jest.fn(async () => actual.DEFAULT_SLA_POLICY) }; });
+import { ALERTS_READ_ALIAS, ALERT_STATUS_INDEX, CASES_INDEX, NOTIFICATIONS_INDEX, RULES_INDEX } from '../../common';
+import { invalidateNotificationSettingsCache, primeNotificationSettingsCache } from './notifications/settings';
 import {
   evaluateCorrelationRules,
   evaluateRuleAtAlert,
@@ -415,6 +418,60 @@ describe('queued evidence and write fencing', () => {
     routing.mockRestore();
   });
 
+  test('counts and logs a task list that could not be applied to a created case (step 2.2)', async () => {
+    const caseRule = {
+      id: 'case-rule', name: 'Case burst', enabled: true, revision: 1, match: {},
+      trigger: { type: 'burst', entity: 'srcip', threshold: 1, windowMinutes: 5, routing: 'one_per_rule' },
+      actions: { createCase: true, caseSeverity: 'high', applyTaskListId: 'pb-0123456789abcdef' }, safety: { acknowledgeMatchAll: true },
+    };
+    const routing = jest.spyOn(automationCaseRouting, 'applyAutomationCaseRoutes').mockResolvedValue({
+      created: 1, extended: 0, linked: 1, conflicts: [], caseIds: ['case-1'], remainder: [],
+      taskListsApplied: 0, taskListErrors: ['case-1: Task list pb-0123456789abcdef is disabled'],
+    });
+    const client: any = {
+      search: jest.fn(async (request: any) => {
+        if (request.index === ALERTS_READ_ALIAS && request.body.query.ids) {
+          return { body: { hits: { hits: [{ _id: 'a1', _index: physicalIndex, _source: alertSource }] } } };
+        }
+        if (request.index === ALERT_STATUS_INDEX) {
+          return { body: { hits: { total: { value: 1 }, hits: [{ _id: 'a1', _source: alertSource }] } } };
+        }
+        throw new Error(`Unexpected search index ${request.index}`);
+      }),
+      create: jest.fn(async () => ({})),
+      // No trigger state yet (first burst); the progress marker created by the
+      // reservation reads back empty.
+      get: jest.fn(async ({ id }: any) => {
+        if (String(id).startsWith('trigger-state:')) throw Object.assign(new Error('not found'), { meta: { statusCode: 404 } });
+        return { body: { found: true, _source: {} } };
+      }),
+      update: jest.fn(async () => ({})),
+    };
+    logger.warn.mockClear();
+
+    const outcome = await evaluateCorrelationRules(
+      client, [{ _id: 'a1', _source: alertSource }], logger, undefined,
+      { id: 'snapshot', rules: [caseRule], revisions: [], admissionCutoff: '2026-08-28T12:00:02.000Z' }
+    );
+
+    expect(outcome).toEqual(expect.objectContaining({
+      status: 'terminal_success',
+      counters: expect.objectContaining({ caseCreations: 1, taskListsApplied: 0, taskListFailures: 1 }),
+    }));
+    expect(routing).toHaveBeenCalledWith(
+      client,
+      [expect.objectContaining({ applyTaskListId: 'pb-0123456789abcdef', alertIds: ['a1'] })],
+      1,
+      expect.any(Number),
+      expect.any(Map),
+      expect.any(Function)
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      'wazuh-alert-manager: automation task list not applied: case-1: Task list pb-0123456789abcdef is disabled'
+    );
+    routing.mockRestore();
+  });
+
   test('extends an existing burst case during cooldown without allowing another case creation', async () => {
     const caseRule = {
       id: 'case-rule', name: 'Continuous burst', enabled: true, revision: 1, match: {},
@@ -426,7 +483,7 @@ describe('queued evidence and write fencing', () => {
       actions: { createCase: true }, safety: { acknowledgeMatchAll: true },
     };
     const routing = jest.spyOn(automationCaseRouting, 'applyAutomationCaseRoutes').mockResolvedValue({
-      created: 0, extended: 1, linked: 1, conflicts: [], caseIds: ['existing-case'], remainder: [],
+      created: 0, extended: 1, linked: 1, conflicts: [], caseIds: ['existing-case'], remainder: [], taskListsApplied: 0, taskListErrors: [],
     });
     const client: any = {
       search: jest.fn(async (request: any) => {
@@ -628,5 +685,265 @@ describe('queued evidence and write fencing', () => {
     expect(client.search.mock.calls.some(
       (call: any[]) => call[0].index === ALERT_STATUS_INDEX && call[0].body?.query?.bool?.must
     )).toBe(false);
+  });
+});
+
+describe('disposition written with an automated close (step 2.4)', () => {
+  test('the close action carries the disposition; the script stores it and names it on the close history row', async () => {
+    const rule = {
+      name: 'Close scanner noise',
+      enabled: true,
+      match: {},
+      trigger: { type: 'per_alert' },
+      actions: { createCase: false, setStatus: 'closed', disposition: 'false_positive' },
+      safety: { acknowledgeMatchAll: true },
+    };
+    const client: any = {
+      search: jest.fn(async (request: any) => {
+        if (request.index === RULES_INDEX) return { body: { hits: { hits: [{ _id: 'rule-1', _source: rule }] } } };
+        if (request.index === ALERTS_READ_ALIAS && request.body.query.ids) {
+          return { body: { hits: { hits: [{ _id: 'a1', _index: physicalIndex, _source: alertSource }] } } };
+        }
+        throw new Error(`Unexpected search index ${request.index}`);
+      }),
+      bulk: jest.fn(async () => ({ body: { errors: false, items: [{ update: { status: 200, result: 'updated' } }] } })),
+      update: jest.fn(),
+      index: jest.fn(),
+      get: jest.fn(async () => { throw { meta: { statusCode: 404 } }; }),
+    };
+
+    const outcome = await evaluateCorrelationRules(client, [{ _id: 'a1', _source: alertSource }], logger);
+    expect(outcome.status).toBe('terminal_success');
+    const operation = client.bulk.mock.calls[0][0].body[1];
+    const actions = operation.script.params.actions;
+    expect(actions.find((a: any) => a.field === 'status')).toEqual({
+      marker: 'status:rule-1:a1', field: 'status', value: 'closed', rule: 'rule-1', disposition: 'false_positive',
+    });
+    // No separate disposition action: the status action carries it, so the
+    // `rule:<id> -> closed` history row names the outcome like a manual close.
+    expect(actions.find((a: any) => a.field === 'disposition')).toBeUndefined();
+    expect(actions.find((a: any) => a.field === 'reporting')).toEqual(expect.objectContaining({ merge: true }));
+    expect(operation.script.source).toContain('if (action.disposition != null) { ctx._source.disposition = action.disposition; row.disposition = action.disposition; }');
+    expect(operation.script.source).toContain('ctx._source.history.add(row)');
+  });
+});
+
+describe('notify action (step 1.4)', () => {
+  const channels = {
+    enabled: true,
+    channels: [
+      { id: 'slack', name: 'SOC Slack', kind: 'indexer_channel', enabled: true, events: [] },
+      { id: 'old', name: 'Retired hook', kind: 'webhook', enabled: false, events: [] },
+    ],
+  } as any;
+  const rule = {
+    name: 'Notify SOC',
+    enabled: true,
+    match: {},
+    trigger: { type: 'per_alert' },
+    actions: { createCase: false, setStatus: 'in_progress', notify: { channelIds: ['slack', 'old', 'ghost'] } },
+    safety: { acknowledgeMatchAll: true },
+  };
+  interface NotifyClientOptions {
+    alertWrite?: 'updated' | 'noop';
+    /** The `_source` the second (re-read) ids search answers; default: the first one. */
+    reread?: any;
+    /** The stored alert as the first ids search answers it. */
+    stored?: any;
+    /** Forced outbox bulk behaviour. */
+    outbox?: (request: any) => Promise<any>;
+    /** Forced notification_settings read. */
+    settings?: () => Promise<any>;
+  }
+  const notifyClient = (options: NotifyClientOptions = {}) => {
+    const written = new Set<string>();
+    let idsSearches = 0;
+    const client: any = {
+      search: jest.fn(async (request: any) => {
+        if (request.index === RULES_INDEX) return { body: { hits: { hits: [{ _id: 'rule-1', _source: rule }] } } };
+        if (request.index === ALERTS_READ_ALIAS && request.body.query.ids) {
+          idsSearches += 1;
+          const source = idsSearches > 1 && options.reread ? options.reread : options.stored || alertSource;
+          return { body: { hits: { hits: [{ _id: 'a1', _index: physicalIndex, _source: source }] } } };
+        }
+        throw new Error(`Unexpected search index ${request.index}`);
+      }),
+      bulk: jest.fn(async (request: any) => {
+        if (request.body?.[0]?.create?._index === NOTIFICATIONS_INDEX) {
+          if (options.outbox) return options.outbox(request);
+          const items: any[] = [];
+          for (let position = 0; position < request.body.length; position += 2) {
+            const id = request.body[position].create._id;
+            if (written.has(id)) items.push({ create: { _id: id, status: 409, error: { type: 'version_conflict_engine_exception' } } });
+            else { written.add(id); items.push({ create: { _id: id, status: 201 } }); }
+          }
+          return { body: { errors: false, items } };
+        }
+        const alertWrite = request.body?.[0]?.update?._index === physicalIndex;
+        return { body: { errors: false, items: [{ update: { status: 200, result: alertWrite ? options.alertWrite || 'updated' : 'updated' } }] } };
+      }),
+      update: jest.fn(),
+      get: jest.fn(async (request: any) => {
+        if (request.id === 'notification_settings' && options.settings) return options.settings();
+        throw { meta: { statusCode: 404 } };
+      }),
+      index: jest.fn(async () => ({})),
+    };
+    return client;
+  };
+  const outboxWrites = (client: any) => client.bulk.mock.calls
+    .map((call: any[]) => call[0])
+    .filter((request: any) => request.body?.[0]?.create?._index === NOTIFICATIONS_INDEX)
+    .flatMap((request: any) => request.body.filter((_: any, index: number) => index % 2 === 1));
+
+  beforeEach(() => primeNotificationSettingsCache(channels));
+  afterEach(() => invalidateNotificationSettingsCache());
+
+  test('enqueues one rule.action entry per enabled channel under the idempotent id, with the applied outcome in the payload, and counts unknown, disabled and duplicate targets as skipped', async () => {
+    const client = notifyClient();
+
+    const first = await evaluateCorrelationRules(client, [{ _id: 'a1', _source: alertSource }], logger);
+    expect(first.status).toBe('terminal_success');
+    expect(first.counters).toMatchObject({ statusChanges: 1, notificationsEnqueued: 1, notificationsSkipped: 2 });
+    expect(first.appliedRuleIds).toEqual(['rule-1']);
+    const writes = outboxWrites(client);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({
+      id: 'notify:rule-1:a1:slack',
+      event: 'rule.action',
+      channel_id: 'slack',
+      channel_kind: 'indexer_channel',
+      target_type: 'alert',
+      target_id: 'a1',
+      status: 'pending',
+    });
+    expect(writes[0].subject).toBe('[Wazuh Alert Manager] Automation rule fired: Notify SOC');
+    expect(writes[0].payload).toMatchObject({
+      event: 'rule.action',
+      actor: 'correlation-rule',
+      rule: { id: 'rule-1', name: 'Notify SOC' },
+      actions: { status: 'in_progress' },
+      alert: { id: 'a1', status: 'in_progress', rule: { id: '5502' } },
+    });
+    expect(writes[0].payload.actions.assignee).toBeUndefined();
+    expect(writes[0].payload.actions.caseId).toBeUndefined();
+    expect(writes[0].payload.alert.data).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('ghost, old'));
+    // The alert was not re-read: its bulk item was applied, the snapshot plus the applied actions is current.
+    expect(client.search.mock.calls.filter((call: any[]) => call[0].index === ALERTS_READ_ALIAS)).toHaveLength(1);
+
+    // A re-evaluation of the same event (queue retry, second replica) never duplicates.
+    const second = await evaluateCorrelationRules(client, [{ _id: 'a1', _source: alertSource }], logger);
+    expect(second.status).toBe('terminal_success');
+    expect(second.counters).toMatchObject({ notificationsEnqueued: 0, notificationsSkipped: 3 });
+    expect(outboxWrites(client)).toHaveLength(2);
+  });
+
+  test('a status the script did not apply (analyst edit won) is not claimed, and the payload carries the re-read live alert, not the stale snapshot', async () => {
+    const client = notifyClient({
+      alertWrite: 'noop',
+      reread: { ...alertSource, state_version: 5, status: 'closed', assigned_to: 'analyst-7', updated_by: 'analyst-7' },
+    });
+    const outcome = await evaluateCorrelationRules(client, [{ _id: 'a1', _source: alertSource }], logger);
+    expect(outcome.status).toBe('terminal_success');
+    expect(outcome.counters).toMatchObject({ skippedBySafety: 1, notificationsEnqueued: 1 });
+    expect(client.search.mock.calls.filter((call: any[]) => call[0].index === ALERTS_READ_ALIAS)).toHaveLength(2);
+    const payload = outboxWrites(client)[0].payload;
+    expect(payload.actions).toEqual({});
+    expect(payload.alert.status).toBe('closed');
+    expect(payload.alert.assigned_to).toBe('analyst-7');
+  });
+
+  test('a failed re-read of a noop alert is a retryable notification_enqueue failure and nothing is written', async () => {
+    const client = notifyClient({ alertWrite: 'noop' });
+    const search = client.search;
+    let idsSearches = 0;
+    client.search = jest.fn(async (request: any) => {
+      if (request.index === ALERTS_READ_ALIAS && request.body.query.ids && ++idsSearches > 1) throw new Error('alias unavailable');
+      return search(request);
+    });
+    const outcome = await evaluateCorrelationRules(client, [{ _id: 'a1', _source: alertSource }], logger);
+    expect(outcome).toEqual(expect.objectContaining({
+      status: 'retryable_failure',
+      failures: [expect.objectContaining({ stage: 'notification_enqueue', message: expect.stringContaining('alias unavailable') })],
+    }));
+    expect(outboxWrites(client)).toHaveLength(0);
+  });
+
+  test('a replay after a later-stage failure reports the status the first attempt applied, read from the action markers', async () => {
+    // The first attempt stored the status and its marker; the planner now sees
+    // the status satisfied and writes nothing, but the rule did act.
+    const client = notifyClient({
+      stored: { ...alertSource, state_version: 5, status: 'in_progress', automation_action_markers: ['status:rule-1:a1', 'reporting:rule-1:a1'] },
+    });
+    const outcome = await evaluateCorrelationRules(client, [{ _id: 'a1', _source: alertSource }], logger);
+    expect(outcome.status).toBe('terminal_success');
+    expect(outcome.counters).toMatchObject({ statusChanges: 0, notificationsEnqueued: 1 });
+    expect(client.bulk.mock.calls.filter((call: any[]) => call[0].body?.[0]?.update)).toHaveLength(0);
+    const payload = outboxWrites(client)[0].payload;
+    expect(payload.actions).toEqual({ status: 'in_progress' });
+    expect(payload.alert.status).toBe('in_progress');
+  });
+
+  test('an outbox bulk item failure is a retryable notification_enqueue failure (the ids make the replay safe)', async () => {
+    const client = notifyClient({
+      outbox: async (request: any) => ({ body: { errors: true, items: [{ create: { _id: request.body[0].create._id, status: 503, error: { reason: 'outbox unavailable' } } }] } }),
+    });
+    const outcome = await evaluateCorrelationRules(client, [{ _id: 'a1', _source: alertSource }], logger);
+    expect(outcome).toEqual(expect.objectContaining({
+      status: 'retryable_failure',
+      failures: [expect.objectContaining({ stage: 'notification_enqueue', ruleId: 'rule-1', alertId: 'a1', message: expect.stringContaining('outbox unavailable') })],
+    }));
+    expect(outcome.counters).toMatchObject({ notificationsEnqueued: 0 });
+  });
+
+  test('an outbox transport failure is a retryable notification_enqueue failure', async () => {
+    const client = notifyClient({ outbox: async () => { throw new Error('connection reset'); } });
+    const outcome = await evaluateCorrelationRules(client, [{ _id: 'a1', _source: alertSource }], logger);
+    expect(outcome).toEqual(expect.objectContaining({
+      status: 'retryable_failure',
+      failures: [expect.objectContaining({ stage: 'notification_enqueue', message: 'connection reset' })],
+    }));
+  });
+
+  test('a failed notification settings read is a retryable notification_enqueue failure with no outbox write, never a final skip', async () => {
+    invalidateNotificationSettingsCache();
+    const client = notifyClient({ settings: async () => { throw new Error('meta index unavailable'); } });
+    const outcome = await evaluateCorrelationRules(client, [{ _id: 'a1', _source: alertSource }], logger);
+    expect(outcome).toEqual(expect.objectContaining({
+      status: 'retryable_failure',
+      failures: [expect.objectContaining({ stage: 'notification_enqueue', message: 'meta index unavailable' })],
+    }));
+    expect(outcome.counters).toMatchObject({ notificationsEnqueued: 0, notificationsSkipped: 0 });
+    expect(outboxWrites(client)).toHaveLength(0);
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('disabled in Settings > Notifications'));
+  });
+
+  test('every target is skipped, nothing is written and the rule is not claimed as applied while notifications are disabled globally', async () => {
+    primeNotificationSettingsCache({ ...channels, enabled: false });
+    const client = notifyClient({ stored: { ...alertSource, status: 'in_progress', automation_action_markers: ['status:rule-1:a1'] } });
+    const outcome = await evaluateCorrelationRules(client, [{ _id: 'a1', _source: alertSource }], logger);
+    expect(outcome.status).toBe('terminal_success');
+    expect(outcome.counters).toMatchObject({ statusChanges: 0, notificationsEnqueued: 0, notificationsSkipped: 3 });
+    expect(outcome.appliedRuleIds).toEqual([]);
+    expect(outboxWrites(client)).toHaveLength(0);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('disabled in Settings > Notifications'));
+  });
+
+  test('a rule without the action reads no settings and writes no outbox entry', async () => {
+    invalidateNotificationSettingsCache();
+    const client = notifyClient();
+    client.search = jest.fn(async (request: any) => {
+      if (request.index === RULES_INDEX) return { body: { hits: { hits: [{ _id: 'rule-1', _source: { ...rule, actions: { createCase: false, setStatus: 'in_progress' } } }] } } };
+      if (request.index === ALERTS_READ_ALIAS && request.body.query.ids) {
+        return { body: { hits: { hits: [{ _id: 'a1', _index: physicalIndex, _source: alertSource }] } } };
+      }
+      throw new Error(`Unexpected search index ${request.index}`);
+    });
+    const outcome = await evaluateCorrelationRules(client, [{ _id: 'a1', _source: alertSource }], logger);
+    expect(outcome.status).toBe('terminal_success');
+    expect(outcome.counters).toMatchObject({ notificationsEnqueued: 0, notificationsSkipped: 0 });
+    expect(outboxWrites(client)).toHaveLength(0);
+    expect(client.get).not.toHaveBeenCalledWith(expect.objectContaining({ id: 'notification_settings' }));
   });
 });

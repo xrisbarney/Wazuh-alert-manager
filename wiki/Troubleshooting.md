@@ -159,13 +159,14 @@ the lifecycle, automation, and sync workers are started. A restart exposes the
 problem because initialization and retirement recovery run again; repeated VM
 shutdowns do not themselves corrupt the watermark.
 
-**Fix.** Install the current supported build (2.0.2 for Wazuh 4.14 / OpenSearch
-Dashboards 2.19.5) and let the installer restart the dashboard:
+**Fix.** Install the current stable build (2.0.3; the installer picks the
+artifact for the running dashboard's exact OpenSearch Dashboards version) and
+let the installer restart the dashboard:
 
 ```bash
 curl -fsSL \
   https://github.com/xrisbarney/Wazuh-alert-manager/releases/latest/download/install.sh | \
-  sudo bash -s -- --version 2.0.2
+  sudo bash -s -- --version 2.0.3
 ```
 
 Do not delete the sync state, reset its watermark, or manually create the lock.
@@ -206,6 +207,104 @@ Current operational data is stored under the `wazuh-alert-status-v2-*` aliases a
 - **Retry** requeues the recoverable event with its captured ruleset snapshot and is idempotent. It does not apply current rules to historical alerts.
 - **Resolve** removes the dead-letter document without running it. Use this only after determining that the event should not be retried or its payload is unrecoverable.
 - Both mutations require `all_access`. A recurring stage/error after retry indicates an underlying mapping, payload, authorization, or storage issue; inspect the dashboard log before repeatedly retrying.
+
+---
+
+## Wazuh 5.0: nothing appears in the Findings queue
+
+A Wazuh 5.0 build reads the `wazuh-findings-v5-*` data streams, never the 4.x
+`wazuh-alerts-*` indices. Source detection runs every sync tick and records its
+outcome in the plugin's meta index as the document `source_state`, which is
+also what **Settings > Storage & lifecycle** shows. Read it first:
+
+```bash
+curl -sk -u admin:<password>   'https://localhost:9200/wazuh-alert-manager-v2-meta/_doc/source_state?pretty'
+```
+
+| `state` | Meaning | What to do |
+|---|---|---|
+| `ready` | The family resolved and `@timestamp` is mapped | Nothing; look at the cursor below |
+| `waiting` | The pattern is valid but nothing matches it yet | Wait for the first finding to be written; confirm the manager is shipping |
+| `blocked` | The configured pattern is outside the family this build may read, or the probe failed | Fix `wazuh_alert_manager.sync.sourceIndexPattern` / `sync.sourceMode`, or grant the read. The plugin never falls back to another pattern |
+
+Then check that the source actually holds data, and what shape it is in:
+
+```bash
+# the findings family exists and has documents
+curl -sk -u admin:<password>   'https://localhost:9200/_cat/indices/wazuh-findings-v5-*?v&s=index'
+
+# newest finding, with the fields the adapter reads
+curl -sk -u admin:<password> -H 'Content-Type: application/json'   'https://localhost:9200/wazuh-findings-v5-*/_search?pretty' -d '{
+    "size": 1,
+    "sort": [{"@timestamp": {"order": "desc", "numeric_type": "date"}}],
+    "_source": ["@timestamp","wazuh.rule.level","wazuh.agent","event.index","event.doc_id","wazuh.case"]
+  }'
+```
+
+`numeric_type: date` is required because 5.0 `@timestamp` is `date_nanos`; a
+plain sort against a nanosecond field is what the plugin's own cursor uses.
+
+Finally, the 5.0 sync cursor lives in its **own** document so a 4.x cursor is
+never replayed against findings:
+
+```bash
+curl -sk -u admin:<password>   'https://localhost:9200/wazuh-alert-manager-v2-meta/_doc/sync_state%3Awazuh5_findings?pretty'
+```
+
+(The 4.x cursor is `sync_state`.) If the cursor is advancing but the queue is
+empty, check `sync.minSeverityLabel` — on 5.0 `sync.minRuleLevel` is ignored,
+and a label floor set too high silently filters everything at the source.
+
+---
+
+## Wazuh 5.0: provisioning or writes fail
+
+- **`cluster_block_exception` on create index.** The 5.0 indexer sets
+  `cluster.blocks.create_index: true`. The plugin works around this with a
+  temporary plugin-owned template plus a bootstrap write and logs
+  `Created ... through a bootstrap write`. If you see the block instead, the
+  template could not be created — check the dashboard user's privileges.
+- **403 writing `wazuh-alert-status-v2-*`.** The 5.0 dashboard indexer user is
+  read-only on `wazuh-*`. Run `install.sh --grant-roles` (or create
+  `wazuh_alert_manager_store` by hand from the role the installer prints).
+
+---
+
+## Asset or enrichment chips read "no access"
+
+The asset chips read `wazuh-states-*` and the 5.0 local CTI source reads
+`wazuh-threatintel-enrichments*`, both **as the signed-in user**, so a 403
+becomes a "no access" chip rather than an error. Map
+`wazuh_alert_manager_native_read` to the analyst's role (the installer prints
+the exact `rolesmapping` call), or re-apply the grants with
+`install.sh --grant-roles`. A chip reading "not available" means the index does
+not exist on this line — for example, there is no `wazuh-states-sca` on Wazuh
+4.x, where the SCA chip reads *not indexed on 4.x* and links to Configuration
+Assessment instead.
+
+---
+
+## Notifications stay queued
+
+Open **Settings > Notifications** and read the outbox:
+
+- **`failed` with a 403** — the dashboard's indexer user is missing
+  `wazuh_alert_manager_notify`; the recorded error says so. Re-apply with
+  `install.sh --grant-roles --indexer-admin-password <pw>`.
+- **`failed` on a direct webhook with an egress reason** — the URL is not https
+  to a public host. Add the hostname to
+  `WAZUH_ALERT_MANAGER_EGRESS_ALLOWED_HOSTS` on the dashboard service and
+  restart it.
+- **Retried an hour later rather than on the backoff table** — the webhook
+  secret could not be decrypted: `WAZUH_ALERT_MANAGER_ENCRYPTION_KEY` is unset,
+  or differs from the value the replica that saved it used. Each of those
+  retries still consumes a delivery attempt, so the entry is `dead` after five:
+  set the variable and then use **Retry** on the dead entries.
+- **`dead`** — five attempts failed, or the channel was deleted or disabled. An
+  administrator can **Retry** it, which keeps the attempt count.
+- **Nothing is claimed at all** — `notifications.dispatcher.enabled` is false,
+  or no replica holds the `notification_dispatcher` lease. `GET
+  /api/wazuh_alert_manager/notifications/status` shows the last tick.
 
 ---
 

@@ -28,12 +28,13 @@ import {
   EuiText,
   EuiTitle,
   EuiToolTip,
-  EuiEmptyPrompt,
   EuiStat,
   EuiLink,
 } from '@elastic/eui';
 import {
   ALERT_STATUSES,
+  ASSET_CRITICALITIES,
+  AssetCriticality,
   CASE_SEVERITIES,
   CorrelationEntity,
   CorrelationEntityExpression,
@@ -45,9 +46,19 @@ import {
   CorrelationRulePreviewRequest,
   CorrelationRuleRevision,
   MatchMode,
+  canonicalDomain,
+  canonicalHash,
+  canonicalUrl,
+  TaskList,
+  DISPOSITIONS,
+  DISPOSITION_LABELS,
+  RULE_NOTIFY_MAX_CHANNELS,
 } from '../../common';
 import { formatRelative, statusLabel } from '../design';
 import { AlertsApiService, AutomationDlqItem, AutomationHealth, AutomationSettings } from '../services/api';
+import { NotifyChannelOption, NotifyChannelsState, RuleNotifyChannels } from './rule_notify_channels';
+import { SettingsPageHeader } from './settings_page';
+import { QueueEmptyPrompt } from './queue_chrome';
 
 interface Props {
   apiService: AlertsApiService;
@@ -55,6 +66,11 @@ interface Props {
 }
 
 type Stage = 'basics' | 'match' | 'trigger' | 'actions' | 'safety' | 'preview' | 'history';
+
+const ASSET_CRITICALITY_FLOOR_OPTIONS: Array<{ value: string; text: string }> = [
+  { value: '', text: 'Any asset' },
+  ...ASSET_CRITICALITIES.map((value) => ({ value, text: `${value.charAt(0).toUpperCase()}${value.slice(1)} or higher` })),
+];
 
 type EditorRule = Partial<CorrelationRule>;
 
@@ -76,9 +92,12 @@ const ENTITY_LABEL: Record<string, string> = {
   process: 'Process',
   srcport: 'Source port',
   dstport: 'Destination port',
+  hash: 'File hash',
+  domain: 'Domain',
+  url: 'URL',
 };
 
-const ENTITY_OPTIONS = (['srcip', 'dstip', 'srcport', 'dstport', 'user', 'dstuser', 'process'] as CorrelationEntity[])
+const ENTITY_OPTIONS = (['srcip', 'dstip', 'srcport', 'dstport', 'user', 'dstuser', 'process', 'hash', 'domain', 'url'] as CorrelationEntity[])
   .map((entity) => ({ value: entity, text: ENTITY_LABEL[entity] }));
 const ADMIN_DOCS = 'https://documentation.wazuh.com/current/user-manual/user-administration/index.html';
 const ADMIN_HELP = 'Your effective Wazuh authorization does not include all_access. OpenSearch Security roles, not SSO/LDAP group names, control automation administration.';
@@ -123,7 +142,12 @@ const normalizeForEdit = (rule: any): EditorRule => {
       createCase: !!(rule.actions?.createCase ?? rule.entity),
       caseSeverity: rule.actions?.caseSeverity ?? rule.caseSeverity ?? 'medium',
       setStatus: rule.actions?.setStatus ?? null,
+      disposition: rule.actions?.setStatus === 'closed' ? rule.actions?.disposition ?? null : null,
       assignTo: rule.actions?.assignTo ?? null,
+      applyTaskListId: rule.actions?.applyTaskListId ?? null,
+      notify: Array.isArray(rule.actions?.notify?.channelIds) && rule.actions.notify.channelIds.length
+        ? { channelIds: rule.actions.notify.channelIds.map(String) }
+        : null,
     },
     preconditions: {
       statuses: rule.preconditions?.statuses,
@@ -153,7 +177,7 @@ const emptyRule = (): EditorRule => ({
     cooldown: { durationMinutes: 0 },
     rearm: { type: 'immediate', quietPeriodMinutes: 0 },
   },
-  actions: { createCase: false, caseSeverity: 'medium', setStatus: null, assignTo: null },
+  actions: { createCase: false, caseSeverity: 'medium', setStatus: null, assignTo: null, notify: null },
   preconditions: { assignment: 'unassigned' },
   safety: { acknowledgeMatchAll: false },
 });
@@ -185,6 +209,15 @@ const concurrencyOf = (rule: Pick<CorrelationRule, 'revision' | 'if_seq_no' | 'i
 
 const isConflict = (error: any) =>
   error?.body?.statusCode === 409 || error?.statusCode === 409 || error?.response?.status === 409;
+/**
+ * A 409 that means "someone else changed the rule" (stale revision / concurrency token), which
+ * the editor answers by reloading the server copy. Other rule 409s (entity groups changed on an
+ * enabled rule, preview required, enabled-rule capacity, deleted rule) explain a refused edit and
+ * must surface their message instead of discarding the user's edits.
+ */
+const isStaleConflict = (error: any) => isConflict(error) && /stale/i.test(String(error?.body?.message || error?.message || ''));
+const entityGroupsChanged = (current: any, next: any): boolean =>
+  JSON.stringify(current?.trigger?.entityExpression?.groups || []) !== JSON.stringify(next?.trigger?.entityExpression?.groups || []);
 
 const ModeToggle: React.FC<{
   idPrefix: string;
@@ -221,6 +254,9 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
   const [previewFingerprint, setPreviewFingerprint] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<CorrelationRule | null>(null);
   const [analysts, setAnalysts] = useState<string[]>([]);
+  const [taskLists, setTaskLists] = useState<TaskList[]>([]);
+  const [notifyChannels, setNotifyChannels] = useState<NotifyChannelOption[]>([]);
+  const [notifyChannelsState, setNotifyChannelsState] = useState<NotifyChannelsState>('loading');
   const [revisions, setRevisions] = useState<CorrelationRuleRevision[]>([]);
   const [revisionsLoading, setRevisionsLoading] = useState(false);
   const [rollingBack, setRollingBack] = useState<number | null>(null);
@@ -286,6 +322,16 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
   useEffect(() => {
     load();
     apiService.fetchUsers().then(setAnalysts).catch(() => setAnalysts([]));
+    // TaskLists (step 2.2) for the create-case action; every task list is listed so an
+    // existing selection of a now-disabled one stays visible (the server skips it at apply time).
+    apiService.fetchTaskLists().then((response) => setTaskLists(response.taskLists)).catch(() => setTaskLists([]));
+    apiService
+      .fetchNotificationSettings()
+      .then((response) => {
+        setNotifyChannels((response.channels || []).map((channel) => ({ id: channel.id, name: channel.name, kind: channel.kind, enabled: channel.enabled })));
+        setNotifyChannelsState('ready');
+      })
+      .catch(() => setNotifyChannelsState('error'));
     apiService
       .fetchSystemCapabilities()
       .then((capabilities: any) => setCanAdminister(Boolean(capabilities?.isPluginAdmin)))
@@ -340,9 +386,17 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
   };
 
   const fingerprint = (rule: EditorRule) => JSON.stringify(cleanPayload({ ...rule, enabled: false }));
+  /** True when the saved rule under edit is enabled on the server (the list's copy). */
+  const wasEnabled = (rule: EditorRule) => !!rule.id && !!rules.find((item) => item.id === rule.id)?.enabled;
   const isMatchAll = (rule: EditorRule) => {
     const match = rule.match || {};
-    return !match.ruleGroups?.length && !match.ruleIds?.length && !match.agentNames?.length && match.minLevel == null;
+    return (
+      !match.ruleGroups?.length &&
+      !match.ruleIds?.length &&
+      !match.agentNames?.length &&
+      match.minLevel == null &&
+      match.minAssetCriticality == null
+    );
   };
 
   const normalizedPredicateValue = (predicate: CorrelationEntityPredicate) => {
@@ -358,6 +412,9 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
       if (value.includes(':') && /^[0-9a-f:]+$/i.test(value)) return value.toLowerCase();
       return '';
     }
+    if (predicate.entity === 'hash') return canonicalHash(value) || '';
+    if (predicate.entity === 'domain') return canonicalDomain(value) || '';
+    if (predicate.entity === 'url') return canonicalUrl(value)?.url || (value.startsWith('/') ? value : '');
     return value;
   };
 
@@ -386,7 +443,9 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
     if (!rule.name?.trim()) errors.unshift('Give the rule a name.');
     const actions = rule.actions || ({} as any);
     const trigger = rule.trigger || ({} as any);
-    if (!actions.createCase && !actions.setStatus && !(actions.assignTo && String(actions.assignTo).trim())) errors.push('Pick at least one action: create case, set status, or assign to an analyst.');
+    const notifyCount = actions.notify?.channelIds?.length || 0;
+    if (!actions.createCase && !actions.setStatus && !(actions.assignTo && String(actions.assignTo).trim()) && !notifyCount) errors.push('Pick at least one action: create case, set status, assign to an analyst, or notify channels.');
+    if (notifyCount > RULE_NOTIFY_MAX_CHANNELS) errors.push(`Notify at most ${RULE_NOTIFY_MAX_CHANNELS} channels.`);
     if (trigger.type === 'burst') {
       if (!Number.isInteger(trigger.threshold) || trigger.threshold < 2 || trigger.threshold > 1000) errors.push('Burst threshold must be an integer from 2 to 1,000.');
       if (!Number.isInteger(trigger.windowMinutes) || trigger.windowMinutes < 1 || trigger.windowMinutes > 1440) errors.push('Burst window must be an integer from 1 to 1,440 minutes.');
@@ -394,7 +453,11 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
       if (!Number.isInteger(trigger.rearm?.quietPeriodMinutes) || trigger.rearm.quietPeriodMinutes < 1 || trigger.rearm.quietPeriodMinutes > 10080) errors.push('Quiet period must be an integer from 1 to 10,080 minutes.');
     }
     if (isMatchAll(rule) && !rule.safety?.acknowledgeMatchAll) errors.push('Acknowledge that this rule matches every alert.');
-    if (rule.enabled && previewFingerprint !== fingerprint(rule)) errors.push('Preview the current rule successfully before enabling it.');
+    // Step 12.3: the preview gate guards activation only (the server gates the same
+    // disabled -> enabled transition); an enabled rule's edit saves as a new revision.
+    if (rule.enabled && !wasEnabled(rule) && previewFingerprint !== fingerprint(rule)) errors.push('Preview the current rule successfully before enabling it.');
+    // Mirrors the server's requireDisabledEntityGroupEdit 409 so the editor says why instead of reloading the server copy.
+    if (rule.id && wasEnabled(rule) && entityGroupsChanged(rules.find((item) => item.id === rule.id), rule)) errors.push('Disable the rule before changing its entity groups.');
     return Array.from(new Set(errors));
   };
 
@@ -581,13 +644,14 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
         name: editing.name!.trim(),
         ...(!editing.id ? { enabled: false } : {}),
       };
-      if (editing.id) await apiService.updateRule(editing.id, payload, concurrencyOf(editing as CorrelationRule));
+      if (editing.id) await apiService.updateRule(editing.id, payload as Partial<CorrelationRuleCreateRequest>, concurrencyOf(editing as CorrelationRule));
       else await apiService.createRule(payload as CorrelationRuleCreateRequest);
-      onToast(editing.id && editing.enabled ? 'Rule saved and enabled' : 'Draft rule saved', 'success');
+      if (editing.id && editing.enabled && wasEnabled(editing)) onToast('Rule updated', 'success', `Revision ${Number(editing.revision || 1) + 1} is live; the rule stays enabled.`);
+      else onToast(editing.id && editing.enabled ? 'Rule saved and enabled' : 'Draft rule saved', 'success');
       setEditing(null);
       await load();
     } catch (error: any) {
-      if (editing.id && isConflict(error)) {
+      if (editing.id && isStaleConflict(error)) {
         await refreshAfterConflict(editing.id, true);
         return;
       }
@@ -675,10 +739,11 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
       name: 'Actions',
       render: (rule: CorrelationRule) => {
         const actions = rule.actions || ({} as any);
-        return [actions.createCase ? `Case (${actions.caseSeverity})` : null, actions.setStatus ? `Status: ${statusLabel(actions.setStatus)}` : null, actions.assignTo ? `Assign: ${actions.assignTo}` : null].filter(Boolean).join(', ') || 'None';
+        const taskListName = actions.applyTaskListId ? taskLists.find((taskList) => taskList.id === actions.applyTaskListId)?.name || actions.applyTaskListId : null;
+        return [actions.createCase ? `Case (${actions.caseSeverity})` : null, actions.createCase && taskListName ? `Task list: ${taskListName}` : null, actions.setStatus ? `Status: ${statusLabel(actions.setStatus)}` : null, actions.setStatus === 'closed' && actions.disposition ? `Disposition: ${(DISPOSITION_LABELS as Record<string, string>)[actions.disposition] || actions.disposition}` : null, actions.assignTo ? `Assign: ${actions.assignTo}` : null, actions.notify?.channelIds?.length ? `Notify: ${actions.notify.channelIds.length} channel${actions.notify.channelIds.length === 1 ? '' : 's'}` : null].filter(Boolean).join(', ') || 'None';
       },
     },
-    { field: 'lastFired', name: 'Last fired', render: (value: string | null) => value ? formatRelative(value) : 'Never' },
+    { field: 'lastFired', name: 'Last fired', render: (value: string | null, rule: CorrelationRule) => value ? `${formatRelative(value)} · ${Number(rule.matchCount || 0).toLocaleString()} matched` : 'Never' },
     {
       name: 'Manage',
       width: '84px',
@@ -699,6 +764,8 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
   const trigger = editing?.trigger || ({ type: 'per_alert' } as any);
   const isBurst = trigger.type === 'burst';
   const previewIsCurrent = !!editing && previewFingerprint === fingerprint(editing);
+  const editingWasEnabled = !!editing && wasEnabled(editing);
+  const firedRules = rules.filter((rule) => rule.lastFired).sort((a, b) => String(b.lastFired).localeCompare(String(a.lastFired)));
   const editorStages = editing?.id ? STAGES : STAGES.filter((item) => item.id !== 'history');
   const currentStageIndex = editorStages.findIndex((item) => item.id === stage);
   const automationPaused = automation?.paused === true;
@@ -723,7 +790,16 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
   );
 
   return (
-    <div>
+    <div className="wamSettingsPage wamAutomationRules" data-test-subj="wamAutomationRules">
+      <SettingsPageHeader
+        title="Automation rules"
+        description="Rules evaluate incoming alerts in match, trigger, and action stages. New rules remain draft until an administrator previews the current definition and explicitly enables it."
+        actions={
+          <EuiToolTip content={canAdminister ? 'Create a disabled draft rule' : ADMIN_HELP}>
+            <span><EuiButton size="s" iconType="plusInCircle" fill disabled={!canAdminister} onClick={() => openEditor()}>New rule</EuiButton></span>
+          </EuiToolTip>
+        }
+      />
       {!capabilitiesLoaded || !canAdminister ? (
         <>
           <EuiCallOut
@@ -740,7 +816,7 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
 
       <EuiPanel hasBorder hasShadow={false} paddingSize="m" className="wamAutomationHealth">
         <EuiFlexGroup alignItems="center" justifyContent="spaceBetween" gutterSize="s" wrap>
-          <EuiFlexItem grow={false}><EuiTitle size="xs"><h3>Automation runtime</h3></EuiTitle></EuiFlexItem>
+          <EuiFlexItem grow={false}><EuiTitle size="xs"><h4>Automation runtime</h4></EuiTitle></EuiFlexItem>
           <EuiFlexItem grow={false}>
             <EuiToolTip content={automationPaused ? 'The automation queue is paused. Enabled rules remain enabled, but queued ingestion-time work waits.' : 'Queue processing is running. Individual disabled rules still do not receive new work.'}>
               <EuiBadge color={automationError ? 'warning' : automationPaused ? 'warning' : 'success'}>{automationError ? 'Health unavailable' : automationPaused ? 'Queue paused' : 'Queue running'}</EuiBadge>
@@ -757,6 +833,7 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
             <EuiFlexItem><EuiStat titleSize="s" title={automation?.oldestAgeSeconds == null ? '—' : `${automation.oldestAgeSeconds}s`} description="Oldest queued" /></EuiFlexItem>
           </EuiFlexGroup>
         )}
+        {!loading && <EuiText size="xs" color="subdued" className="wamAutomationRuleCounters" data-test-subj="wamAutomationRuleCounters"><p>Rules fired: {firedRules.length ? firedRules.map((rule) => `${rule.name} (${Number(rule.matchCount || 0).toLocaleString()} matched, ${formatRelative(rule.lastFired as string)})`).join(' · ') : 'none yet'}.</p></EuiText>}
         {automation && <EuiText size="xs" color="subdued"><p>Queue states: {Object.keys(automation.states || {}).length ? Object.entries(automation.states).map(([state, count]) => `${state} ${count}`).join(' · ') : 'none'}. Admission is {automation.admissionOpen ? 'open' : 'closed'}; deferred: {automation.deferred.toLocaleString()}. Disabling a rule stops new work for that rule. Pausing the queue preserves enabled rules and delays already-admitted ingestion-time work.</p></EuiText>}
         {automationSettings && (
           <EuiPanel paddingSize="s" hasBorder hasShadow={false} className="wamAutomationSettings">
@@ -799,31 +876,21 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
       </EuiPanel>
       <EuiSpacer size="m" />
 
-      <EuiFlexGroup alignItems="center" gutterSize="m">
-        <EuiFlexItem>
-          <EuiText size="s" color="subdued">
-            Rules evaluate incoming alerts in match, trigger, and action stages. New rules remain draft until an administrator previews the current definition and explicitly enables it.
-          </EuiText>
-        </EuiFlexItem>
-        <EuiFlexItem grow={false}>
-          <EuiToolTip content={canAdminister ? 'Create a disabled draft rule' : ADMIN_HELP}>
-            <span><EuiButton size="s" iconType="plusInCircle" fill disabled={!canAdminister} onClick={() => openEditor()}>New rule</EuiButton></span>
-          </EuiToolTip>
-        </EuiFlexItem>
-      </EuiFlexGroup>
-      <EuiSpacer size="m" />
-
-      {rules.length === 0 && !loading ? (
-        <EuiEmptyPrompt
-          iconType="indexRollupApp"
-          titleSize="xs"
-          title={<h3>No automation rules yet</h3>}
-          body={<p>Create a disabled draft, define its scope and supported actions, then preview its exact saved revision before activation.</p>}
-          actions={<EuiToolTip content={canAdminister ? 'Create a disabled draft rule' : ADMIN_HELP}><span><EuiButton size="s" fill disabled={!canAdminister} onClick={() => openEditor()}>New rule</EuiButton></span></EuiToolTip>}
-        />
-      ) : (
-        <div style={{ overflowX: 'auto' }}><EuiBasicTable items={rules} itemId="id" columns={columns as any} loading={loading} tableLayout="auto" /></div>
-      )}
+      <EuiPanel hasBorder hasShadow={false} paddingSize="m" className="wamAutomationRulesPanel">
+        <EuiTitle size="xs"><h4>Rules</h4></EuiTitle>
+        <EuiSpacer size="s" />
+        {rules.length === 0 && !loading ? (
+          <QueueEmptyPrompt
+            title="No automation rules yet"
+            body="Create a disabled draft, define its scope and supported actions, then preview its exact saved revision before activation."
+            headingLevel="h3"
+            testSubj="wamRulesEmpty"
+            actions={<EuiToolTip content={canAdminister ? 'Create a disabled draft rule' : ADMIN_HELP}><span><EuiButton size="s" fill disabled={!canAdminister} onClick={() => openEditor()}>New rule</EuiButton></span></EuiToolTip>}
+          />
+        ) : (
+          <div style={{ overflowX: 'auto' }}><EuiBasicTable items={rules} itemId="id" columns={columns as any} loading={loading} tableLayout="auto" /></div>
+        )}
+      </EuiPanel>
 
       {editing && (
         <EuiFlyout onClose={() => setEditing(null)} size="90vw" aria-labelledby="rule-editor" className="wamRuleFlyout">
@@ -859,7 +926,8 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
                     checked={!!editing.enabled}
                     disabled={!editing.id}
                     onChange={(event) => {
-                      if (event.target.checked && !previewIsCurrent) {
+                      // Only the disabled -> enabled transition is preview-gated; an enabled rule can be switched off and back on freely.
+                      if (event.target.checked && !editingWasEnabled && !previewIsCurrent) {
                         setStage('preview');
                         onToast('Preview the current definition before enabling', 'primary');
                         return;
@@ -867,7 +935,7 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
                       update({ enabled: event.target.checked });
                     }}
                   />
-                  <EuiText size="xs" color="subdued"><p>{editing.id ? 'Activation is blocked until a successful preview matches the current material definition.' : 'New rules are always saved as disabled drafts. Reopen the saved rule to enable it after preview.'}</p></EuiText>
+                  <EuiText size="xs" color="subdued"><p>{!editing.id ? 'New rules are always saved as disabled drafts. Reopen the saved rule to enable it after preview.' : editingWasEnabled ? 'This rule is enabled; switch it off to disable it on save. Entity groups can only change while it is disabled.' : 'Activation is blocked until a successful preview matches the current material definition.'}</p></EuiText>
                 </EuiPanel>
               </>
             )}
@@ -881,6 +949,18 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
                 {matchField('Rule IDs', 'ruleIds', 'ruleIdsMode', 'e.g. 5710, 5716')}
                 {matchField('Agents', 'agentNames', 'agentNamesMode', 'Any agent')}
                 <EuiFormRow label="Minimum level" helpText="Wazuh 4.x rule level. Wazuh 5.0 findings carry a severity label instead; the floor applies through its band (0-3 low, 4-6 medium, 7-11 high, 12+ critical)."><EuiFieldNumber min={0} max={16} value={editing.match?.minLevel ?? ''} onChange={(event) => updateMatch({ minLevel: event.target.value === '' ? undefined : Number(event.target.value) })} /></EuiFormRow>
+                <EuiFormRow
+                  label="Minimum asset criticality"
+                  helpText="Criticality stamped on the alert from Settings > Assets (agent name, glob, group or label). Alerts of agents that match no asset entry never meet a floor."
+                >
+                  <EuiSelect
+                    options={ASSET_CRITICALITY_FLOOR_OPTIONS}
+                    value={editing.match?.minAssetCriticality ?? ''}
+                    onChange={(event) => updateMatch({ minAssetCriticality: (event.target.value || null) as AssetCriticality | null })}
+                    aria-label="Minimum asset criticality"
+                    data-test-subj="wamRuleMinAssetCriticality"
+                  />
+                </EuiFormRow>
                 {!isBurst && <EuiCallOut size="s" color="primary" iconType="iInCircle" title="All-of is disabled for per-alert triggers">All-of means co-occurrence on the same entity within a burst window. Live per-alert evaluation behaves as Any, so the editor does not offer a misleading All selection.</EuiCallOut>}
                 {isMatchAll(editing) && (
                   <>
@@ -978,16 +1058,27 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
             {stage === 'actions' && (
               <>
                 <EuiTitle size="xs"><h3>Actions</h3></EuiTitle>
-                <EuiText size="s" color="subdued"><p>Choose at least one supported workbench action. No outbound response or webhook actions are available.</p></EuiText>
+                <EuiText size="s" color="subdued"><p>Choose at least one action: set status, assign, create a case, or notify channels bound in Settings &gt; Notifications. Actions combine freely.</p></EuiText>
                 <EuiSpacer size="m" />
                 <EuiFlexGroup gutterSize="m">
                   <EuiFlexItem><EuiFormRow label="Set status" helpText="Applies to every matching alert or the alerts in a firing burst."><EuiSelect fullWidth options={[{ value: '', text: 'No change' }, ...ALERT_STATUSES.map((status) => ({ value: status, text: statusLabel(status) }))]} value={actions.setStatus || ''} onChange={(event) => updateActions({ setStatus: (event.target.value || null) as any })} /></EuiFormRow></EuiFlexItem>
+                  {actions.setStatus === 'closed' && (
+                    <EuiFlexItem><EuiFormRow label="Disposition" helpText="Recorded on every alert the rule closes (step 2.4)."><EuiSelect fullWidth data-test-subj="wamRuleDisposition" options={[{ value: '', text: 'None' }, ...DISPOSITIONS.map((value) => ({ value, text: DISPOSITION_LABELS[value] }))]} value={actions.disposition || ''} onChange={(event) => updateActions({ disposition: (event.target.value || null) as any })} /></EuiFormRow></EuiFlexItem>
+                  )}
                   <EuiFlexItem><EuiFormRow label="Assign to"><EuiSelect fullWidth options={[{ value: '', text: 'No assignment' }, ...analysts.map((analyst) => ({ value: analyst, text: analyst }))]} value={actions.assignTo || ''} onChange={(event) => updateActions({ assignTo: event.target.value || null })} /></EuiFormRow></EuiFlexItem>
                 </EuiFlexGroup>
+                <EuiSpacer size="s" />
+                <RuleNotifyChannels
+                  channels={notifyChannels}
+                  state={notifyChannelsState}
+                  selected={actions.notify?.channelIds || []}
+                  onChange={(channelIds) => updateActions({ notify: channelIds.length ? { channelIds } : null })}
+                />
+                <EuiSpacer size="m" />
                 <EuiPanel color={actions.createCase ? 'primary' : 'subdued'} paddingSize="m" hasBorder hasShadow={false}>
-                  <EuiSwitch label="Create or update a deduplicated case" checked={!!actions.createCase} onChange={(event) => updateActions({ createCase: event.target.checked })} />
+                  <EuiSwitch label="Create or update a deduplicated case" checked={!!actions.createCase} onChange={(event) => updateActions({ createCase: event.target.checked, ...(event.target.checked ? {} : { applyTaskListId: null }) })} />
                   <EuiText size="xs" color="subdued"><p>Later alerts with the same rule and normalized entity-group identity extend the active case. Closed or archived cases are not silently reopened.</p></EuiText>
-                  {actions.createCase && <><EuiSpacer size="m" /><EuiFormRow label="Case severity"><EuiSelect options={CASE_SEVERITIES.map((severity) => ({ value: severity, text: severity.charAt(0).toUpperCase() + severity.slice(1) }))} value={actions.caseSeverity} onChange={(event) => updateActions({ caseSeverity: event.target.value as any })} /></EuiFormRow></>}
+                  {actions.createCase && <><EuiSpacer size="m" /><EuiFlexGroup gutterSize="m"><EuiFlexItem grow={false}><EuiFormRow label="Case severity"><EuiSelect options={CASE_SEVERITIES.map((severity) => ({ value: severity, text: severity.charAt(0).toUpperCase() + severity.slice(1) }))} value={actions.caseSeverity} onChange={(event) => updateActions({ caseSeverity: event.target.value as any })} /></EuiFormRow></EuiFlexItem><EuiFlexItem><EuiFormRow label="Apply task list" helpText={taskLists.length ? 'Its tasks are added when this rule creates a new case; extending an existing case adds nothing.' : 'No task lists defined (Settings > Task lists).'}><EuiSelect fullWidth data-test-subj="wamRuleTaskList" disabled={!taskLists.length && !actions.applyTaskListId} options={[{ value: '', text: 'No task list' }, ...taskLists.map((taskList) => ({ value: taskList.id, text: `${taskList.name}${taskList.enabled ? '' : ' (disabled)'}` })), ...(actions.applyTaskListId && !taskLists.some((taskList) => taskList.id === actions.applyTaskListId) ? [{ value: actions.applyTaskListId, text: `${actions.applyTaskListId} (missing)` }] : [])]} value={actions.applyTaskListId || ''} onChange={(event) => updateActions({ applyTaskListId: event.target.value || null })} /></EuiFormRow></EuiFlexItem></EuiFlexGroup></>}
                 </EuiPanel>
                 <EuiSpacer size="l" />
                 <EuiTitle size="xxs"><h4>Preconditions and processing</h4></EuiTitle>
@@ -1037,7 +1128,7 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
                 {preview && previewIsCurrent && (
                   <EuiCallOut color="success" iconType="check" title={`Preview passed: ${preview.matchingAlerts.toLocaleString()} matching alert${preview.matchingAlerts === 1 ? '' : 's'}`}>
                     <p>Saved revision {editing.revision}; historical interval: last {preview.lookbackHours} hours{preview.triggerType === 'burst' ? `; ${preview.windowMinutes}-minute sliding correlation window` : '; immediate per-alert trigger'}.</p>
-                    <p>{preview.triggerType === 'burst' ? `${preview.triggeringEntities.length} resolved groups/keys cross the threshold. ` : ''}{preview.casesCreated ?? preview.wouldOpenCases} cases would be created; {preview.casesExtended || 0} active deduplicated cases would be extended; {preview.statusChanges || 0} status changes and {preview.assignments || 0} assignments are planned.</p>
+                    <p>{preview.triggerType === 'burst' ? `${preview.triggeringEntities.length} resolved groups/keys cross the threshold. ` : ''}{preview.casesCreated ?? preview.wouldOpenCases} cases would be created; {preview.casesExtended || 0} active deduplicated cases would be extended; {preview.statusChanges || 0} status changes, {preview.assignments || 0} assignments and {preview.notifications || 0} notifications are planned{preview.notificationsSkipped ? ` (${preview.notificationsSkipped} notification target${preview.notificationsSkipped === 1 ? '' : 's'} would be skipped: unknown or disabled channel, or notifications disabled)` : ''}.</p>
                     {preview.triggeringEntities.slice(0, 8).map((item) => <EuiBadge key={item.entity} color="hollow" style={{ marginRight: 4 }}>{item.entity} ({item.count})</EuiBadge>)}
                   </EuiCallOut>
                 )}
@@ -1048,6 +1139,7 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
                   <EuiFlexGroup gutterSize="s" wrap className="wamPreviewStats">
                     <EuiFlexItem><EuiStat titleSize="s" title={preview.matchingAlerts.toLocaleString()} description="Matching alerts" /></EuiFlexItem>
                     <EuiFlexItem><EuiStat titleSize="s" title={(preview.missingEntities || 0).toLocaleString()} description={`Missing entities (${((preview.missingEntityRate || 0) * 100).toFixed(1)}%)`} titleColor={preview.missingEntities ? 'warning' : 'default'} /></EuiFlexItem>
+                    <EuiFlexItem><EuiStat titleSize="s" title={(preview.notifications || 0).toLocaleString()} description="Notifications" data-test-subj="wamRulePreviewNotifications" /></EuiFlexItem>
                     <EuiFlexItem><EuiStat titleSize="s" title={(preview.skips || 0).toLocaleString()} description="Precondition/planner skips" /></EuiFlexItem>
                     <EuiFlexItem><EuiStat titleSize="s" title={(preview.skippedBySafety || 0).toLocaleString()} description="Skipped by safety caps" titleColor={preview.skippedBySafety ? 'warning' : 'default'} /></EuiFlexItem>
                     <EuiFlexItem><EuiStat titleSize="s" title={(preview.conflicts || []).length.toLocaleString()} description="Conflicts" titleColor={preview.conflicts?.length ? 'warning' : 'default'} /></EuiFlexItem>
@@ -1061,8 +1153,8 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
                 </>}
                 <EuiSpacer size="m" />
                 <EuiPanel paddingSize="m" hasBorder hasShadow={false}>
-                  <EuiSwitch label="Enable after save" checked={!!editing.enabled} disabled={!editing.id || !previewIsCurrent} onChange={(event) => update({ enabled: event.target.checked })} />
-                  <EuiText size="xs" color="subdued"><p>{!editing.id ? 'Step 1: save the first disabled draft. Step 2: reopen it and preview its exact saved revision. Step 3: review impact, select Enable after save, then save.' : previewIsCurrent ? 'The exact saved revision passed preview. Review impact, select this switch, then use Save and enable.' : 'Save any edits first, then preview the exact saved revision to unlock activation.'}</p></EuiText>
+                  <EuiSwitch label="Enable after save" checked={!!editing.enabled} disabled={!editing.id || (!editingWasEnabled && !previewIsCurrent)} onChange={(event) => update({ enabled: event.target.checked })} />
+                  <EuiText size="xs" color="subdued"><p>{!editing.id ? 'Step 1: save the first disabled draft. Step 2: reopen it and preview its exact saved revision. Step 3: review impact, select Enable after save, then save.' : editingWasEnabled ? 'This rule is enabled: edits save as a new revision without a preview (entity groups still need the rule disabled first). Switch this off to disable it on save.' : previewIsCurrent ? 'The exact saved revision passed preview. Review impact, select this switch, then use Save and enable.' : 'Save any edits first, then preview the exact saved revision to unlock activation.'}</p></EuiText>
                 </EuiPanel>
               </>
             )}
@@ -1093,7 +1185,7 @@ export const RulesView: React.FC<Props> = ({ apiService, onToast }) => {
               <EuiFlexItem grow={false}>
                 <EuiFlexGroup gutterSize="s" responsive={false}>
                    {currentStageIndex > 0 && <EuiFlexItem grow={false}><EuiButton onClick={() => setStage(editorStages[currentStageIndex - 1].id)}>Back</EuiButton></EuiFlexItem>}
-                    {currentStageIndex < editorStages.length - 1 ? <EuiFlexItem grow={false}><EuiButton fill onClick={() => setStage(editorStages[currentStageIndex + 1].id)}>Next</EuiButton></EuiFlexItem> : <EuiFlexItem grow={false}><EuiToolTip content={currentErrors[0] || (canAdminister ? 'Persist this definition' : ADMIN_HELP)}><span><EuiButton fill onClick={save} isLoading={saving} disabled={!canAdminister || currentErrors.length > 0}>Save {editing.enabled ? 'and enable' : 'draft'}</EuiButton></span></EuiToolTip></EuiFlexItem>}
+                    {currentStageIndex < editorStages.length - 1 ? <EuiFlexItem grow={false}><EuiButton fill onClick={() => setStage(editorStages[currentStageIndex + 1].id)}>Next</EuiButton></EuiFlexItem> : <EuiFlexItem grow={false}><EuiToolTip content={currentErrors[0] || (canAdminister ? 'Persist this definition' : ADMIN_HELP)}><span><EuiButton fill onClick={save} isLoading={saving} disabled={!canAdminister || currentErrors.length > 0}>Save {editing.enabled ? (editingWasEnabled ? 'changes' : 'and enable') : 'draft'}</EuiButton></span></EuiToolTip></EuiFlexItem>}
                 </EuiFlexGroup>
               </EuiFlexItem>
             </EuiFlexGroup>

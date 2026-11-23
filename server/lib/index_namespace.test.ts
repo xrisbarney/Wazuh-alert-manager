@@ -1,4 +1,5 @@
 import {
+  NATIVE_WAZUH_PREFIXES,
   assertManagedWriteTarget,
   assertSafeSourcePattern,
   isApprovedEvidenceIndex,
@@ -32,6 +33,28 @@ describe('plugin index namespace', () => {
     ]) {
       expect(() => assertManagedWriteTarget(native)).toThrow(/Refusing write/);
     }
+  });
+
+  test('refuses the 5.0 threat-intel, CTI and active-response stores by name', () => {
+    for (const prefix of ['wazuh-threatintel-', '.wazuh-cti-', 'wazuh-active-responses']) {
+      expect(NATIVE_WAZUH_PREFIXES).toContain(prefix);
+    }
+    for (const native of [
+      'wazuh-threatintel-enrichments',
+      'wazuh-threatintel-enrichments-000001',
+      'wazuh-threatintel-indicators',
+      '.wazuh-cti-catalog',
+      '.wazuh-cti-content-000001',
+      'wazuh-active-responses',
+      'wazuh-active-responses-2026.11.20',
+    ]) {
+      expect(() => assertManagedWriteTarget(native)).toThrow(/Refusing write/);
+    }
+    // The earlier native families are still refused after the extension.
+    expect(() => assertManagedWriteTarget('wazuh-alerts-4.x-2026.11.20')).toThrow(/Refusing write/);
+    expect(() => assertManagedWriteTarget('wazuh-states-inventory-system')).toThrow(/Refusing write/);
+    // Plugin-owned targets are unaffected.
+    expect(assertManagedWriteTarget('wazuh-alert-manager-v2-meta')).toBe('wazuh-alert-manager-v2-meta');
   });
 
   test('refuses multi-target and wildcard write strings', () => {

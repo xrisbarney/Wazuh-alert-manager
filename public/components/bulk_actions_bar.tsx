@@ -46,8 +46,8 @@ export function BulkActionsBar<TStatus extends AlertStatus | CaseStatus>({
   if (selectedCount === 0) return null;
 
   return (
-    <EuiPanel color="subdued" paddingSize="s" hasShadow={false} hasBorder style={{ marginBottom: 8 }} className="wamBulkActions">
-    <EuiFlexGroup alignItems="center" gutterSize="m" wrap>
+    <EuiPanel color="subdued" paddingSize="s" hasShadow={false} hasBorder className="wamBulkActions">
+    <EuiFlexGroup alignItems="center" gutterSize="s" responsive={false} wrap>
       <EuiFlexItem grow={false}>
         <EuiText size="s">
           <strong>{selectedCount}</strong> selected
@@ -56,7 +56,7 @@ export function BulkActionsBar<TStatus extends AlertStatus | CaseStatus>({
       <EuiFlexItem grow={false}>
         <EuiPopover
           button={
-            <EuiButton size="s" iconType="arrowDown" iconSide="right" onClick={() => setIsStatusMenuOpen((v) => !v)} isLoading={busy}>
+            <EuiButton size="s" iconType="arrowDown" iconSide="right" onClick={() => setIsStatusMenuOpen((v) => !v)} isLoading={busy} data-test-subj="wamBulkSetStatus">
               Set status
             </EuiButton>
           }
@@ -68,6 +68,7 @@ export function BulkActionsBar<TStatus extends AlertStatus | CaseStatus>({
             items={availableStatuses.map((opt) => (
               <EuiContextMenuItem
                 key={opt.value}
+                data-test-subj={`wamBulkStatus-${opt.value}`}
                 onClick={() => {
                   setIsStatusMenuOpen(false);
                   onSetStatus(opt.value);

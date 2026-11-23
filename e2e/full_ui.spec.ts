@@ -1,6 +1,7 @@
 import { expect, Page, test } from '@playwright/test';
 import { execFileSync } from 'child_process';
 import * as path from 'path';
+import { openSettingsSection, seedAlerts, seedFindingsV5 } from './helpers';
 
 const API = '/api/wazuh_alert_manager';
 
@@ -9,14 +10,30 @@ function emitAutomationFixtures() {
   // test stream on the 5.0 lab (same source IPs/users as the 4.x fixtures, so
   // the automation scenarios below are identical on both platforms).
   if (process.env.WAM_E2E_PROFILE === 'wazuh5') {
-    const vagrantDir = process.env.WAM_E2E_VAGRANT_DIR || path.resolve(process.cwd(), '..', '..', 'wazuh-vagrant');
-    const remote = [
-      'cd /home/vagrant/wam-tools',
-      "export WAM_PW=$(sudo grep '^WAZUH_INDEXER_ADMIN_PASSWORD=' /etc/wazuh-indexer/export/credentials.env | cut -d= -f2- | sed -e 's/^\"//' -e 's/\"$//')",
-      'export WAM_INDEXER=https://localhost:9200',
-      'python3 e2e/seed_findings_v5.py --count 8 --severity high',
-    ].join(' && ');
-    execFileSync('vagrant', ['ssh', '-c', remote], { cwd: vagrantDir, stdio: 'pipe', timeout: 120_000 });
+    // `seedFindingsV5` runs the same seeder locally when WAM_E2E_SEED=local
+    // (the 5.0 Docker stack of scripts/dev/env-5.0.sh) and over `vagrant ssh`
+    // on the 5.0 Vagrant lab otherwise.
+    seedFindingsV5({ count: 8, severity: 'high' });
+    return;
+  }
+  // Everything below seeds 4.x-shaped alerts into the native-prefix index
+  // `wazuh-alerts-4.x-wam-e2e` (e2e/seed_alerts.py). That index must never be
+  // created on a Wazuh 5.0 stack - there test tooling may only own
+  // `wazuh-*-v5-wam-*` streams - so a 5.0 target without WAM_E2E_PROFILE=wazuh5
+  // is a configuration error, not a reason to fall through.
+  const wazuhVersion = process.env.WAM_WAZUH_VERSION || '';
+  const seedUrl = process.env.WAM_SEED_URL || '';
+  if (wazuhVersion.startsWith('5') || seedUrl.includes(':9201')) {
+    throw new Error(
+      `Refusing to seed 4.x alerts: this run targets a Wazuh 5.0 stack ` +
+        `(WAM_WAZUH_VERSION=${wazuhVersion || '-'}, WAM_SEED_URL=${seedUrl || '-'}) ` +
+        `but WAM_E2E_PROFILE is not "wazuh5". Source scripts/dev/env-5.0.sh, which exports it.`,
+    );
+  }
+  // WAM_E2E_SEED=local seeds through the indexer from this machine (Docker
+  // stack); otherwise the seeder runs on the 4.x Vagrant lab.
+  if (process.env.WAM_E2E_SEED === 'local') {
+    seedAlerts();
     return;
   }
   const vagrantDir = process.env.WAM_E2E_VAGRANT_DIR || path.resolve(process.cwd(), '..', '..', 'wazuh414-vagrant');
@@ -59,7 +76,7 @@ async function api(page: Page, method: string, path: string, body?: unknown) {
 
 async function openAutomation(page: Page) {
   await page.getByRole('tab', { name: 'Settings' }).click();
-  await page.getByRole('tab', { name: 'Automation rules' }).click();
+  await openSettingsSection(page, 'automation');
   await expect(page.getByRole('button', { name: 'New rule' }).first()).toBeVisible({ timeout: 60_000 });
 }
 
@@ -183,9 +200,10 @@ test.describe('full workbench UI bench', () => {
     });
     const title = `E2E manual case ${Date.now()}`;
 
-    const firstRow = page.locator('.wamAlertTable tbody tr').first();
+    // The queue is an EuiDataGrid (13.1): one checkbox per row, no `<tr>`.
+    const firstRow = page.locator('.wamAlertTable .wamAlertRow').first();
     await expect(firstRow).toBeVisible({ timeout: 60_000 });
-    await firstRow.locator('input[type="checkbox"]').check();
+    await page.locator('.wamAlertTable [data-test-subj="wamQueueSelectRow"]').first().check();
     await page.getByRole('button', { name: 'Create case from selected' }).click();
     await page.getByLabel('Title').fill(title);
     await page.getByLabel('Description').fill('Created through the release browser bench');
@@ -196,12 +214,12 @@ test.describe('full workbench UI bench', () => {
     const flyout = page.locator('.wamCaseFlyout');
     await expect(flyout.getByText(title, { exact: true })).toBeVisible();
 
-    await flyout.getByRole('tab', { name: 'Comments' }).click();
+    await flyout.locator('[data-test-subj="wamCaseNav-comments"]').click();
     await flyout.getByPlaceholder('Add a comment...').fill('E2E analyst investigation note');
     await flyout.getByRole('button', { name: 'Add comment' }).click();
     await expect(flyout.getByText('E2E analyst investigation note')).toBeVisible({ timeout: 30_000 });
 
-    await flyout.getByRole('tab', { name: /Linked (alerts|findings)/ }).click();
+    await flyout.locator('[data-test-subj="wamCaseNav-alerts"]').click();
     const holdButton = flyout.getByRole('button', { name: 'Set evidence hold' }).first();
     await expect(holdButton).toBeVisible({ timeout: 30_000 });
     await holdButton.click();
@@ -213,14 +231,14 @@ test.describe('full workbench UI bench', () => {
     // Opening and working in a case must not resolve up to 5,000 evidence
     // relationships merely to render Overview, Comments, or Linked alerts.
     expect(attackGraphRequests).toBe(0);
-    await flyout.getByRole('tab', { name: 'Attack graph' }).click();
+    await flyout.locator('[data-test-subj="wamCaseNav-attack-path"]').click();
     await expect(flyout.getByText('Entity relationships and MITRE ATT&CK context derived from this case\'s linked alerts.')).toBeVisible({ timeout: 60_000 });
     await expect.poll(() => attackGraphRequests).toBe(1);
     await expect(flyout.getByRole('heading', { name: 'Observed entities and mapped techniques' })).toBeVisible();
     await flyout.getByText('Alert timeline', { exact: true }).click();
     await expect(flyout.getByRole('heading', { name: 'Alert chronology' })).toBeVisible();
 
-    await flyout.getByRole('tab', { name: 'Overview' }).click();
+    await flyout.locator('[data-test-subj="wamCaseNav-overview"]').click();
     await flyout.getByText('In progress', { exact: true }).last().click();
     await expect(page.getByText('Case set to In progress', { exact: true })).toBeVisible({ timeout: 30_000 });
     await flyout.getByText('Closed', { exact: true }).last().click();
@@ -241,7 +259,7 @@ test.describe('full workbench UI bench', () => {
 
     await page.getByRole('tab', { name: 'Cases' }).click();
     await page.getByPlaceholder('Search by title/description').fill(title);
-    await page.getByRole('button', { name: 'Refresh' }).click();
+    await page.locator('[data-test-subj="wamCasesRefresh"]').click();
     const caseControl = page.getByRole('button', { name: title, exact: true });
     await expect(caseControl).toBeVisible({ timeout: 60_000 });
     await caseControl.click();
@@ -272,7 +290,7 @@ test.describe('full workbench UI bench', () => {
 
     await page.getByRole('tab', { name: 'Cases' }).click();
     await page.getByPlaceholder('Search by title/description').fill(marker);
-    await page.getByRole('button', { name: 'Refresh' }).click();
+    await page.locator('[data-test-subj="wamCasesRefresh"]').click();
     await expect(page.getByText(`${marker} high assigned`, { exact: true })).toBeVisible({ timeout: 60_000 });
     await expect(page.getByText(`${marker} low unassigned`, { exact: true })).toBeVisible();
 
@@ -365,10 +383,10 @@ test.describe('full workbench UI bench', () => {
 
     await page.getByRole('tab', { name: 'Cases' }).click();
     await page.getByPlaceholder('Search by title/description').fill('E2E burst entity rule');
-    await page.getByRole('button', { name: 'Refresh' }).click();
+    await page.locator('[data-test-subj="wamCasesRefresh"]').click();
     await expect(page.getByText('E2E burst entity rule: automated incident', { exact: true })).toHaveCount(2, { timeout: 60_000 });
     await page.getByRole('button', { name: 'E2E burst entity rule: automated incident', exact: true }).first().click();
-    await expect(page.locator('.wamCaseFlyout').getByRole('tab', { name: /Linked (alerts|findings)/ })).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('.wamCaseFlyout').locator('[data-test-subj="wamCaseNav-alerts"]')).toBeVisible({ timeout: 60_000 });
 
     // Disable/delete fixtures after observing their effects; existing cases remain
     // as auditable closed work and no future incoming alert is affected.
@@ -419,20 +437,20 @@ test.describe('full workbench UI bench', () => {
     await signIn(page);
     await page.getByRole('tab', { name: 'Settings' }).click();
 
-    await page.getByRole('tab', { name: 'Background sync' }).click();
+    await openSettingsSection(page, 'sync');
     await expect(page.getByRole('heading', { name: 'Background alert sync' })).toBeVisible({ timeout: 60_000 });
     await expect(page.getByLabel('Sync interval')).toBeVisible();
 
-    await page.getByRole('tab', { name: 'AI analysis' }).click();
+    await openSettingsSection(page, 'ai');
     await expect(page.getByRole('heading', { name: 'AI analysis integration' })).toBeVisible({ timeout: 60_000 });
     await expect(page.getByLabel('Provider')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Save AI settings' })).toBeVisible();
 
-    await page.getByRole('tab', { name: 'Storage & lifecycle' }).click();
+    await openSettingsSection(page, 'storage');
     await expect(page.getByText('Automatic rollover', { exact: true })).toBeVisible({ timeout: 60_000 });
     await expect(page.getByRole('button', { name: 'Roll alert generation' })).toBeVisible();
 
-    await page.getByRole('tab', { name: 'About' }).click();
+    await openSettingsSection(page, 'about');
     await expect(page.getByText(/Browser build ID/i)).toBeVisible({ timeout: 60_000 });
 
     await page.goto('/app/wazuhAlertManagerReporting');
@@ -447,7 +465,7 @@ test.describe('full workbench UI bench', () => {
     await expect(page.getByRole('tab', { name: /^(Alerts|Findings)$/ })).toBeVisible({ timeout: 120_000 });
     await page.getByRole('button', { name: /^Open details for / }).first().click();
     const alertFlyout = page.locator('.wamAlertFlyout');
-    await alertFlyout.getByRole('tab', { name: 'Comments' }).click();
+    await alertFlyout.locator('[data-test-subj="wamAlertNav-comments"]').click();
     await expect(alertFlyout.getByPlaceholder('Add a comment...')).toBeVisible();
     await alertFlyout.getByRole('button', { name: 'Close' }).click().catch(() => undefined);
   });

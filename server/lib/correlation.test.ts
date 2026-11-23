@@ -1,9 +1,12 @@
 import {
   alertMatchesRule,
   coverageRequirements,
+  entityField,
+  entityValueFromAlert,
   evaluateAlertMatch,
   usesAllMatchMode,
 } from './correlation';
+import labAudit80792 from '../../lab/agent/samples/80792.json';
 
 const rule = (match: any, trigger: any = { type: 'per_alert' }): any => ({
   id: 'rule',
@@ -79,5 +82,40 @@ describe('correlation Any/All shared semantics', () => {
         agentNames: ['agent-a'],
       })
     ).toEqual({ ids: [], groups: [], agents: [] });
+  });
+});
+
+describe('minAssetCriticality match scope (step 6.4a)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { buildMatchFilters } = require('./correlation');
+  const stamped = (criticality: string | null) => ({ ...source, asset: { criticality, tags: [], groups: [] } });
+
+  test('evaluates like minLevel: at or above the floor matches, unstamped never matches', () => {
+    const r = rule({ minAssetCriticality: 'high' });
+    expect(evaluateAlertMatch(r, stamped('critical'))).toEqual({ supported: true, matched: true });
+    expect(evaluateAlertMatch(r, stamped('high'))).toEqual({ supported: true, matched: true });
+    expect(evaluateAlertMatch(r, stamped('medium'))).toEqual({ supported: true, matched: false });
+    expect(evaluateAlertMatch(r, stamped(null))).toEqual({ supported: true, matched: false });
+    expect(evaluateAlertMatch(r, source)).toEqual({ supported: true, matched: false });
+    expect(alertMatchesRule(rule({ minAssetCriticality: 'low', minLevel: 7 }), stamped('low'))).toBe(true);
+    expect(alertMatchesRule(rule({ minAssetCriticality: 'low', minLevel: 9 }), stamped('low'))).toBe(false);
+  });
+
+  test('the preview filter uses the same floor as a terms clause on asset.criticality', () => {
+    expect(buildMatchFilters({ minAssetCriticality: 'medium' })).toEqual([
+      { terms: { 'asset.criticality': ['medium', 'high', 'critical'] } },
+    ]);
+    expect(buildMatchFilters({})).toEqual([]);
+  });
+});
+
+describe('process entity on auditd alerts (step 9.4)', () => {
+  test('entityValueFromAlert falls back to data.audit.exe when data.process is absent', () => {
+    expect(labAudit80792._source.data).not.toHaveProperty('process');
+    expect(entityValueFromAlert('process', labAudit80792._source)).toBe('/usr/bin/curl');
+    expect(entityValueFromAlert('process', { data: { process: { name: 'sshd' }, audit: { exe: '/usr/sbin/sshd' } } })).toBe('sshd');
+    expect(entityValueFromAlert('process', { data: {} })).toBeNull();
+    // Aggregations keep grouping on the decoder process name.
+    expect(entityField('process')).toBe('data.process.name');
   });
 });

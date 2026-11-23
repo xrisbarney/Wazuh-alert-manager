@@ -55,10 +55,11 @@ jobs:
           - wazuhVersion: "4.14.10"
             osdVersion: "2.19.6"
             dashboardRef: "v4.14.10"
-          # Wazuh 5.0 (prerelease). Development-only target until the owner
-          # promotes it: OSD 3.6 / Node 22 (from that checkout's .nvmrc), and
-          # the plugin reads wazuh-findings-v5-* data streams instead of
-          # wazuh-alerts-*. See supported-wazuh-versions.json ("prerelease").
+          # Wazuh 5.0.0-rc2: PREVIEW target shipped with v3.0.0-rc.1 (OSD 3.6 /
+          # Node 22 from that checkout's .nvmrc), where the plugin reads
+          # wazuh-findings-v5-* data streams instead of wazuh-alerts-*;
+          # re-verified against 5.0 GA before 3.0.0 final.
+          # See supported-wazuh-versions.json ("prerelease").
           - wazuhVersion: "5.0.0-rc2"
             osdVersion: "3.6.0"
             dashboardRef: "v5.0.0-rc2"
@@ -217,11 +218,32 @@ jobs:
       - name: Prepare installer checksum
         run: sha256sum install.sh > install.sh.sha256
 
+      # Pick the release notes that belong to THIS tag, never a hard-coded
+      # file: v3.0.0-rc.1 -> RELEASE_NOTES_v3.0.0.md, v3.0.1 ->
+      # RELEASE_NOTES_v3.0.1.md if it exists, else the line's x.0.0 notes.
+      - name: Resolve release notes
+        id: notes
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          base="${tag%%-*}"
+          notes="RELEASE_NOTES_${base}.md"
+          if [ ! -f "$notes" ]; then
+            major="${base#v}"
+            major="${major%%.*}"
+            notes="RELEASE_NOTES_v${major}.0.0.md"
+          fi
+          test -f "$notes" || { echo "No release notes file for tag $tag" >&2; exit 1; }
+          echo "path=$notes" >> "$GITHUB_OUTPUT"
+
       - name: Create release with all version zips attached
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
-          body_path: RELEASE_NOTES_v2.0.3.md
+          # A tag with a hyphen is a semver pre-release (v3.0.0-rc.1); publish
+          # it as a GitHub pre-release so /releases/latest keeps pointing at
+          # the current stable tag and install.sh's default path is unchanged.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body_path: ${{ steps.notes.outputs.path }}
           files: |
             dist/*.zip
             dist/*.sha256

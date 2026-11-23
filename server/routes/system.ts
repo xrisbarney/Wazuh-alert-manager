@@ -23,6 +23,7 @@ import {
   TARGET_WAZUH_MAJOR,
 } from '../../common';
 import { SOURCE_STATE_DOC_ID, eligibleFamilies } from '../lib/source_runtime';
+import { getSavedObjectsBridgeStatus, redactSavedObjectsBridgeStatus } from '../lib/saved_objects_bridge';
 import { sourceProfile } from '../lib/source_profile';
 import { canManageLifecycle, isPluginAdmin, requireLifecycleManager, requirePluginAdmin } from '../lib/authorization';
 import { trustedIdentity } from '../lib/identity';
@@ -337,8 +338,14 @@ async function caseGenerations(client: any): Promise<any[]> {
 export function defineSystemRoutes(router: IRouter) {
   router.get(
     { path: `${API_ROOT}/system/version`, validate: false },
-    async (context, request, response) =>
-      response.ok({
+    async (context, request, response) => {
+      // Discover/Reporting bridge outcome on this replica (step 5.6). The
+      // detailed message carries internal-user permission errors and index
+      // names from the saved-objects repository, so only plugin admins get it.
+      const bridge = getSavedObjectsBridgeStatus();
+      const identity = await trustedIdentity(context, request);
+      const savedObjectsBridge = isPluginAdmin(identity) ? bridge : redactSavedObjectsBridgeStatus(bridge);
+      return response.ok({
         headers: {
           'cache-control': 'no-store, no-cache, max-age=0, must-revalidate',
           pragma: 'no-cache',
@@ -351,8 +358,10 @@ export function defineSystemRoutes(router: IRouter) {
           targetOsdVersion: TARGET_OSD_VERSION,
           targetWazuhVersion: TARGET_WAZUH_VERSION,
           targetWazuhMajor: TARGET_WAZUH_MAJOR,
+          savedObjectsBridge,
         },
-      })
+      });
+    }
   );
 
   router.get(

@@ -1,0 +1,90 @@
+{
+  "_index": "wazuh-alerts-4.x-2026.11.21",
+  "_score": null,
+  "_source": {
+    "@timestamp": "2026-11-21T20:39:05.706Z",
+    "agent": {
+      "id": "001",
+      "ip": "10.0.2.15",
+      "name": "wam-lab-agent"
+    },
+    "data": {
+      "dstuser": "vagrant",
+      "srcip": "10.0.2.2",
+      "srcport": "51429"
+    },
+    "decoder": {
+      "name": "sshd",
+      "parent": "sshd"
+    },
+    "full_log": "Nov 21 20:39:03 wam-lab-agent sshd[11970]: Accepted publickey for vagrant from 10.0.2.2 port 51429 ssh2: ED25519 SHA256:Z0A0EBWtzR290G5yK6fGCT3D2LYQFLIW3q1sX2cuLhk",
+    "id": "1795293545.1187737",
+    "input": {
+      "type": "log"
+    },
+    "location": "journald",
+    "manager": {
+      "name": "wazuh.manager"
+    },
+    "predecoder": {
+      "hostname": "wam-lab-agent",
+      "program_name": "sshd",
+      "timestamp": "Nov 21 20:39:03"
+    },
+    "rule": {
+      "description": "sshd: authentication success.",
+      "firedtimes": 4,
+      "gdpr": [
+        "IV_32.2"
+      ],
+      "gpg13": [
+        "7.1",
+        "7.2"
+      ],
+      "groups": [
+        "syslog",
+        "sshd",
+        "authentication_success"
+      ],
+      "hipaa": [
+        "164.312.b"
+      ],
+      "id": "5715",
+      "level": 3,
+      "mail": false,
+      "mitre": {
+        "id": [
+          "T1078",
+          "T1021"
+        ],
+        "tactic": [
+          "Defense Evasion",
+          "Persistence",
+          "Privilege Escalation",
+          "Initial Access",
+          "Lateral Movement"
+        ],
+        "technique": [
+          "Valid Accounts",
+          "Remote Services"
+        ]
+      },
+      "nist_800_53": [
+        "AU.14",
+        "AC.7"
+      ],
+      "pci_dss": [
+        "10.2.5"
+      ],
+      "tsc": [
+        "CC6.8",
+        "CC7.2",
+        "CC7.3"
+      ]
+    },
+    "timestamp": "2026-11-21T20:39:05.706+0000"
+  },
+  "sort": [
+    1795293545706
+  ]
+}

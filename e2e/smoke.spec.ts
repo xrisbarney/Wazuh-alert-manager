@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { openSettingsSection } from './helpers';
 
 async function signIn(page: Page, username: string, password: string) {
   await page.goto('/app/wazuh-alert-manager');
@@ -81,7 +82,7 @@ test('admin can sign in and open Wazuh Alert Manager', async ({ page }) => {
   await page.getByRole('button', { name: 'Show summary' }).click();
 
   await page.getByRole('tab', { name: 'Settings' }).click();
-  await page.getByRole('tab', { name: 'Storage & lifecycle' }).click();
+  await openSettingsSection(page, 'storage');
   await expect(page.getByText('Automatic rollover', { exact: true })).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText('Maximum generation age', { exact: false })).toBeVisible();
   await expect(page.getByText('Alert retention (days)', { exact: false })).toBeVisible();

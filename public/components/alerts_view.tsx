@@ -1,15 +1,10 @@
 import { useTerminology } from '../terminology';
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   EuiFlexGroup,
   EuiFlexItem,
-  EuiPanel,
-  EuiStat,
-  EuiLoadingSpinner,
   EuiSpacer,
-  EuiBasicTable,
-  CriteriaWithPagination,
-  EuiEmptyPrompt,
+  EuiTablePagination,
   EuiText,
   EuiBadge,
   EuiToolTip,
@@ -17,15 +12,22 @@ import {
   EuiButtonIcon,
   EuiButtonEmpty,
   EuiLink,
+  EuiLoadingContent,
 } from '@elastic/eui';
 import { Alert, AlertStatus, AlertCounts, FilterOptions } from '../../common';
-import { formatAbsolute, formatRelative } from '../design';
-import { AlertsApiService, AlertFilterParams, BulkAlertUpdateResponse } from '../services/api';
+import { QueueGrid, QueueGridColumn, QueueGridSort, readGridSort } from './queue_grid';
+import { formatAbsolute, formatRelative, severityBand } from '../design';
+import { AssetBadge } from './asset_badge';
+import { NativeCaseChip } from './native_case_chip';
+import { AlertsApiService, AlertFilterParams, BulkAlertUpdateResponse, downloadBlob } from '../services/api';
 import { FilterBar, AlertFilterState } from './filter_bar';
 import { BulkActionsBar } from './bulk_actions_bar';
 import { CreateCaseModal } from './create_case_modal';
 import { AlertFlyout } from './alert_flyout';
-import { StatusBadge, SeverityBadge } from './status_badge';
+import { StatusBadge, SeverityBadge, DispositionBadge } from './status_badge';
+import { SlaDue, useNowTicker } from './sla_due';
+import { CloseCaseDialog, CloseOutcome } from './close_case_dialog';
+import { QUEUE_COLUMN_WIDTH, QueueEmptyPrompt, QueueResultSummary, QueueStats } from './queue_chrome';
 
 interface TimeRange {
   from: string;
@@ -40,11 +42,6 @@ interface Props {
   openAlertId?: string;
   onOpenAlertHandled?: () => void;
 }
-
-const isInteractiveRowTarget = (target: EventTarget | null, currentTarget: EventTarget | null) => {
-  if (!(target instanceof HTMLElement) || target === currentTarget) return false;
-  return Boolean(target.closest('button, a, input, select, textarea, label, [role="button"], [role="link"], [role="checkbox"], [role="option"]'));
-};
 
 const failedAlertIds = (result: BulkAlertUpdateResponse, requestedIds: string[]): string[] => {
   const failed = new Set<string>();
@@ -68,6 +65,272 @@ const isPartialAlertUpdate = (result: BulkAlertUpdateResponse) =>
   Boolean(result.failed?.length) ||
   Boolean(result.linkage?.some((item) => !item.ok));
 
+export interface AlertQueueColumnOptions {
+  /** case_id -> title, resolved lazily by the view; a missing title falls back to the id. */
+  caseTitles: Record<string, string>;
+  /** Minute ticker the Due countdown renders against. */
+  now: number;
+  openAlertById: (alertId: string) => void;
+  onOpenCase: (caseId: string) => void;
+}
+
+/** localStorage prefix of the alert queue's grid preferences (step 13.1). */
+export const ALERT_GRID_STORAGE_KEY = 'wam.alertsGrid';
+
+/**
+ * Grid column id -> the sort field the alerts route takes. Only the columns
+ * flagged `sortable` appear here; anything else falls back to the timestamp.
+ */
+export const ALERT_SORT_FIELDS: Record<string, string> = {
+  timestamp: '@timestamp',
+  severity: 'rule.level',
+  due: 'reporting.sla_due_at',
+};
+
+/** True for a column id the alerts route can actually sort on. */
+export function isAlertSortColumn(columnId: unknown): columnId is string {
+  return typeof columnId === 'string' && Object.prototype.hasOwnProperty.call(ALERT_SORT_FIELDS, columnId);
+}
+
+/**
+ * The sort field of a grid column id. A plain `ALERT_SORT_FIELDS[id]` walks
+ * the prototype chain, and the column id comes back from localStorage as any
+ * string - `toString` would resolve to an inherited function and skip the
+ * fallback, sending a non-string sort field to the route.
+ */
+export function alertSortFieldOf(columnId: string): string {
+  return isAlertSortColumn(columnId) ? ALERT_SORT_FIELDS[columnId] : ALERT_SORT_FIELDS.timestamp;
+}
+
+export const DEFAULT_ALERT_SORT: QueueGridSort = { columnId: 'timestamp', direction: 'desc' };
+
+/** Pixel value of one of the shared queue widths ('110px' -> 110). */
+const px = (width: string): number => parseInt(width, 10);
+
+/**
+ * The alert queue columns (step 13.1, replacing the EuiBasicTable columns of
+ * 10.2). Every column but Rule starts at one of the shared fixed widths
+ * (`QUEUE_COLUMN_WIDTH`); Rule has none and is the column that absorbs the
+ * leftover width, so the queue fits the viewport instead of scrolling
+ * sideways. From here each width is the analyst's: the grid remembers what
+ * they drag, which columns they show and in what order.
+ *
+ * Manager, Alert ID and Agent IP start hidden and are added from the column
+ * selector. The Case cell is a flex column (`.wamCaseCell`) so a long case
+ * title truncates with an ellipsis inside its width instead of covering the
+ * expand button; the full title stays in the badge's `title`, and the
+ * native-case chip wraps under the badge.
+ */
+export function buildAlertQueueColumns({ caseTitles, now, openAlertById, onOpenCase }: AlertQueueColumnOptions): Array<QueueGridColumn<Alert>> {
+  return [
+    {
+      id: 'timestamp',
+      label: 'When',
+      initialWidth: px(QUEUE_COLUMN_WIDTH.timestamp),
+      sortable: true,
+      render: (alert: Alert) => (
+        <EuiToolTip content={formatAbsolute(alert._source['@timestamp'])}>
+          <EuiLink
+            className="wamQueueTimestamp"
+            onClick={(event) => {
+              event.stopPropagation();
+              openAlertById(alert._id);
+            }}
+          >
+            {formatRelative(alert._source['@timestamp'])}
+          </EuiLink>
+        </EuiToolTip>
+      ),
+    },
+    {
+      id: 'agent',
+      label: 'Agent / IP',
+      initialWidth: px(QUEUE_COLUMN_WIDTH.agent),
+      render: (alert: Alert) => {
+        const v = alert._source;
+        return (
+          <div className="wamTablePrimary">
+            <strong>{v.agent?.name || v.agent?.ip || 'Unknown agent'}</strong>
+            {/* 13.3: the IP and the criticality chip share the second line.
+                On three lines the cell is taller than the compact row height
+                and the grid clips the agent name and the chip in half. */}
+            <span className="wamTableSecondary wamAgentMetaLine">
+              {v.agent?.name && v.agent?.ip ? <span className="wamAgentMetaIp">({v.agent.ip})</span> : null}
+              <AssetBadge asset={v.asset} compact className="wamAssetQueueBadge" testSubj="wamAssetQueueBadge" />
+            </span>
+          </div>
+        );
+      },
+    },
+    {
+      id: 'rule',
+      label: 'Rule',
+      render: (alert: Alert) => {
+        const v = alert._source;
+        const verdict = v.enrichment?.worst_verdict;
+        const flagged = verdict === 'malicious' || verdict === 'suspicious';
+        return (
+          <div className="wamTablePrimary">
+            {/* The cell truncates and the grid's cell-expand popover is off
+                (`isExpandable: false`), so the full text is the title. */}
+            <strong title={v.rule?.description || 'Unknown rule'}>{v.rule?.description || 'Unknown rule'}</strong>
+            {v.rule?.id && <span className="wamTableSecondary">Rule {v.rule.id}</span>}
+            {flagged && (
+              <EuiToolTip content={`Stored enrichment verdict: ${verdict} (${v.enrichment?.items?.length ?? 0} lookup result(s))`}>
+                <EuiBadge
+                  color={verdict === 'malicious' ? 'danger' : 'warning'}
+                  className="wamEnrichmentQueueBadge"
+                  data-test-subj="wamEnrichmentQueueBadge"
+                >
+                  {verdict}
+                </EuiBadge>
+              </EuiToolTip>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      id: 'severity',
+      label: 'Severity',
+      initialWidth: px(QUEUE_COLUMN_WIDTH.severity),
+      sortable: true,
+      render: (alert: Alert) => <SeverityBadge level={alert._source.rule?.level as number} label={alert._source?.severity_label} />,
+    },
+    {
+      id: 'status',
+      label: 'Status',
+      initialWidth: px(QUEUE_COLUMN_WIDTH.status),
+      render: (alert: Alert) => (
+        <span className="wamStatusCell">
+          <StatusBadge status={alert._source.status} />
+          <DispositionBadge
+            disposition={alert._source.disposition}
+            status={alert._source.status}
+            className="wamDispositionQueueBadge"
+            testSubj="wamAlertDisposition"
+          />
+        </span>
+      ),
+    },
+    {
+      // The route takes the stored path and its short alias `sla_due_at`, and
+      // puts undated alerts last.
+      id: 'due',
+      label: 'Due',
+      initialWidth: px(QUEUE_COLUMN_WIDTH.due),
+      sortable: true,
+      render: (alert: Alert) => (
+        <SlaDue dueAt={alert._source.reporting?.sla_due_at} status={alert._source?.status} now={now} compact testSubj="wamAlertDue" />
+      ),
+    },
+    {
+      id: 'assigned',
+      label: 'Assigned to',
+      initialWidth: px(QUEUE_COLUMN_WIDTH.assigned),
+      render: (alert: Alert) =>
+        alert._source.assigned_to || (
+          <EuiText size="s" color="subdued">
+            Unassigned
+          </EuiText>
+        ),
+    },
+    {
+      id: 'case',
+      label: 'Case',
+      initialWidth: px(QUEUE_COLUMN_WIDTH.caseLink),
+      render: (alert: Alert) => {
+        const v = alert._source;
+        return (
+          <div className="wamCaseCell">
+            {v.case_id ? (
+              <EuiBadge
+                color="primary"
+                iconType="folderOpen"
+                className="wamCaseCell__badge"
+                data-test-subj="wamAlertCaseBadge"
+                onClick={(event: any) => {
+                  event.stopPropagation();
+                  onOpenCase(v.case_id!);
+                }}
+                onClickAriaLabel="Open linked case"
+                title={caseTitles[v.case_id] || v.case_id}
+              >
+                {caseTitles[v.case_id] || v.case_id.slice(0, 8)}
+              </EuiBadge>
+            ) : (
+              <EuiText size="s" color="subdued">
+                —
+              </EuiText>
+            )}
+            {/* Step 2.6: compact native-case badge; renders nothing on a 4.x build or without a projection. */}
+            <NativeCaseChip nativeCase={v.native_case} compact testSubj="wamAlertNativeCaseQueue" />
+          </div>
+        );
+      },
+    },
+    // Hidden until the analyst adds them from the column selector (13.1).
+    {
+      id: 'manager',
+      label: 'Manager',
+      initialWidth: px(QUEUE_COLUMN_WIDTH.agent),
+      hiddenByDefault: true,
+      render: (alert: Alert) => (
+        <span data-test-subj="wamAlertManager">
+          {alert._source.manager?.name || (
+            <EuiText size="s" color="subdued">
+              —
+            </EuiText>
+          )}
+        </span>
+      ),
+    },
+    {
+      id: 'alertId',
+      label: 'Alert ID',
+      initialWidth: 180,
+      hiddenByDefault: true,
+      render: (alert: Alert) => (
+        <span className="wamQueueMonospace" data-test-subj="wamAlertIdCell" title={alert._id}>
+          {alert._id}
+        </span>
+      ),
+    },
+    {
+      id: 'agentIp',
+      label: 'Agent IP',
+      initialWidth: px(QUEUE_COLUMN_WIDTH.status),
+      hiddenByDefault: true,
+      render: (alert: Alert) => (
+        <span data-test-subj="wamAlertAgentIp">
+          {alert._source.agent?.ip || (
+            <EuiText size="s" color="subdued">
+              —
+            </EuiText>
+          )}
+        </span>
+      ),
+    },
+    {
+      id: 'actions',
+      label: 'Actions',
+      initialWidth: px(QUEUE_COLUMN_WIDTH.actions),
+      isResizable: false,
+      render: (alert: Alert) => (
+        <EuiButtonIcon
+          iconType="expand"
+          data-test-subj="wamAlertExpand"
+          aria-label={`Open details for ${alert._source.rule?.description || alert._id}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            openAlertById(alert._id);
+          }}
+        />
+      ),
+    },
+  ];
+}
+
 export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, openAlertId, onOpenAlertHandled }) => {
   const terms = useTerminology();
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -80,13 +343,23 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
   const [loadingCounts, setLoadingCounts] = useState(true);
   const [updating, setUpdating] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [pageIndex, setPageIndex] = useState(0);
   const [pageSize, setPageSize] = useState(20);
-  const [sortField, setSortField] = useState('_source.@timestamp');
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  // Grid sort (step 13.1): the analyst's last sort is restored from the grid
+  // preferences, so the queue comes back the way they left it.
+  const [sort, setSort] = useState<QueueGridSort>(() => {
+    // A stored column id is any string; only one this build can sort on is
+    // restored, everything else falls back to the default.
+    const stored = readGridSort(ALERT_GRID_STORAGE_KEY);
+    return stored && isAlertSortColumn(stored.columnId) ? stored : DEFAULT_ALERT_SORT;
+  });
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
   const [selectedIds, setSelectedIds] = useState<Alert[]>([]);
   const [showCreateCase, setShowCreateCase] = useState(false);
+  // A close (single from the flyout, or bulk from the selection) first asks
+  // for the disposition (step 2.4); the request is kept until the dialog answers.
+  const [closeRequest, setCloseRequest] = useState<{ mode: 'single' | 'bulk'; alerts: Alert[] } | null>(null);
   const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [summaryExpanded, setSummaryExpanded] = useState(() => {
@@ -115,11 +388,11 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
   const alertsRequestGeneration = useRef(0);
   const countsRequestGeneration = useRef(0);
 
-  const tableRef = useRef<EuiBasicTable<Alert>>(null);
+  // Due countdowns re-render once a minute without a refetch.
+  const now = useNowTicker();
 
   const clearSelection = () => {
     setSelectedIds([]);
-    tableRef.current?.setSelection([]);
   };
 
   const buildFilterParams = useCallback(
@@ -131,6 +404,10 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
       agentNames: appliedFilters.current.agentNames,
       alertTypes: appliedFilters.current.alertTypes,
       assignedTo: appliedFilters.current.assignedTo,
+      enrichmentVerdict: appliedFilters.current.enrichmentVerdict,
+      assetCriticality: appliedFilters.current.assetCriticality,
+      slaState: appliedFilters.current.slaState,
+      disposition: appliedFilters.current.disposition,
       q: appliedFilters.current.q || undefined,
       from: appliedTimeRange.current.from,
       to: appliedTimeRange.current.to,
@@ -159,8 +436,8 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
       const res: any = await apiService.fetchAlerts(buildFilterParams(), {
         from: pageIndex * pageSize,
         size: pageSize,
-        sortField: sortField.replace(/^_source\./, ''),
-        sortDirection,
+        sortField: alertSortFieldOf(sort.columnId),
+        sortDirection: sort.direction,
       });
       if (generation !== alertsRequestGeneration.current) return;
       const hits: Alert[] = res?.hits?.hits || [];
@@ -173,7 +450,7 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     } finally {
       if (generation === alertsRequestGeneration.current) setLoading(false);
     }
-  }, [buildFilterParams, pageIndex, pageSize, sortField, sortDirection]);
+  }, [buildFilterParams, pageIndex, pageSize, sort.columnId, sort.direction]);
 
   // Fetch titles for any case_ids on the page we haven't seen yet, so the Case
   // column can show the case name. Best-effort; failures leave the id fallback.
@@ -223,7 +500,7 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
   useEffect(() => {
     fetchAlerts();
     fetchCounts();
-  }, [pageIndex, pageSize, sortField, sortDirection, queryVersion]);
+  }, [pageIndex, pageSize, sort.columnId, sort.direction, queryVersion]);
 
   useEffect(() => {
     if (!autoRefreshEnabled) return;
@@ -260,6 +537,23 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     setQueryVersion((v) => v + 1);
   };
 
+  // CSV of the applied filters (what the queue shows), capped server-side.
+  const exportCsv = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const result = await apiService.exportAlertsCsv(buildFilterParams());
+      downloadBlob(result.filename, result.blob);
+      if (result.truncated) {
+        onToast('Export truncated', 'primary', 'The CSV holds the first 10,000 matching rows. Narrow the filters or time range to export the rest.');
+      }
+    } catch (e: any) {
+      onToast('Export failed', 'danger', e?.body?.message || e?.message || 'The CSV could not be generated.');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const toggleSummary = () => {
     setSummaryExpanded((expanded) => {
       const next = !expanded;
@@ -283,29 +577,43 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     onToast(negate ? `Excluded ${field}` : `Filtered by ${field}`, 'success', clause);
   };
 
-  const onTableChange = (criteria: CriteriaWithPagination<Alert>) => {
-    const sortChanged = Boolean(
-      criteria.sort &&
-      (String(criteria.sort.field) !== sortField || criteria.sort.direction !== sortDirection)
-    );
-    const pageChanged = Boolean(
-      criteria.page && (criteria.page.index !== pageIndex || criteria.page.size !== pageSize)
-    );
-    if (sortChanged || pageChanged) clearSelection();
-    if (criteria.sort) {
-      setSortField(String(criteria.sort.field));
-      setSortDirection(criteria.sort.direction);
-      setPageIndex(0);
-    }
-    if (criteria.page) {
-      setPageIndex(criteria.page.index);
-      setPageSize(criteria.page.size);
-    }
+  // Sorting from the grid header: one column at a time (the route takes one
+  // sort field), back to the first page, selection dropped because the page
+  // it was taken from is gone.
+  const onSortChange = (next: QueueGridSort | null) => {
+    const picked = next && isAlertSortColumn(next.columnId) ? next : DEFAULT_ALERT_SORT;
+    if (picked.columnId === sort.columnId && picked.direction === sort.direction) return;
+    clearSelection();
+    setSort(picked);
+    setPageIndex(0);
+  };
+
+  // "Reset layout" in the grid toolbar restores the default columns, widths
+  // and density; the sort lives here, so it goes back to the default with
+  // them - otherwise the queue would keep an order the stored preferences no
+  // longer mention.
+  const onGridReset = () => {
+    clearSelection();
+    setSort(DEFAULT_ALERT_SORT);
+    setPageIndex(0);
+  };
+
+  const onPageChange = (nextIndex: number) => {
+    if (nextIndex === pageIndex) return;
+    clearSelection();
+    setPageIndex(nextIndex);
+  };
+
+  const onPageSizeChange = (nextSize: number) => {
+    if (nextSize === pageSize) return;
+    clearSelection();
+    setPageSize(nextSize);
+    setPageIndex(0);
   };
 
   const updateAlerts = async (
     ids: string[],
-    changes: { status?: AlertStatus; caseId?: string | null; assignedTo?: string | null }
+    changes: { status?: AlertStatus; caseId?: string | null; assignedTo?: string | null; disposition?: CloseOutcome['disposition']; closureReason?: string | null }
   ): Promise<BulkAlertUpdateResponse> => {
     let result: BulkAlertUpdateResponse;
     try {
@@ -329,7 +637,6 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     const retained = requested.filter((alert) => failures.has(alert._id));
     const partial = isPartialAlertUpdate(result);
     setSelectedIds(retained);
-    tableRef.current?.setSelection(retained);
     onToast(
       partial ? `Updated ${result.updated} of ${result.requested} alerts` : `Updated ${result.updated} alert(s)`,
       partial ? 'danger' : 'success',
@@ -337,10 +644,18 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     );
   };
 
-  const updateAlertStatus = async (alertId: string, newStatus: AlertStatus) => {
+  const updateAlertStatus = async (alertId: string, newStatus: AlertStatus, outcome?: CloseOutcome) => {
+    if (newStatus === 'closed' && !outcome) {
+      // Ask for the disposition first; confirmClose re-enters with the outcome.
+      const alert = alerts.find((a) => a._id === alertId) || (selectedAlert && selectedAlert._id === alertId ? selectedAlert : null);
+      if (alert) {
+        setCloseRequest({ mode: 'single', alerts: [alert] });
+        return;
+      }
+    }
     try {
       setUpdating(alertId);
-      const result = await updateAlerts([alertId], { status: newStatus });
+      const result = await updateAlerts([alertId], { status: newStatus, ...(outcome ? { disposition: outcome.disposition, closureReason: outcome.closureReason } : {}) });
       const failures = failedAlertIds(result, [alertId]);
       const partial = isPartialAlertUpdate(result);
       onToast(
@@ -355,18 +670,31 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     }
   };
 
-  const bulkSetStatus = async (status: AlertStatus) => {
+  const bulkSetStatus = async (status: AlertStatus, outcome?: CloseOutcome, requestedAlerts?: Alert[]) => {
+    if (status === 'closed' && !outcome) {
+      // One dialog for the whole selection (step 2.4); confirmClose re-enters with the outcome.
+      if (selectedIds.length) setCloseRequest({ mode: 'bulk', alerts: selectedIds });
+      return;
+    }
     try {
       setBulkBusy(true);
-      const requested = selectedIds;
+      const requested = requestedAlerts || selectedIds;
       const ids = requested.map((alert) => alert._id);
-      const result = await updateAlerts(ids, { status });
+      const result = await updateAlerts(ids, { status, ...(outcome ? { disposition: outcome.disposition, closureReason: outcome.closureReason } : {}) });
       retainFailedSelection(requested, failedAlertIds(result, ids), result);
     } catch (e: any) {
       onToast('Bulk update failed', 'danger', e?.body?.message || e.message);
     } finally {
       setBulkBusy(false);
     }
+  };
+
+  const confirmClose = async (outcome: CloseOutcome) => {
+    const request = closeRequest;
+    if (!request) return;
+    setCloseRequest(null);
+    if (request.mode === 'single') await updateAlertStatus(request.alerts[0]._id, 'closed', outcome);
+    else await bulkSetStatus('closed', outcome, request.alerts);
   };
 
   const bulkAssign = async (assignedTo: string | null) => {
@@ -435,14 +763,18 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     }
   };
 
-  const createCaseFromSelection = async (payload: { title: string; description: string; severity: any; assignedTo?: string | null }) => {
+  const createCaseFromSelection = async (payload: { title: string; description: string; severity: any; assignedTo?: string | null; taskListId?: string | null }) => {
     try {
       setBulkBusy(true);
       const created: any = await apiService.createCase({ ...payload, alertIds: selectedIds.map((a) => a._id) });
       onToast('Case created', 'success', `Linked ${selectedIds.length} alert(s) to "${payload.title}"`);
+      // The task list (step 2.2) is applied server-side after creation; a failure never undoes the case.
+      if (created?.taskList) {
+        if (created.taskList.applied) onToast('Task list applied', 'success', `Added ${created.taskList.tasks_added ?? 0} task(s) to the new case`);
+        else onToast('Task list not applied', 'danger', created.taskList.error || 'The case was created without the task list tasks.');
+      }
       setShowCreateCase(false);
       setSelectedIds([]);
-      tableRef.current?.setSelection([]);
       fetchAlerts();
       onOpenCase(created.id);
     } catch (e: any) {
@@ -452,108 +784,30 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
     }
   };
 
-  const columns = [
-    {
-      field: '_source.@timestamp',
-      name: 'When',
-      width: '110px',
-      sortable: true,
-      render: (value: string, alert: Alert) => (
-        <EuiToolTip content={formatAbsolute(value)}>
-          <EuiLink
-            onClick={(event) => {
-              event.stopPropagation();
-              openAlertById(alert._id);
-            }}
-          >
-            {formatRelative(value)}
-          </EuiLink>
-        </EuiToolTip>
-      ),
-    },
-    {
-      field: '_source',
-      name: 'Agent / IP',
-      width: '190px',
-      render: (v: Alert['_source']) => (
-        <div className="wamTablePrimary">
-          <strong>{v.agent?.name || v.agent?.ip || 'Unknown agent'}</strong>
-          {v.agent?.name && v.agent?.ip && <span className="wamTableSecondary">({v.agent.ip})</span>}
-        </div>
-      ),
-    },
-    {
-      field: '_source',
-      name: 'Rule',
-      render: (v: Alert['_source']) => (
-        <div className="wamTablePrimary">
-          <strong>{v.rule?.description || 'Unknown rule'}</strong>
-          {v.rule?.id && <span className="wamTableSecondary">Rule {v.rule.id}</span>}
-        </div>
-      ),
-    },
-    {
-      field: '_source.rule.level',
-      name: 'Severity',
-      width: '120px',
-      sortable: true,
-      render: (level: number, row: Alert) => <SeverityBadge level={level} label={row._source?.severity_label} />,
-    },
-    {
-      field: '_source',
-      name: 'Status',
-      width: '130px',
-      render: (v: Alert['_source']) => <StatusBadge status={v.status} />,
-    },
-    {
-      field: '_source',
-      name: 'Assigned to',
-      render: (v: Alert['_source']) =>
-        v.assigned_to || (
-          <EuiText size="s" color="subdued">
-            Unassigned
-          </EuiText>
-        ),
-    },
-    {
-      field: '_source',
-      name: 'Case',
-      render: (v: Alert['_source']) =>
-        v.case_id ? (
-          <EuiBadge
-            color="primary"
-            iconType="folderOpen"
-            onClick={(event: any) => {
-              event.stopPropagation();
-              onOpenCase(v.case_id!);
-            }}
-            onClickAriaLabel="Open linked case"
-            title={caseTitles[v.case_id] || v.case_id}
-          >
-            {caseTitles[v.case_id] || v.case_id.slice(0, 8)}
-          </EuiBadge>
-        ) : (
-          <EuiText size="s" color="subdued">
-            —
-          </EuiText>
-        ),
-    },
-    {
-      name: 'Actions',
-      width: '70px',
-      align: 'right',
-      render: (alert: Alert) => (
-        <EuiButtonIcon
-          iconType="expand"
-          aria-label={`Open details for ${alert._source.rule?.description || alert._id}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            openAlertById(alert._id);
-          }}
-        />
-      ),
-    },
-  ];
+  // Memoized: `QueueGrid` derives its EuiDataGrid columns and its
+  // `renderCellValue` from this array's identity, and EUI renders that
+  // callback as a component type - a fresh array on every minute tick of
+  // `useNowTicker` would unmount and remount every cell on the page.
+  const columns = useMemo(
+    () => buildAlertQueueColumns({ caseTitles, now, openAlertById, onOpenCase }),
+    [caseTitles, now, openAlertById, onOpenCase]
+  );
+
+  // Same reason as `columns`: these three callbacks end up inside the grid's
+  // `cellPropsOf` -> `renderCellValue` and its `leadingControlColumns`, which
+  // EUI renders as component types, so an inline arrow would remount every
+  // cell and every checkbox on each render.
+  const getAlertId = useCallback((alert: Alert) => alert._id, []);
+  const openAlertRow = useCallback((alert: Alert) => openAlertById(alert._id), [openAlertById]);
+  const alertRowClass = useCallback(
+    (alert: Alert) => `wamAlertRow--${severityBand(alert._source.rule?.level, alert._source.severity_label)}`,
+    []
+  );
+  const alertRowLabel = useCallback((alert: Alert) => `Select ${alert._source.rule?.description || alert._id}`, []);
+  const gridSelection = useMemo(
+    () => ({ selected: selectedIds, onChange: setSelectedIds, rowLabel: alertRowLabel }),
+    [selectedIds, alertRowLabel]
+  );
 
   return (
     <>
@@ -570,6 +824,19 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
               </EuiButtonEmpty>
             </EuiFlexItem>
             <EuiFlexItem grow={false}>
+              <EuiButtonEmpty
+                className="wamExportButton"
+                size="xs"
+                iconType="exportAction"
+                onClick={exportCsv}
+                isLoading={exporting}
+                isDisabled={exporting}
+                data-test-subj="wamExportAlertsCsv"
+              >
+                Export CSV
+              </EuiButtonEmpty>
+            </EuiFlexItem>
+            <EuiFlexItem grow={false}>
               <EuiBadge color={autoRefreshEnabled ? 'success' : 'hollow'} iconType={autoRefreshEnabled ? 'refresh' : 'clock'}>
                 {autoRefreshEnabled ? 'Auto-refresh on · 5 min' : 'Auto-refresh off'}
               </EuiBadge>
@@ -578,28 +845,21 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
         </EuiFlexItem>
       </EuiFlexGroup>
 
-      {summaryExpanded && <><EuiSpacer size="m" /><EuiFlexGroup gutterSize="s" className="wamQueueStats" wrap>
-        <EuiFlexItem>
-          <EuiPanel paddingSize="s" hasShadow={false} hasBorder>
-            <EuiStat titleSize="s" title={loadingCounts ? <EuiLoadingSpinner size="s" /> : counts.open} description="Open" titleColor="primary" />
-          </EuiPanel>
-        </EuiFlexItem>
-        <EuiFlexItem>
-          <EuiPanel paddingSize="s" hasShadow={false} hasBorder>
-            <EuiStat titleSize="s" title={loadingCounts ? <EuiLoadingSpinner size="s" /> : counts.in_progress} description="In progress" titleColor="accent" />
-          </EuiPanel>
-        </EuiFlexItem>
-        <EuiFlexItem>
-          <EuiPanel paddingSize="s" hasShadow={false} hasBorder>
-            <EuiStat titleSize="s" title={loadingCounts ? <EuiLoadingSpinner size="s" /> : counts.closed} description="Closed" titleColor="subdued" />
-          </EuiPanel>
-        </EuiFlexItem>
-        <EuiFlexItem>
-          <EuiPanel paddingSize="s" hasShadow={false} hasBorder>
-            <EuiStat titleSize="s" title={loadingCounts ? <EuiLoadingSpinner size="s" /> : counts.total} description="Total" titleColor="default" />
-          </EuiPanel>
-        </EuiFlexItem>
-      </EuiFlexGroup></>}
+      {summaryExpanded && (
+        <>
+          <EuiSpacer size="m" />
+          <QueueStats
+            loading={loadingCounts}
+            testSubj="wamAlertQueueStats"
+            tiles={[
+              { id: 'open', description: 'Open', value: counts.open, color: 'primary' },
+              { id: 'in_progress', description: 'In progress', value: counts.in_progress, color: 'accent' },
+              { id: 'closed', description: 'Closed', value: counts.closed, color: 'subdued' },
+              { id: 'total', description: 'Total', value: counts.total },
+            ]}
+          />
+        </>
+      )}
 
       <EuiSpacer size="m" />
 
@@ -627,40 +887,67 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
         onAssign={bulkAssign}
         onAddToCase={bulkAddToCase}
         onCreateCase={() => setShowCreateCase(true)}
-        onClear={() => {
-          setSelectedIds([]);
-          tableRef.current?.setSelection([]);
-        }}
+        onClear={() => setSelectedIds([])}
         busy={bulkBusy}
       />
 
-      {alerts.length === 0 && !loading ? (
-        <EuiEmptyPrompt title={<h2>No alerts found</h2>} body={<p>No alerts matched your search criteria.</p>} />
+      {alerts.length === 0 ? (
+        // An in-flight first fetch must read as loading, not as an empty page.
+        loading ? (
+          <EuiLoadingContent lines={5} data-test-subj="wamAlertQueueLoading" />
+        ) : (
+          <QueueEmptyPrompt title="No alerts found" body="No alerts matched your search criteria." testSubj="wamAlertQueueEmpty" />
+        )
       ) : (
         <>
-          <EuiText size="s" color="subdued">
-            Showing {pageIndex * pageSize + 1}-{Math.min((pageIndex + 1) * pageSize, totalAlerts)} of {totalAlerts} alerts
-          </EuiText>
-          <EuiSpacer size="s" />
-          <EuiBasicTable<Alert>
-            className="wamAlertTable"
-            ref={tableRef}
-            items={alerts}
-            itemId="_id"
+          <QueueGrid<Alert>
+            className="wamQueueTable wamAlertTable"
+            data-test-subj="wamAlertQueueGrid"
+            ariaLabel="Alert queue"
+            storageKey={ALERT_GRID_STORAGE_KEY}
             columns={columns}
+            rows={alerts}
+            getRowId={getAlertId}
+            sort={sort}
+            onSort={onSortChange}
             loading={loading}
-            sorting={{ sort: { field: sortField as any, direction: sortDirection } }}
-            pagination={{ pageIndex, pageSize, totalItemCount: totalAlerts, pageSizeOptions: [10, 20, 50, 100] }}
-            onChange={onTableChange}
-            selection={{ selectable: () => true, onSelectionChange: setSelectedIds }}
-            rowProps={(alert) => ({
-              className: `wamAlertRow wamClickableRow wamAlertRow--${alert._source.rule?.level >= 12 ? 'critical' : alert._source.rule?.level >= 7 ? 'high' : alert._source.rule?.level >= 4 ? 'medium' : 'low'}`,
-              onClick: (event: React.MouseEvent) => {
-                if (!isInteractiveRowTarget(event.target, event.currentTarget)) openAlertById(alert._id);
-              },
-            })}
+            onReset={onGridReset}
+            onRowClick={openAlertRow}
+            cellClassName="wamAlertCell wamClickableRow"
+            rowAnchorClassName="wamAlertRow"
+            rowIdAttribute="data-alert-id"
+            rowClassName={alertRowClass}
+            selection={gridSelection}
+            toolbar={
+              <QueueResultSummary pageIndex={pageIndex} pageSize={pageSize} total={totalAlerts} noun="alerts" testSubj="wamAlertResultSummary" />
+            }
+          />
+          <EuiSpacer size="s" />
+          {/* The grid is handed one page at a time (EuiDataGrid's own pager
+              knows nothing of a server-side total), so the queue keeps its
+              own pager below it. */}
+          <EuiTablePagination
+            activePage={pageIndex}
+            pageCount={Math.max(1, Math.ceil(totalAlerts / pageSize))}
+            itemsPerPage={pageSize}
+            itemsPerPageOptions={[10, 20, 50, 100]}
+            onChangePage={onPageChange}
+            onChangeItemsPerPage={onPageSizeChange}
           />
         </>
+      )}
+
+      {closeRequest && (
+        <CloseCaseDialog
+          title={closeRequest.mode === 'bulk'
+            ? `Close ${closeRequest.alerts.length} ${closeRequest.alerts.length === 1 ? terms.unit : terms.units}?`
+            : `Close this ${terms.unit}?`}
+          confirmLabel={closeRequest.mode === 'bulk' ? `Close ${closeRequest.alerts.length}` : 'Close'}
+          busy={bulkBusy || updating != null}
+          onCancel={() => setCloseRequest(null)}
+          onConfirm={confirmClose}
+          testSubj="wamAlertCloseDialog"
+        />
       )}
 
       {selectedAlert && (
@@ -680,6 +967,10 @@ export const AlertsView: React.FC<Props> = ({ apiService, onToast, onOpenCase, o
           onAnalysisGenerated={(alertId, analysis) => {
             setSelectedAlert((prev) => (prev && prev._id === alertId ? { ...prev, _source: { ...prev._source, ai_analysis: analysis } } : prev));
             setAlerts((prev) => prev.map((a) => (a._id === alertId ? { ...a, _source: { ...a._source, ai_analysis: analysis } } : a)));
+          }}
+          onEnrichmentUpdated={(alertId, enrichment) => {
+            setSelectedAlert((prev) => (prev && prev._id === alertId ? { ...prev, _source: { ...prev._source, enrichment } } : prev));
+            setAlerts((prev) => prev.map((a) => (a._id === alertId ? { ...a, _source: { ...a._source, enrichment } } : a)));
           }}
           onAddFilter={addLuceneFilter}
         />

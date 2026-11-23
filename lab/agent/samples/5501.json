@@ -1,0 +1,87 @@
+{
+  "_index": "wazuh-alerts-4.x-2026.11.21",
+  "_id": "0PoxAKIB5cPRNK2Sb3TI",
+  "_source": {
+    "predecoder": {
+      "hostname": "wam-lab-agent",
+      "program_name": "sshd",
+      "timestamp": "Nov 21 22:19:26"
+    },
+    "agent": {
+      "ip": "10.0.2.15",
+      "name": "wam-lab-agent",
+      "id": "001"
+    },
+    "manager": {
+      "name": "wazuh.manager"
+    },
+    "data": {
+      "srcuser": "vagrant",
+      "uid": "0",
+      "dstuser": "vagrant"
+    },
+    "rule": {
+      "mail": false,
+      "level": 3,
+      "pci_dss": [
+        "10.2.5"
+      ],
+      "hipaa": [
+        "164.312.b"
+      ],
+      "tsc": [
+        "CC6.8",
+        "CC7.2",
+        "CC7.3"
+      ],
+      "description": "PAM: Login session opened.",
+      "groups": [
+        "pam",
+        "syslog",
+        "authentication_success"
+      ],
+      "nist_800_53": [
+        "AU.14",
+        "AC.7"
+      ],
+      "gdpr": [
+        "IV_32.2"
+      ],
+      "firedtimes": 2,
+      "mitre": {
+        "technique": [
+          "Valid Accounts"
+        ],
+        "id": [
+          "T1078"
+        ],
+        "tactic": [
+          "Defense Evasion",
+          "Persistence",
+          "Privilege Escalation",
+          "Initial Access"
+        ]
+      },
+      "id": "5501",
+      "gpg13": [
+        "7.8",
+        "7.9"
+      ]
+    },
+    "decoder": {
+      "parent": "pam",
+      "name": "pam"
+    },
+    "full_log": "Nov 21 22:19:26 wam-lab-agent sshd[15507]: pam_unix(sshd:session): session opened for user vagrant(uid=1000) by vagrant(uid=0)",
+    "input": {
+      "type": "log"
+    },
+    "@timestamp": "2026-11-21T22:19:27.490Z",
+    "location": "journald",
+    "id": "1795299567.1628889",
+    "timestamp": "2026-11-21T22:19:27.490+0000"
+  },
+  "sort": [
+    1795299567490
+  ]
+}

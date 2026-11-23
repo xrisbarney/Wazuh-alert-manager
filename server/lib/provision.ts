@@ -19,6 +19,10 @@ import {
   AUTOMATION_QUEUE_INDEX,
   AUTOMATION_DLQ_INDEX,
   AUTOMATION_EXECUTIONS_INDEX,
+  ENRICHMENT_CACHE_INDEX,
+  ATTACHMENTS_INDEX,
+  TASK_LISTS_INDEX,
+  NOTIFICATIONS_INDEX,
 } from '../../common';
 import {
   alertStatusMapping,
@@ -32,6 +36,10 @@ import {
   automationQueueMapping,
   automationDlqMapping,
   automationExecutionMapping,
+  enrichmentCacheMapping,
+  attachmentsMapping,
+  taskListsMapping,
+  notificationsMapping,
 } from './mappings';
 import { assertManagedWriteTarget } from './index_namespace';
 
@@ -39,7 +47,7 @@ import { assertManagedWriteTarget } from './index_namespace';
 // A fresh install creates indices with the current mapping and records this
 // version; an upgraded install has an older (or absent) version and runs
 // ensureMappingAdditions() once to PUT the new fields onto its existing indices.
-const MAPPING_VERSION = 13;
+export const MAPPING_VERSION = 25;
 const MAPPING_VERSION_DOC_ID = 'mapping_version';
 
 const MANAGED_INDICES: Array<[string, any]> = [
@@ -50,11 +58,15 @@ const MANAGED_INDICES: Array<[string, any]> = [
   [AUTOMATION_QUEUE_INDEX, automationQueueMapping],
   [AUTOMATION_DLQ_INDEX, automationDlqMapping],
   [AUTOMATION_EXECUTIONS_INDEX, automationExecutionMapping],
+  [ENRICHMENT_CACHE_INDEX, enrichmentCacheMapping],
+  [ATTACHMENTS_INDEX, attachmentsMapping],
+  [TASK_LISTS_INDEX, taskListsMapping],
+  [NOTIFICATIONS_INDEX, notificationsMapping],
 ];
 
 // PUT mapping through read aliases so every retained rollover generation gets
 // additive fields, not only the current writer.
-const ADDITIVE_MAPPING_TARGETS: Array<[string, any]> = [
+export const ADDITIVE_MAPPING_TARGETS: Array<[string, any]> = [
   [ALERTS_READ_ALIAS, alertStatusMapping],
   [ACTIVITY_READ_ALIAS, activityMapping],
   [EVIDENCE_READ_ALIAS, evidenceMapping],
@@ -72,7 +84,10 @@ function verifyProperties(expected: any, actual: any, path = ''): void {
     const field = actual?.[name];
     const fieldPath = path ? `${path}.${name}` : name;
     if (!field) throw new Error(`required mapping field ${fieldPath} is missing`);
-    if (definition.type && field.type !== definition.type) {
+    // Get-mapping omits `type: "object"` for an object field that has
+    // `properties` (it is the implicit default), so a missing type is an object.
+    const actualType = field.type ?? (field.properties ? 'object' : undefined);
+    if (definition.type && actualType !== definition.type) {
       throw new Error(`required mapping field ${fieldPath} must have type ${definition.type}`);
     }
     if (definition.enabled === false && field.enabled !== false) {

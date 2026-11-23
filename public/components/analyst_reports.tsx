@@ -1,19 +1,15 @@
 import React from 'react';
-import { EuiBasicTable, EuiEmptyPrompt, EuiSpacer, EuiText, EuiBadge } from '@elastic/eui';
+import { EuiBasicTable, EuiSpacer, EuiText, EuiBadge } from '@elastic/eui';
 import { ReportMetrics } from '../../common';
 import { formatDuration } from '../design';
+import { QueueEmptyPrompt } from './queue_chrome';
 
 const emptyAnalysts = (
-  <EuiEmptyPrompt
-    iconType="usersRolesApp"
-    titleSize="xs"
-    title={<h4>No assigned alerts in this period</h4>}
-    body={
-      <p>
-        Assign alerts to analysts (from the row status area or the alert flyout) to see per-analyst breakdowns here. On
-        older installations the assignment field may not be aggregatable until the index is reindexed.
-      </p>
-    }
+  <QueueEmptyPrompt
+    title="No assigned alerts in this period"
+    body="Assign alerts to analysts (from the row status area or the alert flyout) to see per-analyst breakdowns here. On older installations the assignment field may not be aggregatable until the index is reindexed."
+    headingLevel="h4"
+    testSubj="wamAnalystReportEmpty"
   />
 );
 
@@ -76,11 +72,11 @@ export const CaseAnalystTab: React.FC<{ metrics: ReportMetrics }> = ({ metrics }
   const rows = metrics.caseAnalysts || [];
   if (rows.length === 0) {
     return (
-      <EuiEmptyPrompt
-        iconType="folderClosed"
-        titleSize="xs"
-        title={<h4>No assigned cases in this period</h4>}
-        body={<p>Assign cases to analysts to see per-analyst case workload here.</p>}
+      <QueueEmptyPrompt
+        title="No assigned cases in this period"
+        body="Assign cases to analysts to see per-analyst case workload here."
+        headingLevel="h4"
+        testSubj="wamCaseAnalystReportEmpty"
       />
     );
   }

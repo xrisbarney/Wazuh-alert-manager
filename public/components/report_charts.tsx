@@ -36,6 +36,14 @@ function isDark(): boolean {
         root.getAttribute('data-theme') === 'light' ||
         body.getAttribute('data-theme') === 'light'
       ) return false;
+      // The 4.x dashboard sets neither class nor attribute: read the theme off
+      // the body text colour (light text = dark theme), as the Playwright
+      // screenshot spec does.
+      const text = window.getComputedStyle?.(body)?.color?.match(/\d+/g);
+      if (text && text.length >= 3) {
+        const [r, g, b] = text.map(Number);
+        return (r + g + b) / 3 > 128;
+      }
     }
     return typeof window !== 'undefined' && Boolean(window.matchMedia?.('(prefers-color-scheme: dark)').matches);
   } catch (e) {

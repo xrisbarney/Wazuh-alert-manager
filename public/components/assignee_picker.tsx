@@ -10,6 +10,10 @@ interface Props {
   compressed?: boolean;
   fullWidth?: boolean;
   placeholder?: string;
+  /** data-test-subj for the combo box container (the search input is EUI's `comboBoxSearchInput`). */
+  testSubj?: string;
+  ariaLabel?: string;
+  isDisabled?: boolean;
 }
 
 /**
@@ -26,6 +30,9 @@ export const AssigneePicker: React.FC<Props> = ({
   compressed = true,
   fullWidth = false,
   placeholder = 'Unassigned',
+  testSubj,
+  ariaLabel,
+  isDisabled = false,
 }) => {
   const [users, setUsers] = useState<string[]>([]);
 
@@ -51,6 +58,9 @@ export const AssigneePicker: React.FC<Props> = ({
       compressed={compressed}
       fullWidth={fullWidth}
       isClearable
+      isDisabled={isDisabled}
+      data-test-subj={testSubj}
+      aria-label={ariaLabel}
     />
   );
 };

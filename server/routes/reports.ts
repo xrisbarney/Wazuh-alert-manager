@@ -1,25 +1,133 @@
+import { randomBytes } from 'crypto';
 import { schema } from '@osd/config-schema';
 import { IRouter } from '../../../../src/core/server';
-import { API_ROOT, ALERT_STATUS_INDEX, CASES_INDEX, CASE_SEVERITIES } from '../../common';
 import {
-  collectCompositeBuckets,
-} from '../lib/report_metrics';
-import { REPORTING_SLA_POLICY } from '../lib/reporting_fields';
+  API_ROOT,
+  META_INDEX,
+  REPORT_EXPORT_FORMATS,
+  REPORT_SCHEDULES_DOC_ID,
+  REPORT_SCHEDULES_MAX,
+  REPORT_SCHEDULE_CADENCES,
+  REPORT_SCHEDULE_MAX_CHANNELS,
+  REPORT_SCHEDULE_MAX_RANGE_DAYS,
+} from '../../common';
+import type { ReportExportFormat, ReportRunSummary, ReportSchedule, ReportSchedulesResponse } from '../../common';
+import { appendActivity } from '../lib/activity';
+import { requirePluginAdmin } from '../lib/authorization';
+import { downloadResponse } from '../lib/http_download';
+import { trustedIdentity } from '../lib/identity';
+import { assertManagedWriteTarget } from '../lib/index_namespace';
+import { getNotificationEmitter } from '../lib/notifications/emitters';
+import { collectReportMetrics, collectReportSummary } from '../lib/report_schedules/metrics';
+import { renderReportSummary, reportExportContentType, reportExportFilename } from '../lib/report_schedules/render';
+import { nextSlot, readReportRun, readReportRuns, reportRunDocId, runSchedule, summariseRun } from '../lib/report_schedules/scheduler';
+import { REPORT_SCHEDULE_ID, reportSchedulesSettings } from '../lib/report_schedules/settings';
 
-function average(values: number[]): number | null {
-  return values.length ? values.reduce((sum, v) => sum + v, 0) / values.length : null;
+/**
+ * PUT body: the whole schedule list. Shape only; `normaliseReportSchedules`
+ * (run inside the settings doc write) does the semantic checks (weekly day,
+ * bounds, duplicate ids) and answers 400.
+ */
+const scheduleSchema = schema.object(
+  {
+    id: schema.string({ minLength: 1, maxLength: 64 }),
+    name: schema.string({ minLength: 1, maxLength: 120 }),
+    cadence: schema.oneOf(REPORT_SCHEDULE_CADENCES.map((cadence) => schema.literal(cadence)) as any),
+    dayOfWeek: schema.maybe(schema.number()),
+    hourUtc: schema.number(),
+    rangeDays: schema.number({ min: 1, max: REPORT_SCHEDULE_MAX_RANGE_DAYS }),
+    channelIds: schema.maybe(schema.arrayOf(schema.string({ maxLength: 128 }), { maxSize: REPORT_SCHEDULE_MAX_CHANNELS })),
+    enabled: schema.boolean({ defaultValue: true }),
+  },
+  { unknowns: 'forbid' }
+);
+
+const scheduleIdParams = schema.object({ id: schema.string({ minLength: 1, maxLength: 64 }) });
+
+/**
+ * Query of `GET /reports/export` (step 10.3): the same window as the
+ * metrics route plus the format; `inline` / `print` (HTML only) accept `1`
+ * or `true` and show the document in a tab instead of saving it.
+ */
+export const reportExportQuerySchema = schema.object({
+  from: schema.string(),
+  to: schema.string(),
+  format: schema.oneOf(REPORT_EXPORT_FORMATS.map((format) => schema.literal(format)) as any, { defaultValue: 'html' }),
+  inline: schema.maybe(schema.string({ maxLength: 8 })),
+  print: schema.maybe(schema.string({ maxLength: 8 })),
+});
+
+function isTruthyFlag(value: unknown): boolean {
+  return value === '1' || value === 'true' || value === true;
 }
 
-interface AssigneeStatus {
-  open: number;
-  in_progress: number;
-  closed: number;
+/** CSP of the HTML export shown in a tab: inline styles only, scripts solely by nonce (the print trigger). */
+export function reportExportCsp(nonce: string): string {
+  return `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; base-uri 'none'; form-action 'none'`;
 }
 
-function assigneeStatusFromBuckets(buckets: any[] = []): AssigneeStatus {
-  const s: AssigneeStatus = { open: 0, in_progress: 0, closed: 0 };
-  for (const sb of buckets) if (sb.key in s) (s as any)[sb.key] = sb.doc_count;
-  return s;
+/** Title of an ad-hoc export; the intro replaces the schedule cadence sentence of the Markdown summary. */
+export const REPORT_EXPORT_TITLE = 'SOC report';
+export const REPORT_EXPORT_INTRO = 'SOC report over the alerts and cases of the selected window';
+
+function failure(response: any, e: any) {
+  const statusCode = e?.statusCode || e?.meta?.statusCode || 500;
+  if (statusCode === 400) return response.badRequest({ body: { message: e.message } });
+  if (statusCode === 403) return response.forbidden({ body: { message: e.message } });
+  if (statusCode === 404) return response.notFound({ body: { message: e.message } });
+  return response.customError({ statusCode, body: { message: e.message } });
+}
+
+function notFound(id: string): never {
+  throw Object.assign(new Error(`Report schedule "${id}" was not found.`), { statusCode: 404 });
+}
+
+function validScheduleId(id: string): string {
+  if (!REPORT_SCHEDULE_ID.test(id)) notFound(id);
+  return id;
+}
+
+async function schedulesBody(client: any, masked: any, now: Date): Promise<ReportSchedulesResponse> {
+  const schedules: ReportSchedule[] = Array.isArray(masked.schedules) ? masked.schedules : [];
+  const runs = await readReportRuns(client, schedules.map((s) => s.id));
+  const lastRuns: Record<string, ReportRunSummary> = {};
+  for (const id of Object.keys(runs)) lastRuns[id] = summariseRun(runs[id]);
+  const nextSlots: Record<string, string> = {};
+  for (const schedule of schedules) nextSlots[schedule.id] = nextSlot(schedule, now);
+  return { schedules, lastRuns, nextSlots, updated_at: masked.updated_at, updated_by: masked.updated_by };
+}
+
+/**
+ * Remove `report_run:<id>` for every schedule id present before a PUT and
+ * absent after it (deleted or renamed), so no orphaned report stays
+ * readable and a re-created id does not inherit a stale run. A missing run
+ * doc is fine; any other delete failure is reported to the caller.
+ */
+export async function deleteOrphanedRuns(client: any, before: ReportSchedule[], after: ReportSchedule[]): Promise<string[]> {
+  const kept = new Set(after.map((s) => s.id));
+  const removed = before.map((s) => s.id).filter((id) => REPORT_SCHEDULE_ID.test(id) && !kept.has(id));
+  for (const id of removed) {
+    try {
+      await client.delete({ index: assertManagedWriteTarget(META_INDEX), id: reportRunDocId(id), refresh: 'wait_for' });
+    } catch (e: any) {
+      if (e?.meta?.statusCode === 404 || e?.statusCode === 404) continue;
+      throw e;
+    }
+  }
+  return removed;
+}
+
+/** The stored schedule with this id, or a 404. Also guards the open last-run routes against ids no schedule owns. */
+async function findSchedule(client: any, id: string): Promise<ReportSchedule> {
+  const doc = await reportSchedulesSettings.read(client);
+  const schedule = (doc.schedules || []).find((s: ReportSchedule) => s.id === id);
+  if (!schedule) notFound(id);
+  return schedule as ReportSchedule;
+}
+
+export function reportRunFilename(scheduleId: string, slot: string): string {
+  const day = /^\d{4}-\d{2}-\d{2}/.exec(slot)?.[0] || 'latest';
+  return `wam-report-${scheduleId}-${day}.md`;
 }
 
 export function defineReportRoutes(router: IRouter) {
@@ -38,324 +146,171 @@ export function defineReportRoutes(router: IRouter) {
       const client = context.core.opensearch.client.asCurrentUser;
 
       try {
-        const alertQuery = { range: { '@timestamp': { gte: from, lte: to } } };
-
-        // One exact aggregation query replaces the previous sampled document
-        // walk. Timing/SLA are read straight from the bounded write-time
-        // `reporting.*` fields, so nothing here depends on hit limits.
-        const result: any = await client.search({
-          index: ALERT_STATUS_INDEX,
-          body: {
-            size: 0,
-            track_total_hits: true,
-            query: alertQuery,
-            aggs: {
-              status_breakdown: { terms: { field: 'status', size: 10 } },
-              per_day: {
-                date_histogram: {
-                  field: '@timestamp',
-                  fixed_interval: '1d',
-                  min_doc_count: 0,
-                  extended_bounds: { min: from, max: to },
-                },
-                aggs: { by_status: { terms: { field: 'status', size: 5 } } },
-              },
-              assigned: {
-                filter: { exists: { field: 'reporting.first_assigned_at' } },
-                aggs: { avg_minutes: { avg: { field: 'reporting.assign_minutes' } } },
-              },
-              resolved: {
-                filter: {
-                  bool: {
-                    filter: [
-                      { term: { status: 'closed' } },
-                      { exists: { field: 'reporting.resolve_minutes' } },
-                    ],
-                  },
-                },
-                aggs: {
-                  avg_minutes: { avg: { field: 'reporting.resolve_minutes' } },
-                  by_tier: {
-                    terms: { field: 'reporting.sla_tier', size: 10 },
-                    aggs: {
-                      met: { filter: { term: { 'reporting.sla_met': true } } },
-                      breached: { filter: { term: { 'reporting.sla_met': false } } },
-                    },
-                  },
-                },
-              },
-              coverage: {
-                filters: {
-                  filters: {
-                    closed_missing: {
-                      bool: {
-                        filter: [{ term: { status: 'closed' } }],
-                        must_not: [{ exists: { field: 'reporting.closed_at' } }],
-                      },
-                    },
-                    assigned_missing: {
-                      bool: {
-                        filter: [{ exists: { field: 'assigned_to' } }],
-                        must_not: [{ exists: { field: 'reporting.first_assigned_at' } }],
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        });
-
-        const totalMatched = result.body.hits.total?.value ?? 0;
-
-        const statusBreakdown: Record<string, number> = { open: 0, in_progress: 0, closed: 0 };
-        for (const b of result.body.aggregations?.status_breakdown?.buckets || []) {
-          if (b.key in statusBreakdown) statusBreakdown[b.key] = b.doc_count;
-        }
-
-        const perDayBuckets = result.body.aggregations?.per_day?.buckets || [];
-        const alertsPerDay = perDayBuckets.map((b: any) => ({
-          date: b.key_as_string || new Date(b.key).toISOString(),
-          count: b.doc_count,
-        }));
-        const statusPerDay = perDayBuckets.map((b: any) => {
-          const row: any = { date: b.key_as_string || new Date(b.key).toISOString(), open: 0, in_progress: 0, closed: 0 };
-          for (const sb of b.by_status?.buckets || []) {
-            if (sb.key in row) row[sb.key] = sb.doc_count;
-          }
-          return row;
-        });
-
-        const assignedAgg = result.body.aggregations?.assigned;
-        const assignedCount = assignedAgg?.doc_count ?? 0;
-        const meanTimeToAssignMinutes = assignedAgg?.avg_minutes?.value != null
-          ? assignedAgg.avg_minutes.value
-          : null;
-
-        const resolvedAgg = result.body.aggregations?.resolved;
-        const resolvedCount = resolvedAgg?.doc_count ?? 0;
-        const meanTimeToResolveMinutes = resolvedAgg?.avg_minutes?.value != null
-          ? resolvedAgg.avg_minutes.value
-          : null;
-
-        const slaBreakdown = (resolvedAgg?.by_tier?.buckets || []).map((b: any) => ({
-          label: b.key,
-          met: b.met?.doc_count ?? 0,
-          breached: b.breached?.doc_count ?? 0,
-        }));
-        const slaTracked = slaBreakdown.reduce((sum, b) => sum + b.met + b.breached, 0);
-        const slaMet = slaBreakdown.reduce((sum, b) => sum + b.met, 0);
-        const slaCompliancePct = slaTracked ? (slaMet / slaTracked) * 100 : null;
-
-        const coverageAgg = result.body.aggregations?.coverage?.buckets || {};
-        const coverage = {
-          closedMissingReporting: coverageAgg.closed_missing?.doc_count ?? 0,
-          assignedMissingReporting: coverageAgg.assigned_missing?.doc_count ?? 0,
-        };
-
-        // Per-analyst workload: complete cardinality via composite pagination on
-        // assigned_to (keyword). Fresh installs map it as keyword; installs that
-        // predate the explicit mapping expose it as text with a `.keyword`
-        // subfield, so fall back to that.
-        let analysts: any[] = [];
-        const analystStatus = new Map<string, AssigneeStatus>();
-        try {
-          const workloadBuckets = await collectCompositeBuckets(
-            client,
-            {
-              index: ALERT_STATUS_INDEX,
-              query: { bool: { must: [alertQuery], filter: [{ exists: { field: 'assigned_to' } }] } },
-              bucket: {
-                composite: { size: 1000, sources: [{ assignee: { terms: { field: 'assigned_to' } } }] },
-                aggs: { by_status: { terms: { field: 'status', size: 5 } } },
-              },
-            }
-          ).catch(() => collectCompositeBuckets(
-            client,
-            {
-              index: ALERT_STATUS_INDEX,
-              query: { bool: { must: [alertQuery], filter: [{ exists: { field: 'assigned_to' } }] } },
-              bucket: {
-                composite: { size: 1000, sources: [{ assignee: { terms: { field: 'assigned_to.keyword' } } }] },
-                aggs: { by_status: { terms: { field: 'status', size: 5 } } },
-              },
-            }
-          ));
-          for (const b of workloadBuckets) {
-            analystStatus.set(b.key.assignee, assigneeStatusFromBuckets(b.by_status?.buckets));
-          }
-        } catch (e: any) {
-          throw new Error(`Exact per-analyst workload aggregation failed: ${e.message || e}`);
-        }
-
-        // Per-analyst resolution: complete cardinality on the write-time
-        // assignee_at_close field with exact mean resolve times.
-        const analystResolve = new Map<string, { count: number; minutes: number[] }>();
-        try {
-          const resolutionBuckets = await collectCompositeBuckets(client, {
-            index: ALERT_STATUS_INDEX,
-            query: {
-              bool: {
-                must: [alertQuery],
-                filter: [
-                  { term: { status: 'closed' } },
-                  { exists: { field: 'reporting.resolve_minutes' } },
-                  { exists: { field: 'reporting.assignee_at_close' } },
-                ],
-              },
-            },
-            bucket: {
-              composite: {
-                size: 1000,
-                sources: [{ assignee: { terms: { field: 'reporting.assignee_at_close' } } }],
-              },
-              aggs: { avg_minutes: { avg: { field: 'reporting.resolve_minutes' } } },
-            },
-          });
-          for (const b of resolutionBuckets) {
-            analystResolve.set(b.key.assignee, {
-              count: b.doc_count ?? 0,
-              minutes: b.avg_minutes?.value != null ? [b.avg_minutes.value] : [],
-            });
-          }
-        } catch (e: any) {
-          throw new Error(`Exact per-analyst resolution aggregation failed: ${e.message || e}`);
-        }
-
-        analysts = Array.from(analystStatus.entries())
-          .map(([assignee, status]) => {
-            const resolve = analystResolve.get(assignee);
-            return {
-              assignee,
-              total: status.open + status.in_progress + status.closed,
-              open: status.open,
-              in_progress: status.in_progress,
-              closed: status.closed,
-              resolvedCount: resolve?.count ?? 0,
-              meanTimeToResolveMinutes: resolve?.minutes?.length ? average(resolve.minutes) : null,
-            };
-          })
-          .sort((x, y) => y.total - x.total);
-
-        // Cases opened in the same period. All calculations stay in OpenSearch;
-        // high-cardinality assignees are paged with a composite aggregation.
-        // This remains exact without materialising the case cohort in dashboard
-        // memory, even when the selected period contains millions of cases.
-        const caseSeverityBreakdown = Object.fromEntries(CASE_SEVERITIES.map((s) => [s, 0])) as Record<string, number>;
-        let totalCases = 0;
-        let openCases = 0;
-        let inProgressCases = 0;
-        let closedCases = 0;
-        let meanCaseCloseMinutes: number | null = null;
-        let closedCaseTimingCount = 0;
-        let caseAnalysts: any[] = [];
-        const closeMinutesScript = {
-          lang: 'painless',
-          source: "(doc['closed_at'].value.toInstant().toEpochMilli() - doc['created_at'].value.toInstant().toEpochMilli()) / 60000.0",
-        };
-        try {
-          const caseResult: any = await client.search({
-            index: CASES_INDEX,
-            body: {
-              size: 0,
-              track_total_hits: true,
-              query: { range: { created_at: { gte: from, lte: to } } },
-              aggs: {
-                by_status: { terms: { field: 'status', size: 10 } },
-                by_severity: { terms: { field: 'severity', size: 10 } },
-                closed_timing: {
-                  filter: { bool: { filter: [
-                    { term: { status: 'closed' } },
-                    { exists: { field: 'created_at' } },
-                    { exists: { field: 'closed_at' } },
-                  ] } },
-                  aggs: { average_minutes: { avg: { script: closeMinutesScript } } },
-                },
-              },
-            },
-          });
-          totalCases = caseResult?.body?.hits?.total?.value ?? 0;
-          for (const bucket of caseResult?.body?.aggregations?.by_status?.buckets || []) {
-            if (bucket.key === 'open') openCases = bucket.doc_count;
-            else if (bucket.key === 'in_progress') inProgressCases = bucket.doc_count;
-            else if (bucket.key === 'closed') closedCases = bucket.doc_count;
-          }
-          for (const bucket of caseResult?.body?.aggregations?.by_severity?.buckets || []) {
-            if (bucket.key in caseSeverityBreakdown) caseSeverityBreakdown[bucket.key] = bucket.doc_count;
-          }
-          const timing = caseResult?.body?.aggregations?.closed_timing;
-          closedCaseTimingCount = timing?.doc_count ?? 0;
-          meanCaseCloseMinutes = timing?.average_minutes?.value ?? null;
-
-          const caseAssigneeBuckets = await collectCompositeBuckets(client, {
-            index: CASES_INDEX,
-            query: { bool: { filter: [
-              { range: { created_at: { gte: from, lte: to } } },
-              { exists: { field: 'assigned_to' } },
-            ] } },
-            bucket: {
-              composite: { size: 1000, sources: [{ assignee: { terms: { field: 'assigned_to' } } }] },
-              aggs: {
-                by_status: { terms: { field: 'status', size: 5 } },
-                closed_timing: {
-                  filter: { bool: { filter: [
-                    { term: { status: 'closed' } },
-                    { exists: { field: 'created_at' } },
-                    { exists: { field: 'closed_at' } },
-                  ] } },
-                  aggs: { average_minutes: { avg: { script: closeMinutesScript } } },
-                },
-              },
-            },
-          });
-          caseAnalysts = caseAssigneeBuckets.map((bucket: any) => {
-            const status = assigneeStatusFromBuckets(bucket.by_status?.buckets);
-            return {
-              assignee: bucket.key.assignee,
-              ...status,
-              total: status.open + status.in_progress + status.closed,
-              meanTimeToCloseMinutes: bucket.closed_timing?.average_minutes?.value ?? null,
-            };
-          }).sort((x: any, y: any) => y.total - x.total);
-        } catch (e: any) {
-          throw new Error(`Exact case aggregation failed: ${e.message || e}`);
-        }
-
         return response.ok({
-          body: {
-            from,
-            to,
-            totalAlerts: totalMatched,
-            exact: true,
-            alertBasis: 'exact_cohort',
-            timingBasis: 'exact_cohort',
-            caseBasis: 'exact_cohort',
-            // Alerts in the cohort that predate the write-time reporting fields
-            // and have not yet been materialized by the resumable backfill.
-            coverage,
-            statusBreakdown,
-            alertsPerDay,
-            statusPerDay,
-            resolvedCount,
-            assignedCount,
-            meanTimeToResolveMinutes,
-            meanTimeToAssignMinutes,
-            slaCompliancePct,
-            slaBreakdown,
-            slaPolicy: REPORTING_SLA_POLICY,
-            analysts,
-            caseAnalysts,
-            cases: {
-              totalCases,
-              statusBreakdown: { open: openCases, in_progress: inProgressCases, closed: closedCases },
-              severityBreakdown: caseSeverityBreakdown,
-              meanTimeToCloseMinutes: meanCaseCloseMinutes,
-              closedCount: closedCaseTimingCount,
-            },
-          },
+          body: await collectReportMetrics(client, { from, to }, (context as any).wazuhAlertManager?.logger || console),
         });
       } catch (e: any) {
         return response.customError({ statusCode: e?.meta?.statusCode || 500, body: { message: e.message } });
+      }
+    }
+  );
+
+  // Ad-hoc export of the Reporting page (step 10.3): read-only, the caller's
+  // client, the same window as the metrics route. HTML is served inline
+  // (with the print trigger) for the browser's Save as PDF, otherwise every
+  // format is an attachment.
+  router.get(
+    {
+      path: `${API_ROOT}/reports/export`,
+      validate: { query: reportExportQuerySchema },
+    },
+    async (context, request, response) => {
+      const q = request.query as any;
+      const format: ReportExportFormat = q.format;
+      const inline = format === 'html' && isTruthyFlag(q.inline);
+      // The print trigger only makes sense for the document shown in a tab; a
+      // saved file must never print itself when opened later.
+      const print = inline && isTruthyFlag(q.print);
+      try {
+        const client = context.core.opensearch.client.asCurrentUser;
+        const now = new Date();
+        const identity = await trustedIdentity(context, request);
+        const data = await collectReportSummary(client, { from: q.from, to: q.to }, (context as any).wazuhAlertManager?.logger || console);
+        // OSD core adds no CSP to API responses and the HTML export is a
+        // top-level document on the dashboard origin: a per-response nonce
+        // lets only our own print script run, whatever the escaping missed.
+        const nonce = randomBytes(16).toString('base64');
+        const body = renderReportSummary(data, format, {
+          schedule: { name: REPORT_EXPORT_TITLE, cadence: 'daily', rangeDays: 1 },
+          intro: REPORT_EXPORT_INTRO,
+          from: q.from,
+          to: q.to,
+          generatedAt: now.toISOString(),
+          generatedBy: identity.source === 'security_plugin' ? identity.name : undefined,
+          print,
+          nonce,
+        });
+        const contentType = reportExportContentType(format);
+        const filename = reportExportFilename(format, q.from, q.to, now);
+        const headers = { 'x-content-type-options': 'nosniff', 'content-security-policy': format === 'html' ? reportExportCsp(nonce) : "default-src 'none'" };
+        if (inline) {
+          return response.ok({
+            headers: {
+              ...headers,
+              'content-type': contentType,
+              'content-disposition': `inline; filename="${filename}"`,
+              'cache-control': 'no-store',
+              'referrer-policy': 'no-referrer',
+            },
+            body,
+          });
+        }
+        return downloadResponse(response, { filename, contentType, headers, body });
+      } catch (e: any) {
+        return failure(response, e);
+      }
+    }
+  );
+
+  // Scheduled summaries (step 5.4). Reading and writing the schedule list is
+  // an administrator action; a stored run is readable by any signed-in user.
+  router.get({ path: `${API_ROOT}/reports/schedules`, validate: false }, async (context, request, response) => {
+    try {
+      await requirePluginAdmin(context, request);
+      const client = context.core.opensearch.client.asCurrentUser;
+      const masked = await reportSchedulesSettings.read(client);
+      return response.ok({ body: await schedulesBody(client, masked, new Date()) });
+    } catch (e: any) {
+      return failure(response, e);
+    }
+  });
+
+  router.put(
+    {
+      path: `${API_ROOT}/reports/schedules`,
+      validate: {
+        body: schema.object({ schedules: schema.arrayOf(scheduleSchema, { maxSize: REPORT_SCHEDULES_MAX }) }),
+      },
+    },
+    async (context, request, response) => {
+      try {
+        const identity = await requirePluginAdmin(context, request);
+        const client = context.core.opensearch.client.asCurrentUser;
+        const { schedules } = request.body as any;
+        const before = await reportSchedulesSettings.read(client);
+        const masked = await reportSchedulesSettings.write(client, { schedules }, { actor: identity.name });
+        await appendActivity(client, {
+          targetType: 'system',
+          targetId: REPORT_SCHEDULES_DOC_ID,
+          user: identity.name,
+          action: 'report_schedules_updated',
+          to: String((masked.schedules || []).length),
+        });
+        await deleteOrphanedRuns(client, before.schedules || [], masked.schedules || []);
+        return response.ok({ body: await schedulesBody(client, masked, new Date()) });
+      } catch (e: any) {
+        return failure(response, e);
+      }
+    }
+  );
+
+  router.get(
+    { path: `${API_ROOT}/reports/schedules/{id}/last-run`, validate: { params: scheduleIdParams } },
+    async (context, request, response) => {
+      try {
+        const id = validScheduleId((request.params as any).id);
+        const client = context.core.opensearch.client.asCurrentUser;
+        await findSchedule(client, id);
+        const run = await readReportRun(client, id);
+        return response.ok({ body: { run: run ? summariseRun(run) : null } });
+      } catch (e: any) {
+        return failure(response, e);
+      }
+    }
+  );
+
+  router.get(
+    { path: `${API_ROOT}/reports/schedules/{id}/last-run.md`, validate: { params: scheduleIdParams } },
+    async (context, request, response) => {
+      try {
+        const id = validScheduleId((request.params as any).id);
+        const client = context.core.opensearch.client.asCurrentUser;
+        await findSchedule(client, id);
+        const run = await readReportRun(client, id);
+        if (!run) throw Object.assign(new Error(`Report schedule "${id}" has not run yet.`), { statusCode: 404 });
+        // The stored Markdown is the last successful render; a later failed
+        // attempt leaves it in place, so it is served regardless of `error`.
+        if (!run.markdown) {
+          throw Object.assign(new Error(`Report schedule "${id}" has no stored report yet${run.error ? ` (last attempt failed: ${run.error})` : ''}.`), { statusCode: 404 });
+        }
+        return downloadResponse(response, {
+          filename: reportRunFilename(id, run.slot),
+          contentType: 'text/markdown; charset=utf-8',
+          headers: { 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'" },
+          body: run.markdown,
+        });
+      } catch (e: any) {
+        return failure(response, e);
+      }
+    }
+  );
+
+  router.post(
+    { path: `${API_ROOT}/reports/schedules/{id}/run-now`, validate: { params: scheduleIdParams } },
+    async (context, request, response) => {
+      try {
+        const identity = await requirePluginAdmin(context, request);
+        const id = validScheduleId((request.params as any).id);
+        const client = context.core.opensearch.client.asCurrentUser;
+        const schedule = await findSchedule(client, id);
+        // Rendered with the caller's client and stored for the due slot, so
+        // the scheduler does not render the same slot again afterwards. The
+        // run is delivered to the schedule's channels like a scheduled one
+        // (step 1.3; a slot already delivered is a silent duplicate).
+        const run = await runSchedule(client, schedule, { actor: identity.name, now: new Date(), emitter: getNotificationEmitter() });
+        return response.ok({ body: { run: summariseRun(run) } });
+      } catch (e: any) {
+        return failure(response, e);
       }
     }
   );

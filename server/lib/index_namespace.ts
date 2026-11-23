@@ -5,7 +5,9 @@ import { WAZUH4_ALERTS_PROFILE, WazuhSourceProfile } from './source_profile';
  * Native Wazuh storage the plugin must never write to, named explicitly so a
  * refusal does not depend on the managed-prefix allowlist alone. Covers 4.x
  * alert indices, 5.0 event/finding data streams and their hidden `.ds-`
- * backing indices, state/inventory indices, and native case management.
+ * backing indices, state/inventory indices, native case management, the
+ * 5.0 CTI threat-intel catalog and its hidden `.wazuh-cti-` stores, and the
+ * active-response log.
  */
 export const NATIVE_WAZUH_PREFIXES = [
   'wazuh-alerts-',
@@ -17,6 +19,9 @@ export const NATIVE_WAZUH_PREFIXES = [
   'wazuh-monitoring-',
   'wazuh-statistics-',
   'wazuh-case-management-',
+  'wazuh-threatintel-',
+  '.wazuh-cti-',
+  'wazuh-active-responses',
 ] as const;
 
 function namesNativeStorage(index: string): boolean {

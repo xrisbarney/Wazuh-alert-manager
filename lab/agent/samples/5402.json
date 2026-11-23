@@ -1,0 +1,88 @@
+{
+  "_index": "wazuh-alerts-4.x-2026.11.21",
+  "_score": null,
+  "_source": {
+    "@timestamp": "2026-11-21T20:39:50.032Z",
+    "agent": {
+      "id": "001",
+      "ip": "10.0.2.15",
+      "name": "wam-lab-agent"
+    },
+    "data": {
+      "command": "/usr/bin/true",
+      "dstuser": "root",
+      "pwd": "/home/vagrant",
+      "srcuser": "vagrant"
+    },
+    "decoder": {
+      "ftscomment": "First time user executed the sudo command",
+      "name": "sudo",
+      "parent": "sudo"
+    },
+    "full_log": "2026-11-21T20:39:47.564482+00:00 wam-lab-agent sudo:  vagrant : PWD=/home/vagrant ; USER=root ; COMMAND=/usr/bin/true",
+    "id": "1795293590.1250562",
+    "input": {
+      "type": "log"
+    },
+    "location": "/var/log/auth.log",
+    "manager": {
+      "name": "wazuh.manager"
+    },
+    "predecoder": {
+      "program_name": "sudo",
+      "timestamp": "2026-11-21T20:39:47.564482+00:00"
+    },
+    "rule": {
+      "description": "Successful sudo to ROOT executed.",
+      "firedtimes": 18,
+      "gdpr": [
+        "IV_32.2"
+      ],
+      "gpg13": [
+        "7.6",
+        "7.8",
+        "7.13"
+      ],
+      "groups": [
+        "syslog",
+        "sudo"
+      ],
+      "hipaa": [
+        "164.312.b"
+      ],
+      "id": "5402",
+      "level": 3,
+      "mail": false,
+      "mitre": {
+        "id": [
+          "T1548.003"
+        ],
+        "tactic": [
+          "Privilege Escalation",
+          "Defense Evasion"
+        ],
+        "technique": [
+          "Sudo and Sudo Caching"
+        ]
+      },
+      "nist_800_53": [
+        "AU.14",
+        "AC.7",
+        "AC.6"
+      ],
+      "pci_dss": [
+        "10.2.5",
+        "10.2.2"
+      ],
+      "tsc": [
+        "CC6.8",
+        "CC7.2",
+        "CC7.3"
+      ]
+    },
+    "timestamp": "2026-11-21T20:39:50.032+0000"
+  },
+  "sort": [
+    1795293590032
+  ]
+}

@@ -1,7 +1,22 @@
 import { WAZUH5_FINDINGS_PROFILE } from '../source_profile';
-import { alertUid } from '../operational_projection';
+import {
+  alertUid,
+  boundedGeo,
+  boundedNativeCase,
+  boundedThreat,
+  geoHint,
+  projectAsset,
+  projectReportingDue,
+  threatMatch,
+  ProjectedGeoHint,
+  ProjectionContext,
+  ProjectedThreat,
+  ProjectedThreatMatch,
+} from '../operational_projection';
+import { MAX_RELATED_VALUES } from '../../../common/constants';
 import { SEVERITY_BANDS, bandFromLabel } from '../../../common/severity';
 import type { SourceAdapter, SourceQueryOptions } from './source_adapter';
+import type { AlertNativeCase } from '../../../common/types';
 
 /**
  * Wazuh 5.0 `wazuh-findings-v5-*` adapter (PROVISIONAL: field choices come
@@ -106,7 +121,106 @@ function severityLabel(value: any): string | null {
   return s.slice(0, 32);
 }
 
-export function projectFinding(hit: any, now = new Date().toISOString()): any {
+const MAX_URL = 2048;
+
+function bounded(value: any, max: number): string | null {
+  const s = scalar(value);
+  return s == null ? null : s.slice(0, max);
+}
+
+function relatedList(value: any): string[] {
+  return strings(value).slice(0, MAX_RELATED_VALUES).map((v) => v.slice(0, 512));
+}
+
+/**
+ * Bounded copy of the engine's `wazuh.threat.enrichments[]` (ECS
+ * threat.enrichments shape: `indicator.{id,name,type,provider,feed.name,
+ * confidence,tags,software.name}` + `matched.{field,atomic}`). The engine
+ * only stamps catalog hits, so every entry is a malicious verdict from the
+ * named provider/feed; confidence is kept verbatim as a label.
+ */
+export function projectThreat5(source: Record<string, any>): ProjectedThreat | null {
+  const wazuh = obj(source.wazuh);
+  const raw = obj(wazuh.threat).enrichments ?? obj(source.threat).enrichments;
+  const enrichments: any[] = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? [raw] : [];
+  const matches: ProjectedThreatMatch[] = [];
+  for (const entry of enrichments) {
+    const e = obj(entry);
+    const indicator = obj(e.indicator);
+    const matched = obj(e.matched);
+    const feed = obj(indicator.feed);
+    const software = obj(indicator.software);
+    const name = first(indicator.name, matched.atomic, indicator.id);
+    if (!name) continue;
+    matches.push(threatMatch({
+      source: 'wazuh5_engine',
+      verdict: 'malicious',
+      matched_field: first(matched.field),
+      detail: null,
+      link: bounded(indicator.reference, MAX_URL),
+      indicator: {
+        id: indicator.id,
+        name,
+        type: indicator.type,
+        provider: indicator.provider,
+        feed: feed.name ?? (typeof indicator.feed === 'string' ? indicator.feed : null),
+        confidence: indicator.confidence,
+        tags: indicator.tags,
+        software: software.name ?? (typeof indicator.software === 'string' ? indicator.software : null),
+      },
+    }));
+  }
+  return boundedThreat(matches);
+}
+
+/**
+ * ECS `<entity>.geo.*` / `<entity>.as.*` for source, destination, client and
+ * server, plus `.geo` for host (the engine writes `.as` only for the four
+ * network entities). Bounded to MAX_GEO_HINTS in this order.
+ */
+export function projectGeo5(source: Record<string, any>): ProjectedGeoHint[] | null {
+  const entries: Array<[ProjectedGeoHint['entity'], Record<string, any>]> = [
+    ['source', obj(source.source)],
+    ['destination', obj(source.destination)],
+    ['client', obj(source.client)],
+    ['server', obj(source.server)],
+    ['host', obj(source.host)],
+  ];
+  const hints = entries.map(([entity, entry]) => {
+    const geo = obj(entry.geo);
+    const asn = obj(entry.as);
+    if (!Object.keys(geo).length && !Object.keys(asn).length) return null;
+    return geoHint({
+      entity,
+      ip: entry.ip,
+      country_name: geo.country_name ?? geo.country_iso_code,
+      region_name: geo.region_name,
+      city_name: geo.city_name,
+      location: geo.location,
+      as: asn,
+      provider: 'wazuh5_engine',
+    });
+  });
+  return boundedGeo(hints);
+}
+
+/**
+ * Read-only projection of the native Case Management fields a 5.0 finding may
+ * carry (`wazuh.case.*`, step 2.6 / Q6). The rc2 field set in the bundled
+ * dashboard sources is `{status, severity, priority, tlp, tags, title,
+ * description, comments, user.name, created_at, updated_at}`; rc2 writes NO
+ * `id` (a native case is the finding itself). The `id` slot of the allowlist
+ * is reserved for a later Wazuh line that names cases and stays null on rc2.
+ * Only the allowlist is copied, everything else is dropped. Never written
+ * back: the plugin has no write path to findings. A case edited after the
+ * finding left the sync window is picked up by native_case_reconcile.ts.
+ * Live check against an rc2 stack is part of the end-of-phase 5.0 pass.
+ */
+export function projectNativeCase5(source: Record<string, any>): AlertNativeCase | null {
+  return boundedNativeCase(obj(source.wazuh).case);
+}
+
+export function projectFinding(hit: any, now = new Date().toISOString(), context?: ProjectionContext | null): any {
   const source = obj(hit?._source);
   const wazuh = obj(source.wazuh);
   const wAgent = obj(wazuh.agent);
@@ -125,6 +239,12 @@ export function projectFinding(hit: any, now = new Date().toISOString()): any {
   const protocol = obj(wazuh.protocol);
   const sourceIndex = String(hit?._index || '');
   const sourceId = String(hit?._id || '');
+  const file = obj(source.file);
+  const fileHash = obj(file.hash);
+  const url = obj(source.url);
+  const dns = obj(source.dns);
+  const related = obj(source.related);
+  const hasRelated = ['ip', 'hosts', 'hash', 'user'].some((k) => strings(related[k]).length);
 
   const level = wRule.level != null ? wRule.level : rRule.level;
   const agentId = first(wAgent.id, rAgent.id);
@@ -136,7 +256,7 @@ export function projectFinding(hit: any, now = new Date().toISOString()): any {
   const hasAgent = agentId != null || agentName != null;
   const hasRule = ruleId != null || ruleTitle != null;
 
-  return {
+  const doc: any = {
     alert_uid: alertUid(sourceIndex, sourceId),
     source_index: sourceIndex,
     source_id: sourceId,
@@ -173,14 +293,47 @@ export function projectFinding(hit: any, now = new Date().toISOString()): any {
       srcuser: first(obj(src.user).name, user.name),
       dstuser: scalar(obj(dst.user).name),
       process: scalar(process.name) ? { name: scalar(process.name) } : null,
+      url: bounded(first(url.full, url.original), MAX_URL),
+      hostname: bounded(first(obj(dns.question).name, url.domain, dst.domain), 253),
+      win: null,
+      // 5.0 findings carry no auditd data.audit block; the key exists for
+      // shape parity with the 4.x projection (step 9.4).
+      audit: null,
     },
+    syscheck:
+      fileHash.md5 != null || fileHash.sha1 != null || fileHash.sha256 != null
+        ? {
+            path: bounded(file.path, 1024),
+            md5_after: bounded(fileHash.md5, 64),
+            sha1_after: bounded(fileHash.sha1, 64),
+            sha256_after: bounded(fileHash.sha256, 64),
+          }
+        : null,
+    related: hasRelated
+      ? {
+          ip: relatedList(related.ip),
+          hosts: relatedList(related.hosts),
+          hash: relatedList(related.hash),
+          user: relatedList(related.user),
+        }
+      : null,
+    threat: projectThreat5(source),
+    geo: projectGeo5(source),
     decoder: integration.name != null ? { name: scalar(integration.name) } : null,
     location: truncate(first(protocol.location, obj(source.log).file && obj(obj(source.log).file).path), MAX_LOCATION),
     full_log_excerpt: truncate(first(event.original, source.message), MAX_LOG_EXCERPT),
     event_index: truncate(scalar(event.index), MAX_PROVENANCE),
     event_doc_id: truncate(scalar(event.doc_id), MAX_PROVENANCE),
     space: scalar(obj(wazuh.space).name),
+    // Native case fields (step 2.6): re-derived on every resync, never owned.
+    native_case: projectNativeCase5(source),
+    // 5.0 findings carry the agent's groups natively; labels were removed in 5.0.
+    asset: projectAsset({ agentId, agentName, groups: wAgent.groups ?? rAgent.groups, labels: null }, context),
   };
+  // Due timestamps (step 3.2) from the label's band: `severity_label` is the
+  // only severity a 5.0 record carries, so the shared helper reads it.
+  doc.reporting = projectReportingDue(doc, now, context);
+  return doc;
 }
 
 export const WAZUH5_FINDING_ADAPTER: SourceAdapter = Object.freeze({
@@ -213,7 +366,7 @@ export const WAZUH5_FINDING_ADAPTER: SourceAdapter = Object.freeze({
       { _doc: { order: 'asc' } },
     ];
   },
-  project(hit: any, now?: string): any {
-    return now ? projectFinding(hit, now) : projectFinding(hit);
+  project(hit: any, now?: string, context?: ProjectionContext | null): any {
+    return projectFinding(hit, now ?? new Date().toISOString(), context);
   },
 });

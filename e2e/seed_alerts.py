@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import json
 import os
@@ -18,6 +19,11 @@ INDEX = "wazuh-alerts-4.x-wam-e2e"
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--count", type=int, default=8, help="documents to seed (default 8)")
+    args = parser.parse_args()
+    if args.count < 1:
+        raise SystemExit("--count must be at least 1")
     if not os.environ.get("WAM_PW"):
         raise SystemExit("Set WAM_PW; credentials are never stored in this script")
     bench.SRC = INDEX
@@ -32,7 +38,10 @@ def main() -> None:
 
     run = f"{time.time_ns()}"
     now = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=2)
-    addresses = ["203.0.113.77"] * 2 + ["203.0.113.88"] * 3 + ["203.0.113.89"] * 3
+    # The default 8-doc shape is what full_ui.spec.ts's automation scenarios
+    # expect; other counts cycle the same addresses.
+    pool = ["203.0.113.77"] * 2 + ["203.0.113.88"] * 3 + ["203.0.113.89"] * 3
+    addresses = [pool[index % len(pool)] for index in range(args.count)]
     lines = []
     for offset, address in enumerate(addresses, 1):
         doc_id = f"wam-e2e-{run}-{offset}"

@@ -9,9 +9,13 @@ import {
   EVIDENCE_READ_ALIAS,
   EVIDENCE_WRITE_ALIAS,
   META_INDEX,
+  ATTACHMENTS_INDEX,
+  TASK_LISTS_INDEX,
+  NOTIFICATIONS_INDEX,
+  CASES_READ_ALIAS,
 } from '../../common';
-import { ensureIndex, ensureMappingAdditions, ensureRolloverFamily, isResourceAlreadyExists } from './provision';
-import { alertStatusMapping, metaMapping } from './mappings';
+import { ADDITIVE_MAPPING_TARGETS, ensureIndex, ensureMappingAdditions, ensureRolloverFamily, isResourceAlreadyExists, MAPPING_VERSION } from './provision';
+import { alertStatusMapping, attachmentsMapping, casesMapping, metaMapping, notificationsMapping, taskListsMapping } from './mappings';
 
 const logger: any = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
 
@@ -336,8 +340,34 @@ describe('mapping upgrades', () => {
     await ensureMappingAdditions(client, logger);
 
     const targets = client.indices.putMapping.mock.calls.map(([request]: any[]) => request.index);
-    expect(targets).toEqual(expect.arrayContaining([ALERTS_READ_ALIAS, ACTIVITY_READ_ALIAS]));
+    expect(targets).toEqual(expect.arrayContaining([ALERTS_READ_ALIAS, ACTIVITY_READ_ALIAS, ATTACHMENTS_INDEX]));
     expect(client.index).toHaveBeenCalledWith(expect.objectContaining({ index: META_INDEX, id: 'mapping_version' }));
+  });
+
+  test('the attachments index is a managed singleton whose file body is stored but never indexed', async () => {
+    expect(ATTACHMENTS_INDEX).toBe('wazuh-alert-manager-v2-attachments');
+    expect(attachmentsMapping.dynamic).toBe(false);
+    expect(attachmentsMapping.properties).toMatchObject({
+      case_id: { type: 'keyword' },
+      kind: { type: 'keyword' },
+      content_type: { type: 'keyword' },
+      size: { type: 'long' },
+      sha256: { type: 'keyword' },
+      data: { type: 'object', enabled: false },
+      created_by: { type: 'keyword' },
+      created_at: { type: 'date' },
+    });
+    const client: any = {
+      indices: {
+        exists: jest.fn().mockResolvedValue({ body: false }),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    };
+    await ensureIndex(client, ATTACHMENTS_INDEX, attachmentsMapping, logger);
+    expect(client.indices.create).toHaveBeenCalledWith(expect.objectContaining({
+      index: ATTACHMENTS_INDEX,
+      body: expect.objectContaining({ mappings: attachmentsMapping }),
+    }));
   });
 
   test('fails startup and does not advance the mapping version after a partial failure', async () => {
@@ -356,9 +386,73 @@ describe('mapping upgrades', () => {
     expect(client.index).not.toHaveBeenCalled();
   });
 
+  test('steps 2.1 to 2.4 and 1.4 bumped the mapping version so upgraded installs receive the case task, task list, activity event_uid, disposition and rule notify fields', async () => {
+    expect(MAPPING_VERSION).toBe(25);
+    const client: any = {
+      get: jest.fn().mockResolvedValue({ body: { _source: { version: MAPPING_VERSION - 1 } } }),
+      index: jest.fn().mockResolvedValue({}),
+      indices: {
+        exists: jest.fn().mockResolvedValue({ body: true }),
+        putMapping: jest.fn().mockResolvedValue({}),
+        getMapping: jest.fn(({ index }: any) => {
+          const request = client.indices.putMapping.mock.calls.find(([call]: any[]) => call.index === index)?.[0];
+          return { body: { physical: { mappings: request.body } } };
+        }),
+      },
+    };
+
+    await ensureMappingAdditions(client, logger);
+
+    const cases = client.indices.putMapping.mock.calls.find(([call]: any[]) => call.index === CASES_READ_ALIAS)?.[0];
+    expect(cases).toBeDefined();
+    expect(cases.body.properties.tasks).toMatchObject({ type: 'nested', dynamic: false });
+    expect(cases.body.properties.task_counts.properties).toEqual({ open: { type: 'long' }, done: { type: 'long' } });
+    expect(cases.body.properties.applied_task_lists).toBeDefined();
+    expect(cases.body.properties.disposition).toEqual({ type: 'keyword' });
+    expect(cases.body.properties.closure_reason.type).toBe('text');
+    const alerts = client.indices.putMapping.mock.calls.find(([call]: any[]) => call.index === ALERTS_READ_ALIAS)?.[0];
+    expect(alerts.body.properties.disposition).toEqual({ type: 'keyword' });
+    expect(alerts.body.properties.closure_reason.type).toBe('text');
+    expect(client.index).toHaveBeenCalledWith(
+      expect.objectContaining({ index: META_INDEX, id: 'mapping_version', body: expect.objectContaining({ version: MAPPING_VERSION }) })
+    );
+  });
+
+  test('accepts an object field whose stored mapping omits the implicit `type: object` (as get-mapping returns it)', async () => {
+    // OpenSearch's get-mapping drops `type: "object"` from an object field
+    // that has `properties`; the verifier must not read that as a type change
+    // (step 2.5 found the cases index failing on `applied_task_lists`).
+    const stripObjectTypes = (properties: any): any =>
+      Object.fromEntries(
+        Object.entries<any>(properties || {}).map(([name, definition]) => {
+          const copy: any = { ...definition };
+          if (copy.properties) {
+            copy.properties = stripObjectTypes(copy.properties);
+            if (copy.type === 'object') delete copy.type;
+          }
+          return [name, copy];
+        })
+      );
+    const client: any = {
+      get: jest.fn().mockResolvedValue({ body: { _source: { version: MAPPING_VERSION } } }),
+      index: jest.fn(),
+      indices: {
+        exists: jest.fn().mockResolvedValue({ body: true }),
+        putMapping: jest.fn(),
+        getMapping: jest.fn(async ({ index }: any) => {
+          const expected = ADDITIVE_MAPPING_TARGETS.find(([name]) => name === index)?.[1];
+          return { body: { physical: { mappings: { dynamic: expected.dynamic, properties: stripObjectTypes(expected.properties) } } } };
+        }),
+      },
+    };
+
+    await expect(ensureMappingAdditions(client, logger)).resolves.toBeUndefined();
+    expect(client.indices.putMapping).not.toHaveBeenCalled();
+  });
+
   test('fails startup when a required mapped field is absent', async () => {
     const client: any = {
-      get: jest.fn().mockResolvedValue({ body: { _source: { version: 13 } } }),
+      get: jest.fn().mockResolvedValue({ body: { _source: { version: MAPPING_VERSION } } }),
       index: jest.fn(),
       indices: {
         exists: jest.fn().mockResolvedValue({ body: true }),
@@ -373,7 +467,7 @@ describe('mapping upgrades', () => {
 
   test('fails startup when an existing generation allows dynamic fields', async () => {
     const client: any = {
-      get: jest.fn().mockResolvedValue({ body: { _source: { version: 13 } } }),
+      get: jest.fn().mockResolvedValue({ body: { _source: { version: MAPPING_VERSION } } }),
       index: jest.fn(),
       indices: {
         exists: jest.fn().mockResolvedValue({ body: true }),
@@ -458,5 +552,76 @@ describe('provisioning when the cluster blocks the create-index API (Wazuh 5.0)'
     client.indices.create = jest.fn(async () => { const e: any = new Error('boom'); e.meta = { statusCode: 500, body: { error: { type: 'some_other_exception' } } }; throw e; });
     await expect(ensureIndex(client, 'wazuh-alert-manager-v2-meta', metaMapping, logger)).rejects.toThrow('boom');
     expect(client.indices.putIndexTemplate).not.toHaveBeenCalled();
+  });
+});
+
+describe('task lists index (step 2.2)', () => {
+  test('is a managed singleton created like the attachments index and part of the additive mapping targets', async () => {
+    expect(TASK_LISTS_INDEX).toBe('wazuh-alert-manager-v2-task-lists');
+    const client: any = {
+      indices: {
+        exists: jest.fn().mockResolvedValue({ body: false }),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    };
+    await ensureIndex(client, TASK_LISTS_INDEX, taskListsMapping, logger);
+    expect(client.indices.create).toHaveBeenCalledWith(expect.objectContaining({
+      index: TASK_LISTS_INDEX,
+      body: expect.objectContaining({ mappings: taskListsMapping }),
+    }));
+
+    const additive: any = {
+      get: jest.fn().mockRejectedValue({ meta: { statusCode: 404 } }),
+      index: jest.fn().mockResolvedValue({}),
+      indices: {
+        exists: jest.fn().mockResolvedValue({ body: true }),
+        putMapping: jest.fn().mockResolvedValue({}),
+        getMapping: jest.fn(({ index }: any) => {
+          const request = additive.indices.putMapping.mock.calls.find(([call]: any[]) => call.index === index)?.[0];
+          return { body: { physical: { mappings: request.body } } };
+        }),
+      },
+    };
+    await ensureMappingAdditions(additive, logger);
+    const targets = additive.indices.putMapping.mock.calls.map(([request]: any[]) => request.index);
+    expect(targets).toContain(TASK_LISTS_INDEX);
+    const cases = additive.indices.putMapping.mock.calls.find(([request]: any[]) => request.index === CASES_READ_ALIAS)[0];
+    expect(cases.body.properties.applied_task_lists).toEqual(casesMapping.properties.applied_task_lists);
+  });
+});
+
+describe('notification outbox index (step 1.2)', () => {
+  test('is a managed singleton under the plugin prefix, created like the task lists index and part of the additive mapping targets', async () => {
+    expect(NOTIFICATIONS_INDEX).toBe('wazuh-alert-manager-v2-notifications');
+    expect(ADDITIVE_MAPPING_TARGETS.find(([index]) => index === NOTIFICATIONS_INDEX)?.[1]).toBe(notificationsMapping);
+    const client: any = {
+      indices: {
+        exists: jest.fn().mockResolvedValue({ body: false }),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    };
+    await ensureIndex(client, NOTIFICATIONS_INDEX, notificationsMapping, logger);
+    expect(client.indices.create).toHaveBeenCalledWith(expect.objectContaining({
+      index: NOTIFICATIONS_INDEX,
+      body: expect.objectContaining({ mappings: notificationsMapping }),
+    }));
+
+    const additive: any = {
+      get: jest.fn().mockRejectedValue({ meta: { statusCode: 404 } }),
+      index: jest.fn().mockResolvedValue({}),
+      indices: {
+        exists: jest.fn().mockResolvedValue({ body: true }),
+        putMapping: jest.fn().mockResolvedValue({}),
+        getMapping: jest.fn(({ index }: any) => {
+          const request = additive.indices.putMapping.mock.calls.find(([call]: any[]) => call.index === index)?.[0];
+          return { body: { physical: { mappings: request.body } } };
+        }),
+      },
+    };
+    await ensureMappingAdditions(additive, logger);
+    const targets = additive.indices.putMapping.mock.calls.map(([request]: any[]) => request.index);
+    expect(targets).toContain(NOTIFICATIONS_INDEX);
+    const outbox = additive.indices.putMapping.mock.calls.find(([request]: any[]) => request.index === NOTIFICATIONS_INDEX)[0];
+    expect(outbox.body.properties.payload).toEqual({ type: 'object', enabled: false });
   });
 });

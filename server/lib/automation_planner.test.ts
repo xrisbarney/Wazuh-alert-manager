@@ -254,3 +254,75 @@ describe('automation planner Any/All trigger semantics', () => {
     expect(fired.chosenStatus).toBe('closed');
   });
 });
+
+describe('disposition with a close action (step 2.4)', () => {
+  test('a closing rule with a disposition plans it next to the status; other statuses and unknown values never do', () => {
+    const closing = planAlertAutomation(alert(), [
+      rule('close', { actions: { createCase: false, setStatus: 'closed', disposition: 'false_positive' } }),
+    ]);
+    expect(closing.mutation).toEqual({ status: 'closed', disposition: 'false_positive' });
+
+    const progress = planAlertAutomation(alert(), [
+      rule('progress', { actions: { createCase: false, setStatus: 'in_progress', disposition: 'false_positive' } as any }),
+    ]);
+    expect(progress.mutation).toEqual({ status: 'in_progress' });
+
+    const unknown = planAlertAutomation(alert(), [
+      rule('close', { actions: { createCase: false, setStatus: 'closed', disposition: 'resolved' } as any }),
+    ]);
+    expect(unknown.mutation).toEqual({ status: 'closed' });
+  });
+
+  test('the disposition follows the rule that won the status, not a lower-priority conflicting rule', () => {
+    const plan = planAlertAutomation(alert(), [
+      rule('winner', { priority: 10, actions: { createCase: false, setStatus: 'closed', disposition: 'benign' } }),
+      rule('loser', { priority: 20, actions: { createCase: false, setStatus: 'closed', disposition: 'false_positive' } }),
+    ]);
+    expect(plan.mutation).toEqual({ status: 'closed', disposition: 'benign' });
+    expect(plan.chosenStatusRuleId).toBe('winner');
+  });
+
+  test('an already closed alert gets no mutation at all (nothing re-stamps the stored disposition)', () => {
+    const plan = planAlertAutomation(alert({ status: 'closed', disposition: 'true_positive' }), [
+      rule('close', { preconditions: { statuses: ['closed'], assignment: 'any' }, actions: { createCase: false, setStatus: 'closed', disposition: 'benign' } } as any),
+    ]);
+    expect(plan.mutation).toBeNull();
+  });
+});
+
+describe('notify action (step 1.4)', () => {
+  test('the plan carries every matched rule\'s channel ids in evaluation order, and a notify-only rule is not a no_mutating_action skip', () => {
+    const plans = planAutomation(
+      [alert()],
+      [
+        rule('later', { priority: 2, actions: { createCase: false, notify: { channelIds: ['slack'] } } }),
+        rule('first', { priority: 1, actions: { createCase: false, setStatus: 'in_progress', notify: { channelIds: ['mail', 'slack'] } } }),
+        rule('silent', { priority: 3, actions: { createCase: false, setStatus: 'closed' } }),
+      ]
+    );
+    expect(plans[0].notify).toEqual([
+      { ruleId: 'first', channelIds: ['mail', 'slack'] },
+      { ruleId: 'later', channelIds: ['slack'] },
+    ]);
+    expect(plans[0].skipped).toEqual([]);
+    expect(plans[0].rulesApplied).toEqual(['first', 'later']);
+    expect(plans[0].mutation).toEqual({ status: 'in_progress' });
+  });
+
+  test('a rule the trigger did not fire for, or that a stop rule shadows, notifies nothing', () => {
+    const rules = [rule('n', { actions: { createCase: false, notify: { channelIds: ['slack'] } } })];
+    expect(planAlertAutomation({ ...alert(), executionEligibleRuleIds: new Set() }, rules).notify).toEqual([]);
+    const shadowed = planAlertAutomation(alert(), [
+      rule('stop', { priority: 1, processingMode: 'stop', actions: { createCase: false, setStatus: 'closed' } }),
+      rule('n', { priority: 2, actions: { createCase: false, notify: { channelIds: ['slack'] } } }),
+    ]);
+    expect(shadowed.notify).toEqual([]);
+    expect(shadowed.stopReason).toEqual({ ruleId: 'stop', reason: 'rule_requested_stop' });
+  });
+
+  test('an empty or malformed channel list is no action', () => {
+    const plan = planAlertAutomation(alert(), [rule('n', { actions: { createCase: false, notify: { channelIds: [] } } as any })]);
+    expect(plan.notify).toEqual([]);
+    expect(plan.skipped).toEqual([{ ruleId: 'n', action: 'rule', reason: 'no_mutating_action' }]);
+  });
+});

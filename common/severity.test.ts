@@ -1,15 +1,45 @@
 import {
+  BAND_LEVEL_RANGES,
+  SEVERITY_BANDS,
   bandFromLabel,
   bandFromLevel,
+  bandLevelRange,
   bandsAtOrAboveLevel,
   bandsBetweenLevels,
   effectiveLevel,
+  labelsOfBand,
   meetsMinLevel,
   severityBandOf,
   severityRangeClause,
 } from './severity';
 
 describe('severity model across Wazuh 4.x levels and 5.0 labels', () => {
+  test('the band range table is the one source of the numeric thresholds', () => {
+    expect(bandLevelRange('informational')).toBeNull();
+    expect(bandLevelRange('low')).toEqual({ min: 0, max: 3 });
+    expect(bandLevelRange('critical')).toEqual({ min: 12, max: null });
+    for (const band of SEVERITY_BANDS) {
+      const range = BAND_LEVEL_RANGES[band];
+      if (!range) continue;
+      expect(bandFromLevel(range.min)).toBe(band);
+      if (range.max != null) {
+        expect(bandFromLevel(range.max)).toBe(band);
+        expect(bandFromLevel(range.max + 1)).not.toBe(band);
+      }
+    }
+  });
+
+  test('labelsOfBand lists every alias bandFromLabel accepts for the band', () => {
+    expect(labelsOfBand('informational')).toEqual(expect.arrayContaining(['informational', 'info']));
+    expect(labelsOfBand('low')).toEqual(expect.arrayContaining(['low', 'minor']));
+    expect(labelsOfBand('medium')).toEqual(expect.arrayContaining(['medium', 'moderate']));
+    expect(labelsOfBand('high')).toEqual(expect.arrayContaining(['high', 'major']));
+    expect(labelsOfBand('critical')).toEqual(expect.arrayContaining(['critical', 'severe']));
+    for (const band of SEVERITY_BANDS) {
+      for (const label of labelsOfBand(band)) expect(bandFromLabel(label)).toBe(band);
+    }
+  });
+
   test('numeric levels map to the bands the plugin has always badged', () => {
     expect(bandFromLevel(0)).toBe('low');
     expect(bandFromLevel(3)).toBe('low');

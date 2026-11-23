@@ -12,11 +12,12 @@ import {
   EuiTitle,
   EuiFlexGroup,
   EuiFlexItem,
-  EuiIcon,
   EuiBadge,
   EuiDescriptionList,
 } from '@elastic/eui';
 import { AlertsApiService } from '../services/api';
+import { DiscoverBridgeCard } from './discover_bridge_card';
+import { SettingsFormActions, SettingsPageHeader } from './settings_page';
 
 interface Props {
   apiService: AlertsApiService;
@@ -86,11 +87,17 @@ export const SyncSettingsView: React.FC<Props> = ({ apiService, onToast }) => {
 
   if (!settings) {
     return (
-      <div className="wamSettingsSection">
-        <EuiCallOut color="danger" iconType="alert" title="Failed to load background sync settings">
+      <div className="wamSettingsPage wamSyncSettings" data-test-subj="wamSyncSettings">
+        <SettingsPageHeader
+          title="Background alert sync"
+          description="Schedule ingestion from the read-only Wazuh alert source into the operational work queue."
+        />
+        <EuiCallOut size="s" color="danger" iconType="alert" title="Failed to load background sync settings">
           <p>{loadError || 'The settings request did not return data.'}</p>
           <EuiButton size="s" iconType="refresh" onClick={load} isLoading={loading}>Retry</EuiButton>
         </EuiCallOut>
+        <EuiSpacer size="m" />
+        <DiscoverBridgeCard apiService={apiService} />
       </div>
     );
   }
@@ -119,30 +126,36 @@ export const SyncSettingsView: React.FC<Props> = ({ apiService, onToast }) => {
   };
 
   return (
-    <div className="wamSettingsSection">
-      <EuiFlexGroup alignItems="center" justifyContent="spaceBetween" gutterSize="m" wrap>
-        <EuiFlexItem>
-          <EuiTitle size="s"><h3>Background alert sync</h3></EuiTitle>
-          <EuiText size="s" color="subdued">
-            Schedule ingestion from the read-only Wazuh alert source into the operational work queue.
-          </EuiText>
-        </EuiFlexItem>
-        <EuiFlexItem grow={false}>
+    <div className="wamSettingsPage wamSyncSettings" data-test-subj="wamSyncSettings">
+      <SettingsPageHeader
+        title="Background alert sync"
+        description="Schedule ingestion from the read-only Wazuh alert source into the operational work queue."
+        actions={
           <EuiBadge color={settings.enabled ? 'success' : 'hollow'} iconType={settings.enabled ? 'play' : 'pause'}>
             {settings.enabled ? `Running every ${settings.intervalSeconds}s` : 'Paused'}
           </EuiBadge>
-        </EuiFlexItem>
-      </EuiFlexGroup>
-      <EuiSpacer size="m" />
+        }
+      />
+      {loadError && (
+        <>
+          <EuiCallOut size="s" color="warning" iconType="alert" title="Some sync settings data could not be loaded">
+            <p>{loadError}</p>
+            <EuiButton size="s" iconType="refresh" onClick={load} isLoading={loading}>Retry</EuiButton>
+          </EuiCallOut>
+          <EuiSpacer size="m" />
+        </>
+      )}
+      {!canManage && <><EuiCallOut size="s" color="primary" iconType="lock" title="Sync settings are read only for your role" /><EuiSpacer size="m" /></>}
       <EuiPanel hasBorder hasShadow={false} paddingSize="m" className="wamSyncHealthPanel">
         <EuiFlexGroup alignItems="center" justifyContent="spaceBetween" gutterSize="s" wrap>
-          <EuiFlexItem grow={false}><EuiTitle size="xxs"><h4>Runtime health</h4></EuiTitle></EuiFlexItem>
+          <EuiFlexItem grow={false}><EuiTitle size="xs"><h4>Runtime health</h4></EuiTitle></EuiFlexItem>
           <EuiFlexItem grow={false}><EuiBadge color={!settings.enabled ? 'hollow' : !sync || hasCursor ? 'warning' : watermarkStale ? 'danger' : 'success'}>{healthLabel}</EuiBadge></EuiFlexItem>
         </EuiFlexGroup>
         <EuiSpacer size="s" />
         <EuiDescriptionList
           type="column"
           compressed
+          className="wamMetaList"
           listItems={[
             { title: 'Last successful watermark', description: sync?.completed_at ? new Date(sync.completed_at).toLocaleString() : 'Not available yet' },
             { title: 'Watermark age', description: watermarkAgeSeconds == null ? 'Unavailable' : `${watermarkAgeSeconds.toLocaleString()} seconds` },
@@ -154,43 +167,29 @@ export const SyncSettingsView: React.FC<Props> = ({ apiService, onToast }) => {
         />
       </EuiPanel>
       <EuiSpacer size="m" />
-      {loadError && (
-        <>
-          <EuiCallOut color="warning" iconType="alert" title="Some sync settings data could not be loaded">
-            <p>{loadError}</p>
-            <EuiButton size="s" iconType="refresh" onClick={load} isLoading={loading}>Retry</EuiButton>
-          </EuiCallOut>
-          <EuiSpacer size="m" />
-        </>
-      )}
-      {!canManage && <><EuiCallOut color="primary" iconType="lock" title="Sync settings are read only for your role" /><EuiSpacer size="m" /></>}
-      <EuiPanel hasBorder hasShadow={false} paddingSize="l" className="wamSyncSettingsPanel">
-        <EuiFlexGroup gutterSize="m" alignItems="flexStart" wrap>
-          <EuiFlexItem grow={false}>
-            <span className="wamSettingsIcon"><EuiIcon type="refresh" size="l" /></span>
-          </EuiFlexItem>
-          <EuiFlexItem>
-            <EuiTitle size="xxs"><h4>Sync schedule</h4></EuiTitle>
-            <EuiText size="xs" color="subdued">
-              Native Wazuh storage (4.x <code>wazuh-alerts-*</code>, 5.0 <code>wazuh-findings-v5-*</code>) remains read only. Changes take effect after the current cycle without restarting Dashboards.
-            </EuiText>
-          </EuiFlexItem>
-        </EuiFlexGroup>
-        <EuiSpacer size="l" />
-        <EuiSwitch
-          label="Enable background sync"
-          checked={Boolean(settings.enabled)}
-          disabled={!canManage}
-          onChange={(e) => setSettings({ ...settings, enabled: e.target.checked })}
-        />
+      <EuiPanel hasBorder hasShadow={false} paddingSize="m" className="wamSyncSettingsPanel">
+        <EuiTitle size="xs"><h4>Sync schedule</h4></EuiTitle>
+        <EuiText size="s" color="subdued">
+          Native Wazuh storage (4.x <code>wazuh-alerts-*</code>, 5.0 <code>wazuh-findings-v5-*</code>) remains read only. Changes take effect after the current cycle without restarting Dashboards.
+        </EuiText>
         <EuiSpacer size="m" />
+        <EuiFormRow label="Background sync" fullWidth hasChildLabel={false}>
+          <EuiSwitch
+            label="Enable background sync"
+            checked={Boolean(settings.enabled)}
+            disabled={!canManage}
+            onChange={(e) => setSettings({ ...settings, enabled: e.target.checked })}
+          />
+        </EuiFormRow>
         <EuiFormRow
           label="Sync interval"
+          fullWidth
           helpText="Allowed range: 15 to 3,600 seconds. Leader locking scales automatically across dashboard replicas."
           isInvalid={!intervalValid}
           error={!intervalValid ? 'Enter an interval from 15 to 3,600 seconds.' : undefined}
         >
           <EuiFieldNumber
+            fullWidth
             min={15}
             max={3600}
             append="seconds"
@@ -200,8 +199,12 @@ export const SyncSettingsView: React.FC<Props> = ({ apiService, onToast }) => {
           />
         </EuiFormRow>
         <EuiSpacer size="m" />
-        <EuiButton fill iconType="save" disabled={!canManage || !intervalValid} isLoading={saving} onClick={save}>Save changes</EuiButton>
+        <SettingsFormActions>
+          <EuiButton size="s" fill iconType="save" disabled={!canManage || !intervalValid} isLoading={saving} onClick={save}>Save changes</EuiButton>
+        </SettingsFormActions>
       </EuiPanel>
+      <EuiSpacer size="m" />
+      <DiscoverBridgeCard apiService={apiService} />
     </div>
   );
 };

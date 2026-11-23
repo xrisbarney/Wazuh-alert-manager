@@ -17,12 +17,15 @@ import {
 } from './entity_expression';
 import { resolveAlerts } from './index_resolution';
 import { buildReportingUpdate } from './reporting_fields';
+import { getSlaPolicy } from './sla/policy';
 import {
   applyAutomationCaseRoutes,
+  AutomationCaseRoutingResult,
   AutomationCaseTrigger,
   automationMatchingKey,
   planAutomationCaseRoutes,
 } from './automation_case_routing';
+import { enqueueRuleNotifications, RuleNotificationTask } from './notifications/rule_action';
 
 const RULE_ACTOR = 'correlation-rule';
 const MAX_WINDOW_RESULTS = 1000;
@@ -71,6 +74,14 @@ export interface AutomationEvaluationCounters {
   caseLinks: number;
   caseCreations: number;
   skippedBySafety: number;
+  /** Step 2.2: task lists applied to cases this run created. */
+  taskListsApplied: number;
+  /** Step 2.2: created cases whose rule task list could not be applied (case kept; warning logged). */
+  taskListFailures: number;
+  /** Step 1.4: `rule.action` outbox entries written by the `notify` action. */
+  notificationsEnqueued: number;
+  /** Step 1.4: notify targets not written: unknown / disabled channels, a disabled outbox, and duplicates of an earlier run. */
+  notificationsSkipped: number;
 }
 
 export interface AutomationEvaluationFailure {
@@ -83,6 +94,7 @@ export interface AutomationEvaluationFailure {
     | 'case_dedup'
     | 'case_write'
     | 'evidence_linkage'
+    | 'notification_enqueue'
     | 'execution_state';
   message: string;
   ruleId?: string;
@@ -91,11 +103,18 @@ export interface AutomationEvaluationFailure {
 }
 
 export type AutomationEvaluationOutcome =
-  | { status: 'terminal_success'; counters: AutomationEvaluationCounters; appliedRuleIds: string[] }
+  | {
+      status: 'terminal_success';
+      counters: AutomationEvaluationCounters;
+      appliedRuleIds: string[];
+      /** Step 12.3: alerts of this batch each rule matched (`match` scope + entity groups), keyed by rule id. */
+      ruleMatches?: Record<string, number>;
+    }
   | {
       status: 'retryable_failure';
       counters: AutomationEvaluationCounters;
       appliedRuleIds: string[];
+      ruleMatches?: Record<string, number>;
       failures: AutomationEvaluationFailure[];
     };
 
@@ -212,7 +231,28 @@ const emptyCounters = (): AutomationEvaluationCounters => ({
   caseLinks: 0,
   caseCreations: 0,
   skippedBySafety: 0,
+  taskListsApplied: 0,
+  taskListFailures: 0,
+  notificationsEnqueued: 0,
+  notificationsSkipped: 0,
 });
+
+/**
+ * Step 2.2: a task list failure never undoes the created case, is not
+ * retryable (a queue retry finds the existing case and never re-applies), so
+ * it is surfaced as a warning plus execution counters instead of a failure.
+ */
+function recordTaskListOutcome(
+  counters: AutomationEvaluationCounters,
+  routed: Pick<AutomationCaseRoutingResult, 'taskListsApplied' | 'taskListErrors'>,
+  logger: Logger
+): void {
+  counters.taskListsApplied += routed.taskListsApplied || 0;
+  for (const message of routed.taskListErrors || []) {
+    counters.taskListFailures += 1;
+    logger.warn(`wazuh-alert-manager: automation task list not applied: ${message}`);
+  }
+}
 
 const messageOf = (error: any) => error?.reason || error?.caused_by?.reason || error?.message || String(error);
 const hash = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
@@ -800,11 +840,19 @@ export async function evaluateCorrelationRules(
   // managed storage. Most production alerts do not match automation rules, so
   // this keeps the hot-path cost proportional to candidates rather than total
   // Wazuh ingestion volume.
+  // Step 12.3: per-rule matched-alert counts feed the rule execution state
+  // (`rule-execution:<id>` companions) once the batch completes.
+  const ruleMatches: Record<string, number> = {};
   const input = boundedInput.filter((hit) => {
     const source = hit._source || {};
-    return rules.some((rule) =>
-      evaluateAlertMatch(rule, source).matched && groupsFor(rule, source).length > 0
-    );
+    let matchedAny = false;
+    for (const rule of rules) {
+      if (evaluateAlertMatch(rule, source).matched && groupsFor(rule, source).length > 0) {
+        matchedAny = true;
+        ruleMatches[rule.id] = (ruleMatches[rule.id] || 0) + 1;
+      }
+    }
+    return matchedAny;
   });
   if (!input.length) {
     return continuationRequired
@@ -970,6 +1018,13 @@ export async function evaluateCorrelationRules(
   const operations: any[] = [];
   let operationCount = 0;
   const perRuleActions = new Map<string, number>();
+  // Step 1.4: what the bulk below applied per alert (dropped again for a
+  // noop item, where an analyst edit won), so the notify payload names the
+  // applied outcome and not the plan.
+  const operationAlertIds: string[] = [];
+  const appliedByAlert = new Map<string, { status: string | null; statusRuleId: string | null; assignee: string | null; assigneeRuleId: string | null }>();
+  const noopAlertIds = new Set<string>();
+  const slaPolicy = await getSlaPolicy(client, logger);
   for (const plan of plans) {
     if (!plan.mutation) continue;
     const actions: any[] = [];
@@ -991,7 +1046,14 @@ export async function evaluateCorrelationRules(
       counters.skippedBySafety += 1;
       continuationRequired = true;
     } else if (plan.mutation.status && accepts(plan.chosenStatusRuleId)) {
-      actions.push({ marker: `status:${plan.chosenStatusRuleId}:${plan.alertId}`, field: 'status', value: plan.mutation.status, rule: plan.chosenStatusRuleId });
+      // Disposition (step 2.4) rides on the close action itself: the script
+      // stores it next to the status and names it on the close's history row,
+      // as a manual close does.
+      const disposition = plan.mutation.status === 'closed' && plan.mutation.disposition ? plan.mutation.disposition : null;
+      actions.push({
+        marker: `status:${plan.chosenStatusRuleId}:${plan.alertId}`, field: 'status', value: plan.mutation.status, rule: plan.chosenStatusRuleId,
+        ...(disposition ? { disposition } : {}),
+      });
       counters.statusChanges += 1;
       statusApplied = plan.mutation.status;
     }
@@ -1007,7 +1069,8 @@ export async function evaluateCorrelationRules(
       const reporting = buildReportingUpdate(
         locations.get(plan.alertId).source,
         { status: statusApplied, assignedTo: assignmentApplied },
-        new Date().toISOString()
+        new Date().toISOString(),
+        slaPolicy
       );
       if (reporting) {
         actions.push({
@@ -1021,6 +1084,13 @@ export async function evaluateCorrelationRules(
     }
     if (!actions.length) continue;
     operationCount += 1;
+    operationAlertIds.push(plan.alertId);
+    appliedByAlert.set(plan.alertId, {
+      status: statusApplied,
+      statusRuleId: statusApplied != null ? plan.chosenStatusRuleId : null,
+      assignee: assignmentApplied,
+      assigneeRuleId: assignmentApplied != null ? plan.chosenAssignmentRuleId : null,
+    });
     actions.forEach((action) => applied.add(action.rule));
     operations.push(
       { update: { _index: locations.get(plan.alertId).index, _id: plan.alertId } },
@@ -1035,7 +1105,9 @@ export async function evaluateCorrelationRules(
           'for (entry in action.value.entrySet()) { ctx._source[action.field][entry.getKey()] = entry.getValue(); } ' +
           '} else { ' +
           'ctx._source[action.field] = action.value; ' +
-          'if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(["timestamp":params.now,"user":params.actor,"action":"rule:" + action.rule,"from":null,"to":action.value]); while (ctx._source.history.size() > 1000) { ctx._source.history.remove(0); } ' +
+          'def row = ["timestamp":params.now,"user":params.actor,"action":"rule:" + action.rule,"from":null,"to":action.value]; ' +
+          'if (action.disposition != null) { ctx._source.disposition = action.disposition; row.disposition = action.disposition; } ' +
+          'if (ctx._source.history == null) { ctx._source.history = []; } ctx._source.history.add(row); while (ctx._source.history.size() > 1000) { ctx._source.history.remove(0); } ' +
           '} ' +
           'ctx._source.automation_action_markers.add(action.marker); } } ' +
           'ctx._source.state_version = (ctx._source.state_version == null ? 0 : ctx._source.state_version) + 1; ctx._source.updated_at = params.now; ctx._source.updated_by = params.actor;',
@@ -1055,14 +1127,22 @@ export async function evaluateCorrelationRules(
       const response = await client.bulk({ body: operations });
       const failures = bulkFailures(response, operationCount);
       if (failures.length) return retryable(counters, applied, failures.map((message) => ({ stage: 'action_mutation', message })));
-      counters.skippedBySafety += (response?.body?.items || []).filter(
-        (item: any) => item?.update?.result === 'noop'
-      ).length;
+      (response?.body?.items || []).forEach((item: any, index: number) => {
+        if (item?.update?.result !== 'noop') return;
+        counters.skippedBySafety += 1;
+        if (operationAlertIds[index] !== undefined) {
+          appliedByAlert.delete(operationAlertIds[index]);
+          noopAlertIds.add(operationAlertIds[index]);
+        }
+      });
     } catch (error: any) {
       return retryable(counters, applied, [{ stage: 'action_mutation', message: messageOf(error) }]);
     }
   }
 
+  // Step 1.4: `<ruleId>|<alertId>` -> the case this run created or extended
+  // for that alert under that rule, named in the rule's notification.
+  const caseIdByRuleAlert = new Map<string, string>();
   const caseEvaluations = firing.filter((evaluation) =>
     evaluation.rule.actions.createCase &&
     plans.some((plan) => plan.alertId === evaluation.anchorAlertId && plan.matched.includes(evaluation.rule.id))
@@ -1115,6 +1195,7 @@ export async function evaluateCorrelationRules(
     routing: evaluation.rule.trigger.routing!,
     severity: evaluation.rule.actions.caseSeverity || 'medium',
     assignedTo: evaluation.rule.actions.assignTo ? String(evaluation.rule.actions.assignTo) : null,
+    applyTaskListId: typeof evaluation.rule.actions.applyTaskListId === 'string' && evaluation.rule.actions.applyTaskListId ? evaluation.rule.actions.applyTaskListId : null,
     group: evaluation.group,
     alertIds: evaluation.alertIds,
     threshold: evaluation.threshold,
@@ -1175,7 +1256,7 @@ export async function evaluateCorrelationRules(
           () => assertOwnership(ownershipGuard)
         );
         if (!routed.caseIds.length) {
-          return { routed, selectedCount: selectedIds.length, incomplete: true };
+          return { routed, selectedCount: selectedIds.length, selectedIds, ruleId: route.ruleId, incomplete: true };
         }
 
         const routeEvaluations = caseEvaluations.filter((item) => route.matchingKeys.includes(item.matchingKey));
@@ -1221,11 +1302,15 @@ export async function evaluateCorrelationRules(
             });
           }
         }
-        return { routed, selectedCount: selectedIds.length, incomplete: false };
+        return { routed, selectedCount: selectedIds.length, selectedIds, ruleId: route.ruleId, incomplete: false };
       });
       for (const result of routedResults) {
         counters.caseCreations += result.routed.created;
         counters.caseLinks += result.routed.linked;
+        recordTaskListOutcome(counters, result.routed, logger);
+        if (result.routed.caseIds.length === 1) {
+          for (const alertId of result.selectedIds) caseIdByRuleAlert.set(`${result.ruleId}|${alertId}`, result.routed.caseIds[0]);
+        }
         if (result.incomplete) {
           continuationRequired = true;
           counters.skippedBySafety += result.selectedCount;
@@ -1236,6 +1321,84 @@ export async function evaluateCorrelationRules(
       const message = messageOf(error);
       const stage = /dedup|returned .* case|reserve/i.test(message) ? 'case_dedup' : /Evidence/i.test(message) ? 'evidence_linkage' : 'case_write';
       return retryable(counters, applied, [{ stage, message } as AutomationEvaluationFailure]);
+    }
+  }
+  // Notify (step 1.4): one `rule.action` outbox entry per (matched rule with
+  // `notify`, alert, channel) with a deterministic id, written after the
+  // alert and case writes so the payload names the applied outcome. Unknown,
+  // disabled or already written targets are counted as skipped; a write
+  // failure is retryable because the ids make a replay a silent duplicate.
+  const notifyPlans = plans.filter((plan) => plan.notify.length > 0);
+  // An alert whose bulk item was a noop (an analyst edit won the
+  // state_version/status/assignee check) is re-read before projecting: the
+  // pre-write snapshot is stale by definition, and the notification must
+  // report the live status and assignee, not the ones the script refused.
+  const rereadIds = notifyPlans.map((plan) => plan.alertId).filter((alertId) => noopAlertIds.has(alertId));
+  let reread = new Map<string, any>();
+  if (rereadIds.length) {
+    try {
+      reread = await resolveAlerts(client, Array.from(new Set(rereadIds)), true);
+    } catch (error: any) {
+      return retryable(counters, applied, [{ stage: 'notification_enqueue', message: `Alert re-read before notification failed: ${messageOf(error)}` }]);
+    }
+  }
+  const notifyTasks: RuleNotificationTask[] = [];
+  for (const plan of notifyPlans) {
+    const appliedActions = appliedByAlert.get(plan.alertId);
+    const live = reread.get(plan.alertId)?.source || locations.get(plan.alertId)?.source || {};
+    // On a replay after a retryable failure in a later stage the status /
+    // assignment the rule applied in the earlier attempt is already stored,
+    // so the planner sees it satisfied and this run writes nothing for it;
+    // the bulk script's markers (`status:<rule>:<alert>`,
+    // `assignment:<rule>:<alert>`) still name it as the rule's outcome.
+    const markers = new Set<string>(Array.isArray(live.automation_action_markers) ? live.automation_action_markers.map(String) : []);
+    for (const entry of plan.notify) {
+      const rule = rules.find((candidate) => candidate.id === entry.ruleId);
+      if (!rule) continue;
+      const caseId = caseIdByRuleAlert.get(`${entry.ruleId}|${plan.alertId}`) || null;
+      const status = appliedActions?.statusRuleId === entry.ruleId
+        ? appliedActions.status
+        : markers.has(`status:${entry.ruleId}:${plan.alertId}`) ? (rule.actions?.setStatus || null) : null;
+      const assignee = appliedActions?.assigneeRuleId === entry.ruleId
+        ? appliedActions.assignee
+        : markers.has(`assignment:${entry.ruleId}:${plan.alertId}`) ? (rule.actions?.assignTo ? String(rule.actions.assignTo) : null) : null;
+      notifyTasks.push({
+        ruleId: entry.ruleId,
+        ruleName: String(rule.name ?? entry.ruleId),
+        alertId: plan.alertId,
+        source: {
+          ...live,
+          ...(appliedActions?.status ? { status: appliedActions.status } : {}),
+          ...(appliedActions?.assignee ? { assigned_to: appliedActions.assignee } : {}),
+          ...(caseId ? { case_id: caseId } : {}),
+        },
+        channelIds: entry.channelIds,
+        actions: { status, assignee, caseId },
+      });
+    }
+  }
+  if (notifyTasks.length) {
+    try {
+      await assertOwnership(ownershipGuard);
+      const notified = await enqueueRuleNotifications(client, notifyTasks, logger, {
+        beforeChunk: () => assertOwnership(ownershipGuard),
+      });
+      counters.notificationsEnqueued += notified.enqueued;
+      counters.notificationsSkipped += notified.skipped;
+      // Only a rule that wrote at least one entry acted; a rule whose every
+      // target was skipped (unknown / disabled ids, outbox disabled, all
+      // duplicates) is not claimed in appliedRuleIds.
+      notified.rulesEnqueued.forEach((ruleId) => applied.add(ruleId));
+      if (notified.failures.length) {
+        return retryable(counters, applied, notified.failures.map((failure) => ({
+          stage: 'notification_enqueue' as const,
+          ruleId: failure.ruleId,
+          alertId: failure.alertId,
+          message: `Notification to channel ${failure.channelId} was not enqueued: ${failure.message}`,
+        })));
+      }
+    } catch (error: any) {
+      return retryable(counters, applied, [{ stage: 'notification_enqueue', message: messageOf(error) }]);
     }
   }
   // Cooldown/rearm suppresses duplicate case creation, not evidence. Once a
@@ -1261,6 +1424,7 @@ export async function evaluateCorrelationRules(
         routing: evaluation.rule.trigger.routing!,
         severity: evaluation.rule.actions.caseSeverity || 'medium',
         assignedTo: evaluation.rule.actions.assignTo ? String(evaluation.rule.actions.assignTo) : null,
+        applyTaskListId: typeof evaluation.rule.actions.applyTaskListId === 'string' && evaluation.rule.actions.applyTaskListId ? evaluation.rule.actions.applyTaskListId : null,
         group: evaluation.group,
         alertIds: [evaluation.anchorAlertId],
         threshold: evaluation.threshold,
@@ -1279,6 +1443,7 @@ export async function evaluateCorrelationRules(
         () => assertOwnership(ownershipGuard)
       );
       counters.caseLinks += routed.linked;
+      recordTaskListOutcome(counters, routed, logger);
       extensionEvaluations.forEach((evaluation) => applied.add(evaluation.rule.id));
     } catch (error: any) {
       const message = messageOf(error);
@@ -1301,5 +1466,5 @@ export async function evaluateCorrelationRules(
   } catch (error: any) {
     return retryable(counters, applied, [{ stage: 'execution_state', message: messageOf(error) }]);
   }
-  return { status: 'terminal_success', counters, appliedRuleIds: Array.from(applied).sort() };
+  return { status: 'terminal_success', counters, appliedRuleIds: Array.from(applied).sort(), ruleMatches };
 }

@@ -639,3 +639,30 @@ export function shouldCarryAlert(
   }
   return true;
 }
+
+/**
+ * Page every relationship of a case (legacy rows included) up to `limit`,
+ * the same walk `routes/attack_path.ts` performs inline. Returns the rows in
+ * evidence order plus whether the cap cut the list.
+ */
+export async function collectCaseEvidence(
+  client: any,
+  caseId: string,
+  legacyAlertIds: any,
+  options: { limit: number }
+): Promise<{ evidence: any[]; truncated: boolean }> {
+  const evidence: any[] = [];
+  let truncated = false;
+  let cursor: string | undefined;
+  do {
+    const page = await listCaseEvidenceWithLegacy(client, caseId, legacyAlertIds, { cursor });
+    const remaining = options.limit - evidence.length;
+    evidence.push(...page.evidence.slice(0, Math.max(0, remaining)));
+    if (page.evidence.length > remaining || (page.nextCursor && evidence.length >= options.limit)) {
+      truncated = true;
+      break;
+    }
+    cursor = page.nextCursor || undefined;
+  } while (cursor);
+  return { evidence, truncated };
+}

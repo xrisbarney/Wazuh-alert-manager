@@ -14,12 +14,14 @@ import {
   runAutomationWorkerOnce,
   runAutomationWorkerBatchOnce,
   chunkBulkPairs,
+  recordRuleExecutionState,
 } from './automation_queue';
 import {
   AUTOMATION_DLQ_INDEX,
   AUTOMATION_EXECUTIONS_INDEX,
   AUTOMATION_QUEUE_INDEX,
   AUTOMATION_WORKER_LEASE_ID,
+  RULES_INDEX,
 } from '../../common';
 
 const logger: any = { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() };
@@ -293,6 +295,59 @@ describe('durable automation queue', () => {
     );
   });
 
+  describe('per-rule execution state (step 12.3)', () => {
+    test('the worker upserts rule-execution companions for the applied rules after the execution completes, one bulk per batch', async () => {
+      const client: any = workerClient();
+      const evaluator = jest.fn(async () => ({ ...success, appliedRuleIds: ['rule-1', 'rule-2'], ruleMatches: { 'rule-1': 3 } }));
+
+      await expect(runAutomationWorkerOnce(client, logger, 'worker-1', 120, evaluator)).resolves.toBe(true);
+
+      const stateBulk = client.bulk.mock.calls.filter((call: any[]) => call[0].index === RULES_INDEX);
+      expect(stateBulk).toHaveLength(1);
+      expect(stateBulk[0][0].refresh).toBe(false);
+      const body = stateBulk[0][0].body;
+      expect(body.map((item: any) => item.update?._id).filter(Boolean)).toEqual(['rule-execution:rule-1', 'rule-execution:rule-2']);
+      expect(body[0].update._index).toBe(RULES_INDEX);
+      expect(body[0].update.retry_on_conflict).toBe(3);
+      expect(body[2].update.retry_on_conflict).toBe(3);
+      expect(body[1].script.params).toEqual({ matched: 3, firedAt: expect.any(String) });
+      expect(body[1].upsert).toEqual(expect.objectContaining({ document_type: 'rule_execution', rule_id: 'rule-1', matchCount: 3, lastFired: body[1].script.params.firedAt, counters: expect.objectContaining({ matchedAlerts: 3, triggeredEntities: 1 }) }));
+      expect(body[3].script.params.matched).toBe(0);
+      // The queue acknowledgement still follows the state write.
+      const stateUpdates = client.update.mock.calls.map((call: any[]) => call[0].body?.doc?.state).filter(Boolean);
+      expect(stateUpdates).toEqual(['claimed', 'completed', 'completed']);
+    });
+
+    test('nothing is written when no rule applied, and a failed state write never fails the execution', async () => {
+      const idle: any = workerClient();
+      const evaluator = jest.fn(async () => ({ ...success, appliedRuleIds: [], ruleMatches: {} }));
+      await expect(runAutomationWorkerOnce(idle, logger, 'worker-1', 120, evaluator)).resolves.toBe(true);
+      expect(idle.bulk.mock.calls.filter((call: any[]) => call[0].index === RULES_INDEX)).toHaveLength(0);
+
+      const broken: any = workerClient();
+      const originalBulk = broken.bulk;
+      broken.bulk = jest.fn(async (request: any) => {
+        if (request.index === RULES_INDEX) throw new Error('rules index read-only');
+        return originalBulk(request);
+      });
+      await expect(runAutomationWorkerOnce(broken, logger, 'worker-1', 120, jest.fn(async () => success))).resolves.toBe(true);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('rule execution state write failed: rules index read-only'));
+      const stateUpdates = broken.update.mock.calls.map((call: any[]) => call[0].body?.doc?.state).filter(Boolean);
+      expect(stateUpdates).toEqual(['claimed', 'completed', 'completed']);
+    });
+
+    test('recordRuleExecutionState reports the rules written and warns on item errors', async () => {
+      const client: any = {
+        bulk: jest.fn(async () => ({ body: { errors: true, items: [{ update: { status: 200 } }, { update: { status: 400, error: { type: 'mapper_parsing_exception', reason: 'bad field' } } }] } })),
+      };
+      await expect(recordRuleExecutionState(client, { appliedRuleIds: ['b', 'a', 'a'], ruleMatches: { a: 2 } }, '2026-11-22T20:00:00.000Z', logger)).resolves.toBe(1);
+      expect(client.bulk).toHaveBeenCalledTimes(1);
+      expect(client.bulk.mock.calls[0][0].body.map((item: any) => item.update?._id).filter(Boolean)).toEqual(['rule-execution:a', 'rule-execution:b']);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('not written for 1 of 2 rule(s): bad field'));
+      await expect(recordRuleExecutionState(client, { appliedRuleIds: [] }, '2026-11-22T20:00:00.000Z', logger)).resolves.toBe(0);
+    });
+  });
+
   test('carries the admission-time definitions when a rule changes while the event is queued', async () => {
     const client: any = workerClient();
     const evaluator = jest.fn(async (_client: any, _hits: any, _logger: any, _limits?: any, snapshot?: any) => {
@@ -508,7 +563,7 @@ describe('durable automation queue', () => {
   });
 
   test('takes over expired work with a higher fencing generation', async () => {
-    const hit = queueHit(1, 'claimed');
+    const hit: any = queueHit(1, 'claimed');
     hit._source.holder_id = 'dead-worker';
     hit._source.fencing_generation = 7;
     hit._source.lease_token = 'dead-token';

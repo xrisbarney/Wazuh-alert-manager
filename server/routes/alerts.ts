@@ -1,18 +1,30 @@
 import { schema } from '@osd/config-schema';
 import { IRouter } from '../../../../src/core/server';
-import { API_ROOT, ALERT_STATUS_INDEX, ALERT_STATUSES } from '../../common';
-import { severityRangeClause } from '../../common/severity';
+import { API_ROOT, ALERT_STATUS_INDEX, ALERT_STATUSES, ASSET_CRITICALITIES, CLOSURE_REASON_MAX_LENGTH, DISPOSITIONS, ENRICHMENT_VERDICT_FILTERS, SLA_STATES } from '../../common';
+import { dispositionFilterValues, normaliseClosureReason } from '../lib/disposition';
+import { severityDisplay, severityRangeClause } from '../../common/severity';
 import { getCurrentUsername } from '../lib/opensearch';
 import { APPEND_HISTORY_SCRIPT_SOURCE, buildHistoryEntry } from '../lib/history';
 import { resolveAlerts } from '../lib/index_resolution';
 import { pushActivityBulk } from '../lib/activity';
 import { reconcileCaseEvidence } from '../lib/case_evidence_service';
-import { buildReportingUpdate, REPORTING_MERGE_SCRIPT } from '../lib/reporting_fields';
+import { buildReportingUpdate, REPORTING_MERGE_SCRIPT, slaStateClause } from '../lib/reporting_fields';
+import { getSlaPolicy } from '../lib/sla/policy';
 import { resolveCase } from '../lib/case_index_resolution';
 import { isApprovedEvidenceIndex, isApprovedSourceIndex } from '../lib/index_namespace';
 import { sourceFamilyOfIndex, sourceProfile } from '../lib/source_profile';
+import {
+  CSV_EXPORT_MAX_ROWS,
+  CSV_EXPORT_PAGE_SIZE,
+  CsvColumn,
+  csvExportFilename,
+  csvExportStream,
+  downloadResponse,
+  searchAfterOf,
+} from '../lib/http_download';
 
-const filterQuerySchema = schema.object({
+/** Query filters shared by the alert list, counts and CSV export routes. */
+export const filterQuerySchema = schema.object({
   statuses: schema.maybe(schema.string()), // csv
   levelMin: schema.maybe(schema.number()),
   levelMax: schema.maybe(schema.number()),
@@ -21,12 +33,37 @@ const filterQuerySchema = schema.object({
   alertTypes: schema.maybe(schema.string()), // csv, maps to rule.groups
   assignedTo: schema.maybe(schema.string()), // csv
   caseId: schema.maybe(schema.string()),
+  // Stored enrichment worst verdict (step 6.3); absent = any.
+  enrichmentVerdict: schema.maybe(schema.oneOf(ENRICHMENT_VERDICT_FILTERS.map((v) => schema.literal(v)) as any)),
+  // Stamped asset criticality (step 6.4a); csv of low|medium|high|critical, unknown values ignored.
+  assetCriticality: schema.maybe(schema.string()),
+  // Due-date state (step 3.2) over reporting.sla_due_at: breached | due_soon | on_track.
+  slaState: schema.maybe(schema.oneOf(SLA_STATES.map((v) => schema.literal(v)) as any)),
+  // Close outcome (step 2.4): csv of DISPOSITIONS values, unknown values ignored.
+  disposition: schema.maybe(schema.string()),
   q: schema.maybe(schema.string()),
   from: schema.maybe(schema.string()),
   to: schema.maybe(schema.string()),
 });
 
-function buildBoolQuery(query: Record<string, any>, includeStatusFilter: boolean) {
+/** Due timestamp of an alert (step 3.2). */
+export const ALERT_DUE_FIELD = 'reporting.sla_due_at';
+
+/**
+ * Sort field aliases: the queue sends `sla_due_at` (or the stored path) for
+ * the Due column; everything else is passed through as before.
+ */
+const ALERT_SORT_FIELD_ALIASES: Record<string, string> = { sla_due_at: ALERT_DUE_FIELD };
+
+export function resolveAlertSortField(sortField: unknown): string {
+  const field = typeof sortField === 'string' && sortField ? sortField : '@timestamp';
+  // Own-property lookup: a client-sent `toString` or `constructor` would
+  // otherwise resolve to an inherited member of the alias map.
+  return Object.prototype.hasOwnProperty.call(ALERT_SORT_FIELD_ALIASES, field) ? ALERT_SORT_FIELD_ALIASES[field] : field;
+}
+
+/** Bool query for the alert read alias from the validated list filters. */
+export function buildBoolQuery(query: Record<string, any>, includeStatusFilter: boolean, now: string = new Date().toISOString()) {
   const filter: any[] = [];
   const must: any[] = [];
 
@@ -51,6 +88,22 @@ function buildBoolQuery(query: Record<string, any>, includeStatusFilter: boolean
   }
   if (query.caseId) {
     filter.push({ term: { case_id: query.caseId } });
+  }
+  if (query.enrichmentVerdict) {
+    filter.push({ term: { 'enrichment.worst_verdict': query.enrichmentVerdict } });
+  }
+  if (query.assetCriticality) {
+    const values = String(query.assetCriticality)
+      .split(',')
+      .filter((value) => (ASSET_CRITICALITIES as readonly string[]).includes(value));
+    if (values.length) filter.push({ terms: { 'asset.criticality': values } });
+  }
+  if (query.slaState) {
+    filter.push(slaStateClause(query.slaState, ALERT_DUE_FIELD, now));
+  }
+  if (query.disposition) {
+    const values = dispositionFilterValues(query.disposition);
+    if (values.length) filter.push({ terms: { disposition: values } });
   }
   if (query.from || query.to) {
     const range: any = {};
@@ -82,7 +135,8 @@ export function buildAlertListSearchBody(q: any) {
     // Workbench totals are operational controls, not sampled search
     // estimates. OpenSearch otherwise caps hits.total.value at 10,000.
     track_total_hits: true,
-    sort: [{ [q.sortField || '@timestamp']: { order: q.sortDirection || 'desc' } }],
+    // Alerts without a due date (no severity) always sort after the dated ones.
+    sort: [{ [resolveAlertSortField(q.sortField)]: { order: q.sortDirection || 'desc', missing: '_last' } }],
     query: buildBoolQuery(q, true),
   };
 }
@@ -93,6 +147,68 @@ export function buildAlertCountSearchBody(q: any) {
     track_total_hits: true,
     query: buildBoolQuery(q, false),
     aggs: { status_counts: { terms: { field: 'status', size: 10 } } },
+  };
+}
+
+/** An alert hit as the export reads it from the read alias. */
+export interface AlertExportRecord {
+  _id: string;
+  _source: Record<string, any>;
+  sort?: unknown[];
+}
+
+/**
+ * CSV columns of `GET /alerts/export.csv`, in output order. The one place the
+ * column list lives; later steps (case report, scheduled summaries) reuse it.
+ * Severity is written as the common band plus the raw 4.x level and the 5.0
+ * label, so one file reads the same on both Wazuh lines.
+ */
+export const ALERT_EXPORT_COLUMNS: ReadonlyArray<CsvColumn<AlertExportRecord>> = [
+  { header: 'id', value: (hit) => hit._id },
+  // Named without the `@` so the header is not caught by the formula guard.
+  { header: 'timestamp', value: (hit) => hit._source?.['@timestamp'] ?? '' },
+  { header: 'status', value: (hit) => hit._source?.status ?? '' },
+  { header: 'assignee', value: (hit) => hit._source?.assigned_to ?? '' },
+  { header: 'severity', value: (hit) => severityDisplay(hit._source).band ?? '' },
+  { header: 'rule.level', value: (hit) => hit._source?.rule?.level ?? '' },
+  { header: 'severity_label', value: (hit) => hit._source?.severity_label ?? '' },
+  { header: 'rule.id', value: (hit) => hit._source?.rule?.id ?? '' },
+  { header: 'rule.description', value: (hit) => hit._source?.rule?.description ?? '' },
+  { header: 'agent.id', value: (hit) => hit._source?.agent?.id ?? '' },
+  { header: 'agent.name', value: (hit) => hit._source?.agent?.name ?? '' },
+  { header: 'data.srcip', value: (hit) => hit._source?.data?.srcip ?? '' },
+  { header: 'data.dstip', value: (hit) => hit._source?.data?.dstip ?? '' },
+  { header: 'asset.criticality', value: (hit) => hit._source?.asset?.criticality ?? '' },
+  { header: 'enrichment.worst_verdict', value: (hit) => hit._source?.enrichment?.worst_verdict ?? '' },
+  { header: 'reporting.sla_due_at', value: (hit) => hit._source?.reporting?.sla_due_at ?? '' },
+  { header: 'case_id', value: (hit) => hit._source?.case_id ?? '' },
+  // Close outcome (step 2.4); empty until the alert is closed with one.
+  { header: 'disposition', value: (hit) => hit._source?.disposition ?? '' },
+  { header: 'last_updated', value: (hit) => hit._source?.updated_at ?? '' },
+];
+
+/** Source fields the export needs (keeps 10,000-row pages small). */
+const ALERT_EXPORT_SOURCE_FIELDS = [
+  '@timestamp', 'status', 'assigned_to', 'rule.level', 'rule.id', 'rule.description', 'severity_label',
+  'agent.id', 'agent.name', 'data.srcip', 'data.dstip', 'asset.criticality', 'enrichment.worst_verdict', 'disposition',
+  'reporting.sla_due_at', 'case_id', 'updated_at',
+];
+
+/**
+ * One `search_after` page of the export: newest first, `alert_uid` as the
+ * tiebreak (a keyword with doc values; `_id` would need fielddata, which
+ * `indices.id_field_data.enabled: false` forbids).
+ * `track_total_hits` is bounded at the cap + 1, enough to know whether rows
+ * were dropped without counting the whole alias.
+ */
+export function buildAlertExportSearchBody(q: any, searchAfter?: unknown[] | null): Record<string, any> {
+  return {
+    size: CSV_EXPORT_PAGE_SIZE,
+    track_total_hits: CSV_EXPORT_MAX_ROWS + 1,
+    _source: ALERT_EXPORT_SOURCE_FIELDS,
+    sort: [{ '@timestamp': { order: 'desc' } }, { alert_uid: { order: 'asc' } }],
+    query: buildBoolQuery(q, true),
+    ...(searchAfter && searchAfter.length ? { search_after: searchAfter } : {}),
   };
 }
 
@@ -118,6 +234,50 @@ export function defineAlertRoutes(router: IRouter) {
           body: buildAlertListSearchBody(q),
         });
         return response.ok({ body: result.body });
+      } catch (e: any) {
+        return response.customError({
+          statusCode: e?.meta?.statusCode || 500,
+          body: { message: e.message },
+        });
+      }
+    }
+  );
+
+  // Same filters as the list, streamed as CSV. Reads only the managed read
+  // alias (never a native index), as the current user, capped at
+  // CSV_EXPORT_MAX_ROWS; `x-wam-truncated: true` says rows were dropped.
+  router.get(
+    {
+      path: `${API_ROOT}/alerts/export.csv`,
+      validate: { query: filterQuerySchema },
+    },
+    async (context, request, response) => {
+      const q = request.query as any;
+      try {
+        const client = context.core.opensearch.client.asCurrentUser;
+        const logger: any = (context as any).wazuhAlertManager?.logger || console;
+        const page = async (searchAfter?: unknown[] | null) => {
+          const result: any = await client.search({ index: ALERT_STATUS_INDEX, body: buildAlertExportSearchBody(q, searchAfter) });
+          const hits: AlertExportRecord[] = result.body?.hits?.hits || [];
+          return { records: hits, searchAfter: searchAfterOf(hits), total: result.body?.hits?.total };
+        };
+        const first = await page(null);
+        const rawTotal = first.total;
+        const total = typeof rawTotal === 'number' ? rawTotal : Number(rawTotal?.value ?? 0);
+        const truncated = total > CSV_EXPORT_MAX_ROWS || rawTotal?.relation === 'gte';
+        const body = csvExportStream<AlertExportRecord>({
+          columns: ALERT_EXPORT_COLUMNS,
+          firstPage: first,
+          fetchPage: page,
+          onTruncated: (written) => logger.warn(`alerts CSV export truncated at ${written} rows (cap ${CSV_EXPORT_MAX_ROWS})`),
+          onError: (error: any) => logger.error(`alerts CSV export failed mid-stream: ${error?.message || error}`),
+        });
+        return downloadResponse(response, {
+          filename: csvExportFilename('alerts'),
+          contentType: 'text/csv; charset=utf-8',
+          headers: truncated ? { 'x-wam-truncated': 'true' } : undefined,
+          body,
+        });
       } catch (e: any) {
         return response.customError({
           statusCode: e?.meta?.statusCode || 500,
@@ -168,11 +328,14 @@ export function defineAlertRoutes(router: IRouter) {
           status: schema.maybe(schema.oneOf(ALERT_STATUSES.map((s) => schema.literal(s)) as any)),
           caseId: schema.maybe(schema.nullable(schema.string())),
           assignedTo: schema.maybe(schema.nullable(schema.string())),
+          // Close outcome (step 2.4): applied only together with `status: 'closed'`.
+          disposition: schema.maybe(schema.oneOf(DISPOSITIONS.map((value) => schema.literal(value)) as any)),
+          closureReason: schema.maybe(schema.nullable(schema.string({ maxLength: CLOSURE_REASON_MAX_LENGTH }))),
         }),
       },
     },
     async (context, request, response) => {
-      const { ids, status, caseId, assignedTo } = request.body as any;
+      const { ids, status, caseId, assignedTo, disposition, closureReason } = request.body as any;
       if (status == null && caseId === undefined && assignedTo === undefined) {
         return response.badRequest({ body: { message: 'Provide at least one of status, caseId, or assignedTo' } });
       }
@@ -243,21 +406,31 @@ export function defineAlertRoutes(router: IRouter) {
         const fields: Record<string, any> = { updated_at: new Date().toISOString(), updated_by: user };
         if (status != null) fields.status = status;
         if (assignedTo !== undefined) fields.assigned_to = assignedTo;
+        // The disposition belongs to a close: any other status change leaves
+        // the stored outcome alone (reopening keeps it for audit).
+        const closing = status === 'closed';
+        if (closing && disposition) fields.disposition = disposition;
+        if (closing && closureReason !== undefined) fields.closure_reason = normaliseClosureReason(closureReason);
         const changedFields = [
           status != null && 'status_change',
           caseId !== undefined && 'case_link',
           assignedTo !== undefined && 'assignment_change',
         ].filter(Boolean);
         const action = changedFields.length > 1 ? 'bulk_update' : (changedFields[0] as string);
-        const entry = buildHistoryEntry({ user, action, to: status ?? assignedTo ?? caseId ?? null });
+        const entry: Record<string, any> = buildHistoryEntry({ user, action, to: status ?? assignedTo ?? caseId ?? null });
+        if (closing && disposition) entry.disposition = disposition;
+        const activityDetails = closing && (disposition || fields.closure_reason)
+          ? { disposition: disposition ?? null, closure_reason: fields.closure_reason ?? null }
+          : null;
         const body: any[] = [];
         const owners: string[] = [];
         if (status != null || assignedTo !== undefined) {
           const now = new Date().toISOString();
           const scriptSource = APPEND_HISTORY_SCRIPT_SOURCE + '\n' + REPORTING_MERGE_SCRIPT;
+          const slaPolicy = await getSlaPolicy(client, (context as any).wazuhAlertManager?.logger || console);
           for (const id of uniqueIds) {
             const location = locations.get(id)!;
-            const reporting = buildReportingUpdate(location.source, { status, assignedTo }, now);
+            const reporting = buildReportingUpdate(location.source, { status, assignedTo }, now, slaPolicy);
             body.push({ update: { _index: location.index, _id: id } });
             body.push({
               script: {
@@ -267,7 +440,7 @@ export function defineAlertRoutes(router: IRouter) {
               },
             });
             owners.push(id);
-            pushActivityBulk(body, { targetType: 'alert', targetId: id, user, action, to: entry.to });
+            pushActivityBulk(body, { targetType: 'alert', targetId: id, user, action, to: entry.to, details: activityDetails });
             owners.push(id);
           }
         }

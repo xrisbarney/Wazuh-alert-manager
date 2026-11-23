@@ -4,7 +4,7 @@ Reviewed 2026-11-20 against branch `3.0`. The plugin is strong on alert state,
 cases, evidence and storage lifecycle. What it lacks is everything that happens
 *around* a case: getting people's attention, structuring the response, and
 getting data out. The code has no notifications, no export, no tasks or
-playbooks, no tags and no closure taxonomy.
+task lists, no tags and no closure taxonomy.
 
 Items marked **selected** are being built on the `trial-features` branch (see
 [PLAN.md](PLAN.md)) in the order 6, 5, 3, 2, 1. Item 4 (multi-tenancy) is
@@ -28,7 +28,7 @@ Cases are a bag of alerts plus comments. Incident management needs a shape.
 
 - Task checklist per case: title, owner, due, done, with an audit event per
   change.
-- Playbook templates: a named list of tasks applied when a case opens,
+- Task list templates: a named list of tasks applied when a case opens,
   selectable manually or by an automation rule.
 - Case timeline merging alert timestamps, status changes, comments and task
   completions into one chronological view.
@@ -86,7 +86,7 @@ Cases are a bag of alerts plus comments. Incident management needs a shape.
 
 ## If only three
 
-Webhooks, task checklists with playbooks, and closure dispositions with a
+Webhooks, task checklists with task lists, and closure dispositions with a
 false-positive rate in reporting. Those turn a triage queue into incident
 management and reuse the rule engine, activity index and reporting already
 present.

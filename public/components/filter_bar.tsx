@@ -18,9 +18,11 @@ import {
   EuiFilterGroup,
   EuiFilterButton,
   EuiPanel,
+  EuiSelect,
 } from '@elastic/eui';
 import moment from 'moment';
-import { FilterOptions, AlertStatus } from '../../common';
+import { FilterOptions, AlertStatus, EnrichmentVerdictFilter, AssetCriticality, ASSET_CRITICALITIES, SlaState, DISPOSITIONS, DISPOSITION_LABELS } from '../../common';
+import type { Disposition } from '../../common';
 import { STATUS_OPTIONS } from './status_badge';
 
 export interface AlertFilterState {
@@ -31,8 +33,39 @@ export interface AlertFilterState {
   agentNames: string[];
   alertTypes: string[];
   assignedTo: string[];
+  /** Stored enrichment worst verdict (step 6.3); undefined = any. */
+  enrichmentVerdict?: EnrichmentVerdictFilter;
+  /** Stamped asset criticality (step 6.4a); empty = any. */
+  assetCriticality?: AssetCriticality[];
+  /** Due-date quick filter (step 3.2): breached | due_soon; undefined = any. */
+  slaState?: SlaState;
+  /** Close outcome (step 2.4); empty = any. Meaningful with the Closed status. */
+  disposition?: Disposition[];
   q: string;
 }
+
+/** Quick filters of the queue: chips that set `slaState` (exclusive; a second click clears). */
+export const SLA_QUICK_FILTERS: Array<{ value: SlaState; label: string; title: string }> = [
+  { value: 'breached', label: 'Breached', title: 'Open or in-progress alerts whose resolve due date has passed' },
+  { value: 'due_soon', label: 'Due within 1h', title: 'Open or in-progress alerts due in the next hour' },
+];
+
+const ASSET_CRITICALITY_OPTIONS: Array<EuiComboBoxOptionOption<AssetCriticality>> = ASSET_CRITICALITIES.map((value) => ({
+  label: value.charAt(0).toUpperCase() + value.slice(1),
+  value,
+}));
+
+const DISPOSITION_OPTIONS: Array<EuiComboBoxOptionOption<Disposition>> = DISPOSITIONS.map((value) => ({
+  label: DISPOSITION_LABELS[value],
+  value,
+}));
+
+const ENRICHMENT_VERDICT_OPTIONS: Array<{ value: string; text: string }> = [
+  { value: '', text: 'Any' },
+  { value: 'malicious', text: 'Malicious' },
+  { value: 'suspicious', text: 'Suspicious' },
+  { value: 'clean', text: 'Clean' },
+];
 
 interface TimeRange {
   from: string;
@@ -109,13 +142,11 @@ export const FilterBar: React.FC<Props> = ({
         <EuiFlexItem className="wamQueryRow__query">
           <EuiFormRow
             label="Query"
-            display="rowCompressed"
             helpText="Lucene syntax. Combined with the structured filters below using AND."
             fullWidth
           >
             <EuiFieldSearch
               fullWidth
-              compressed
               placeholder='Search all fields, or use Lucene: rule.description:*ssh* AND NOT agent.name:"server1"'
               value={filters.q}
               onChange={(e) => onChange({ ...filters, q: e.target.value })}
@@ -125,10 +156,10 @@ export const FilterBar: React.FC<Props> = ({
           </EuiFormRow>
         </EuiFlexItem>
         <EuiFlexItem grow={false} className="wamQueryRow__time">
-          <EuiFormRow label="Time range" display="rowCompressed">
+          <EuiFormRow label="Time range">
             <EuiPopover
               button={
-                <EuiButton className="wamTimeRangeButton" size="s" iconType="calendar" onClick={() => setIsTimePopoverOpen((v) => !v)}>
+                <EuiButton className="wamTimeRangeButton" iconType="calendar" onClick={() => setIsTimePopoverOpen((v) => !v)}>
                   {formatTimeRangeDisplay()}
                 </EuiButton>
               }
@@ -143,7 +174,6 @@ export const FilterBar: React.FC<Props> = ({
                   <EuiButtonEmpty
                     key={range.label}
                     size="s"
-                    fullWidth
                     onClick={() => {
                       onTimeRangeChange({ from: range.start, to: range.end, mode: 'relative' });
                       setIsTimePopoverOpen(false);
@@ -184,8 +214,8 @@ export const FilterBar: React.FC<Props> = ({
           </EuiFormRow>
         </EuiFlexItem>
         <EuiFlexItem grow={false} className="wamQueryRow__apply">
-          <EuiFormRow label="Apply filters" display="rowCompressed">
-            <EuiButton size="s" fill onClick={apply} isLoading={loading} disabled={levelRangeInvalid} iconType="search">
+          <EuiFormRow label="Apply filters">
+            <EuiButton fill onClick={apply} isLoading={loading} disabled={levelRangeInvalid} iconType="search">
               Apply
             </EuiButton>
           </EuiFormRow>
@@ -201,9 +231,9 @@ export const FilterBar: React.FC<Props> = ({
       <EuiSpacer size="m" />
 
       <EuiFlexGroup gutterSize="s" wrap alignItems="flexEnd" className="wamStructuredFilters">
-        <EuiFlexItem grow={false}>
+        <EuiFlexItem grow={false} className="wamStructuredFilters__chips">
           <EuiFormRow label="Status" display="rowCompressed">
-            <EuiFilterGroup compressed>
+            <EuiFilterGroup>
               {statusOptions.map((o) => {
                 const active = filters.statuses.includes(o.value as AlertStatus);
                 return (
@@ -230,7 +260,30 @@ export const FilterBar: React.FC<Props> = ({
           </EuiFormRow>
         </EuiFlexItem>
 
-        <EuiFlexItem style={{ minWidth: 90 }}>
+        <EuiFlexItem grow={false} className="wamStructuredFilters__chips">
+          <EuiFormRow label="SLA" display="rowCompressed">
+            <EuiFilterGroup>
+              {SLA_QUICK_FILTERS.map((o) => {
+                const active = filters.slaState === o.value;
+                return (
+                  <EuiFilterButton
+                    key={o.value}
+                    hasActiveFilters={active}
+                    isSelected={active}
+                    title={o.title}
+                    className={`wamSlaFilter wamSlaFilter--${o.value}${active ? ' wamSlaFilter--active' : ''}`}
+                    data-test-subj={`wamSlaFilter-${o.value}`}
+                    onClick={() => onChange({ ...filters, slaState: active ? undefined : o.value })}
+                  >
+                    {o.label}
+                  </EuiFilterButton>
+                );
+              })}
+            </EuiFilterGroup>
+          </EuiFormRow>
+        </EuiFlexItem>
+
+        <EuiFlexItem className="wamStructuredFilters__item wamStructuredFilters__item--narrow">
           <EuiFormRow label="Level min" display="rowCompressed" isInvalid={levelRangeInvalid} error={levelRangeInvalid ? 'Minimum must not exceed maximum.' : undefined}>
             <EuiFieldNumber
               compressed
@@ -242,7 +295,7 @@ export const FilterBar: React.FC<Props> = ({
             />
           </EuiFormRow>
         </EuiFlexItem>
-        <EuiFlexItem style={{ minWidth: 90 }}>
+        <EuiFlexItem className="wamStructuredFilters__item wamStructuredFilters__item--narrow">
           <EuiFormRow label="Level max" display="rowCompressed" isInvalid={levelRangeInvalid}>
             <EuiFieldNumber
               compressed
@@ -255,7 +308,7 @@ export const FilterBar: React.FC<Props> = ({
           </EuiFormRow>
         </EuiFlexItem>
 
-        <EuiFlexItem style={{ minWidth: 150 }}>
+        <EuiFlexItem className="wamStructuredFilters__item">
           <EuiFormRow label="Rule ID" display="rowCompressed">
             <EuiComboBox
               placeholder="Any rule"
@@ -268,7 +321,7 @@ export const FilterBar: React.FC<Props> = ({
           </EuiFormRow>
         </EuiFlexItem>
 
-        <EuiFlexItem style={{ minWidth: 150 }}>
+        <EuiFlexItem className="wamStructuredFilters__item">
           <EuiFormRow label="Agent" display="rowCompressed">
             <EuiComboBox
               placeholder="Any agent"
@@ -281,7 +334,7 @@ export const FilterBar: React.FC<Props> = ({
           </EuiFormRow>
         </EuiFlexItem>
 
-        <EuiFlexItem style={{ minWidth: 150 }}>
+        <EuiFlexItem className="wamStructuredFilters__item">
           <EuiFormRow label="Alert type" display="rowCompressed">
             <EuiComboBox
               placeholder="Any type"
@@ -293,7 +346,7 @@ export const FilterBar: React.FC<Props> = ({
           </EuiFormRow>
         </EuiFlexItem>
 
-        <EuiFlexItem style={{ minWidth: 150 }}>
+        <EuiFlexItem className="wamStructuredFilters__item">
           <EuiFormRow label="Assigned to" display="rowCompressed">
             <EuiComboBox
               placeholder="Anyone"
@@ -305,12 +358,52 @@ export const FilterBar: React.FC<Props> = ({
             />
           </EuiFormRow>
         </EuiFlexItem>
-      </EuiFlexGroup>
 
-      <EuiSpacer size="s" />
-      <EuiFlexGroup gutterSize="s" alignItems="center" justifyContent="flexEnd" wrap>
-        <EuiFlexItem grow={false}>
-          <EuiSwitch label="Auto refresh every 5 minutes" checked={autoRefreshEnabled} onChange={onToggleAutoRefresh} compressed />
+        <EuiFlexItem className="wamStructuredFilters__item">
+          <EuiFormRow label="Enrichment verdict" display="rowCompressed">
+            <EuiSelect
+              compressed
+              options={ENRICHMENT_VERDICT_OPTIONS}
+              value={filters.enrichmentVerdict || ''}
+              onChange={(e) => onChange({ ...filters, enrichmentVerdict: (e.target.value || undefined) as EnrichmentVerdictFilter | undefined })}
+              aria-label="Filter by stored enrichment verdict"
+              data-test-subj="wamEnrichmentVerdictFilter"
+            />
+          </EuiFormRow>
+        </EuiFlexItem>
+
+        <EuiFlexItem className="wamStructuredFilters__item">
+          <EuiFormRow label="Disposition" display="rowCompressed">
+            <EuiComboBox
+              placeholder="Any"
+              options={DISPOSITION_OPTIONS}
+              selectedOptions={DISPOSITION_OPTIONS.filter((option) => (filters.disposition || []).includes(option.value!))}
+              onChange={(selected) => onChange({ ...filters, disposition: selected.map((option) => option.value!) })}
+              isClearable
+              compressed
+              data-test-subj="wamDispositionFilter"
+            />
+          </EuiFormRow>
+        </EuiFlexItem>
+
+        <EuiFlexItem className="wamStructuredFilters__item">
+          <EuiFormRow label="Asset criticality" display="rowCompressed">
+            <EuiComboBox
+              placeholder="Any"
+              options={ASSET_CRITICALITY_OPTIONS}
+              selectedOptions={ASSET_CRITICALITY_OPTIONS.filter((option) => (filters.assetCriticality || []).includes(option.value!))}
+              onChange={(selected) => onChange({ ...filters, assetCriticality: selected.map((option) => option.value!) })}
+              isClearable
+              compressed
+              data-test-subj="wamAssetCriticalityFilter"
+            />
+          </EuiFormRow>
+        </EuiFlexItem>
+
+        <EuiFlexItem grow={false} className="wamStructuredFilters__refresh">
+          <EuiFormRow hasEmptyLabelSpace display="rowCompressed">
+            <EuiSwitch label="Auto refresh every 5 minutes" checked={autoRefreshEnabled} onChange={onToggleAutoRefresh} compressed />
+          </EuiFormRow>
         </EuiFlexItem>
       </EuiFlexGroup>
     </EuiPanel>

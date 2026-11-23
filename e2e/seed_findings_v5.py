@@ -11,7 +11,11 @@ Document shape follows a live Wazuh 5.0.0-rc2 finding
 (runtime-evidence/phase1-5.0-rc2/findings-sample-rc2.json): identity under
 `wazuh.agent.*`, rule context under `wazuh.rule.*` with a LABEL in
 `wazuh.rule.level`, ECS `source.*`/`user.*`/`process.*`, provenance in
-`event.index`/`event.doc_id`, and a nanosecond `@timestamp`.
+`event.index`/`event.doc_id`, and a nanosecond `@timestamp`. Agents carry
+`wazuh.agent.groups` and every finding whose source IP is THREAT_IP also
+carries one `wazuh.threat.enrichments[]` element in the engine's ECS
+threat.enrichments shape (the plugin projects it to `threat.matches[]`, so a
+spec can assert the indicator verdict hint without a real CTI catalog).
 
 Usage (never store credentials in this file):
   WAM_PW=... WAM_INDEXER=https://192.168.56.20:9200 python3 e2e/seed_findings_v5.py [--count 8] [--severity low]
@@ -33,6 +37,9 @@ from benchmark import bench  # noqa: E402
 FINDINGS_STREAM = "wazuh-findings-v5-wam-e2e"
 EVENTS_STREAM = "wazuh-events-v5-wam-e2e"
 TEMPLATE_PREFIX = "wam-e2e-"
+AGENT_GROUPS = ["default", "wam-e2e"]
+# Source IP that the seeded engine enrichment marks as a catalog hit.
+THREAT_IP = "203.0.113.77"
 
 COMMON_MAPPINGS = bench.V5_TEST_MAPPINGS
 
@@ -76,7 +83,7 @@ def event_doc(stamp: str, agent: str, address: str, user: str, port: int, origin
         "user": {"name": user},
         "process": {"name": "sshd", "pid": 4242},
         "wazuh": {
-            "agent": {"id": "901", "name": agent, "groups": ["default"], "version": "v5.0.0", "host": {"hostname": agent, "ip": "192.0.2.10"}},
+            "agent": {"id": "901", "name": agent, "groups": AGENT_GROUPS, "version": "v5.0.0", "host": {"hostname": agent, "ip": "192.0.2.10"}},
             "cluster": {"node": "node01", "name": "wazuh"},
             "integration": {"name": "system-auth", "category": "wam-e2e"},
             "protocol": {"location": "journald"},
@@ -98,7 +105,40 @@ def finding_doc(event: dict, event_index: str, event_id: str, severity: str, run
         "status": "stable",
     }
     doc["message"] = f"[wam-e2e {run}#{serial}] {event['event']['original']}"
+    if event["source"]["ip"] == THREAT_IP:
+        doc["wazuh"]["threat"] = {"enrichments": [threat_enrichment(THREAT_IP)]}
+        # Native Case Management fields (rc2 shape, no id) so the live 5.0
+        # pass can assert the read-only `native_case` projection
+        # (data-test-subj wamAlertNativeCase / wamAlertNativeCaseQueue).
+        now_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        doc["wazuh"]["case"] = {
+            "status": "acknowledged",
+            "severity": "high",
+            "priority": "p2",
+            "tlp": "amber",
+            "title": f"wam-e2e {run} native case",
+            "tags": ["wam_e2e"],
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
     return doc
+
+
+def threat_enrichment(address: str) -> dict:
+    """One engine CTI hit in the ECS `threat.enrichments[]` shape the 5.0 engine stamps."""
+    return {
+        "indicator": {
+            "id": f"wam-e2e-ioc-{address}",
+            "name": address,
+            "type": "ipv4-addr",
+            "provider": "wam-e2e",
+            "feed": {"name": "wam-e2e-feed"},
+            "confidence": "high",
+            "tags": ["wam_e2e", "bruteforce"],
+            "reference": "https://example.com/ioc/wam-e2e",
+        },
+        "matched": {"field": "source.ip", "atomic": address},
+    }
 
 
 def main() -> None:
@@ -138,6 +178,9 @@ def main() -> None:
         "events_index": event_index,
         "severity": args.severity,
         "run": run,
+        "rule_id": f"wam-e2e-{run}-rule",
+        "threat_ip": THREAT_IP,
+        "agent_groups": AGENT_GROUPS,
     }))
 
 
